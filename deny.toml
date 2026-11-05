@@ -38,3 +38,6 @@ unknown-git = "deny"
 allow-registry = [
     "https://github.com/rust-lang/crates.io-index",
 ]
+allow-git = [
+    "https://github.com/kuma-00/libvips-rust-bindings-for-windows.git",
+]

@@ -57,11 +57,25 @@ impl ImageProcessor for VipsImageProcessor {
             size: Size::Both,
             no_rotate: false,
             crop: Interesting::None,
+            export_profile: "srgb".into(),
             ..Default::default()
         };
 
-        let thumb = ops::thumbnail_with_opts(input_str, max_edge as i32, &opts)
-            .map_err(|e| ImageProcessorError::Processing(format!("Thumbnail failed: {:?}", e)))?;
+        let thumb = ops::thumbnail_with_opts(input_str, max_edge as i32, &opts).map_err(|e| {
+            let detail = unsafe {
+                let err_ptr = bindings::vips_error_buffer();
+                if !err_ptr.is_null() {
+                    let s = std::ffi::CStr::from_ptr(err_ptr)
+                        .to_string_lossy()
+                        .to_string();
+                    bindings::vips_error_clear();
+                    s
+                } else {
+                    format!("{:?}", e)
+                }
+            };
+            ImageProcessorError::Processing(format!("Thumbnail failed: {}", detail))
+        })?;
 
         let width = thumb.get_width() as u32;
         let height = thumb.get_height() as u32;
