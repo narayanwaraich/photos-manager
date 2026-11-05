@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+target/
+src-tauri/target/
+dist/
+# Logs
+reports/logs/*
+!reports/logs/.gitkeep
+# Fixtures (local / untracked)
+tests/fixtures/local/
+# Environment
+.env
+.env.*
+!.env.example
+# Models
+models/
+src-tauri/models/
+# OS metadata
+.DS_Store
+Thumbs.db
+# Operating System
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+# Virtual environments
+.venv/
+spikes/embeddings/.venv/
+venv/
+ENV/
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+# Rust build artifacts
+spikes/embeddings/ort-probe/target/
+# Machine learning model weights and caches (never commit weights)
+*.onnx
+*.onnx_data
+*.gguf
+*.safetensors
+*.bin
+spikes/embeddings/models/
+spikes/embeddings/cache/
+# Large binary vectors
+*.npz
+# Local fixtures (owner-provided, private)
+spikes/embeddings/local-fixtures/
+# Node / Tauri (from parallel branches)
+**/.DS_Store
+/src-tauri/gen/schemas/
