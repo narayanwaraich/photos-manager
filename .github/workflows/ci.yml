@@ -1,0 +1,174 @@
+name: CI & Packaging Matrix
+
+on:
+  push:
+    branches:
+      - task/0C
+      - main
+  pull_request:
+
+jobs:
+  matrix-build:
+    name: ${{ matrix.os-name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            os-name: macos-arm64
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            os-name: windows-x64
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.8.1
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python Pillow
+        run: python -m pip install pillow
+
+      - name: Install macOS prerequisites
+        if: runner.os == 'macOS'
+        run: |
+          brew install vips exiftool pkg-config
+
+      - name: Install Windows prerequisites
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # 1. Download and unpack minimal libvips web distribution
+          New-Item -ItemType Directory -Path deps\vips -Force
+          curl.exe -L -o vips.zip https://github.com/libvips/build-win64-mxe/releases/download/v8.18.6/vips-dev-w64-web-8.18.6.zip
+          tar.exe -xf vips.zip -C deps\vips --strip-components=1
+
+          # 2. Download and unpack ExifTool standalone distribution
+          New-Item -ItemType Directory -Path deps\exiftool -Force
+          curl.exe -L -o exiftool.zip https://exiftool.org/exiftool-13.55_64.zip
+          tar.exe -xf exiftool.zip -C deps\exiftool --strip-components=1
+          if (Test-Path "deps\exiftool\exiftool(-k).exe") {
+            Move-Item "deps\exiftool\exiftool(-k).exe" "deps\exiftool\exiftool.exe" -Force
+          }
+
+          # 3. Export environment paths
+          $vipsLib = "$PWD\deps\vips\lib"
+          $vipsBin = "$PWD\deps\vips\bin"
+          $exifDir = "$PWD\deps\exiftool"
+          echo "VIPS_LIB_DIR=$vipsLib" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "VIPS_DIR=$PWD\deps\vips" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "EXIFTOOL_DIR=$exifDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "$vipsBin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          echo "$exifDir" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate synthetic test fixtures
+        run: python scripts/generate-fixtures.py
+
+      - name: Run verification suite (pnpm verify)
+        run: pnpm verify
+
+      - name: Security & License policy check (cargo deny)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: src-tauri/Cargo.toml
+
+      - name: Stage bundled resources
+        run: node scripts/prepare-bundle.mjs
+
+      - name: Build Tauri application (unsigned)
+        env:
+          PHOTOS_DEV_HOMEBREW: "1"
+        run: pnpm tauri build
+
+      - name: Post-build bundle packaging & library relocation
+        run: node scripts/package-bundle.mjs
+
+      - name: Clean-environment smoke test (macOS arm64)
+        if: runner.os == 'macOS'
+        run: |
+          # Locate built .app bundle
+          APP_PATH=$(find src-tauri/target/release/bundle/macos -name "*.app" -maxdepth 1 | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ No .app bundle found"
+            exit 1
+          fi
+          echo "Testing bundle at: $APP_PATH"
+          EXE_PATH="$APP_PATH/Contents/MacOS/photos-manager"
+          chmod +x "$EXE_PATH"
+
+          # Execute in clean environment with Homebrew stripped:
+          env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin PHOTOS_DEV_ALLOW_SVGLOAD=1 "$EXE_PATH" --smoke-test --out smoke-macos-arm64.json
+          cat smoke-macos-arm64.json
+
+      - name: Clean-environment smoke test (Windows x64)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exePath = "src-tauri\target\release\photos-manager.exe"
+          if (-not (Test-Path $exePath)) {
+            echo "❌ Executable not found at $exePath"
+            exit 1
+          }
+
+          # Execute in stripped clean environment (only system32/windows on PATH, no vips/perl/exiftool)
+          $origPath = $env:PATH
+          $env:PATH = "C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem"
+          & "$PWD\$exePath" --smoke-test --out smoke-windows-x64.json
+          $exitCode = $LASTEXITCODE
+          $env:PATH = $origPath
+
+          Get-Content smoke-windows-x64.json
+          if ($exitCode -ne 0) {
+            echo "❌ Clean-environment smoke test failed with code $exitCode"
+            exit $exitCode
+          }
+
+      - name: Upload smoke test report
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report-${{ matrix.os-name }}
+          path: smoke-*.json
+
+      - name: Upload verification logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-logs-${{ matrix.os-name }}
+          path: reports/logs/
+
+      - name: Upload built packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: photos-manager-${{ matrix.os-name }}
+          path: |
+            src-tauri/target/release/bundle/
+            src-tauri/target/release/*.exe
