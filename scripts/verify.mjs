@@ -28,10 +28,20 @@ function runStep(name, command, args, cwd = rootDir) {
   log(`CWD: ${cwd}`);
   log(`======================================================\n`);
 
-  // Ensure cargo path is included in PATH
+  // Ensure cargo path is included in PATH and git global config avoids permission issues
+  const isWindows = process.platform === "win32";
+  const homeDir = process.env.HOME || process.env.USERPROFILE || "";
+  const cargoBin = isWindows
+    ? path.join(homeDir, ".cargo", "bin")
+    : `${homeDir}/.cargo/bin`;
+  const extraPaths = isWindows
+    ? [cargoBin]
+    : [cargoBin, "/opt/homebrew/bin", "/usr/local/bin"];
+
   const env = {
     ...process.env,
-    PATH: `${process.env.HOME}/.cargo/bin:/opt/homebrew/bin:${process.env.PATH}`,
+    GIT_CONFIG_GLOBAL: isWindows ? "NUL" : "/dev/null",
+    PATH: `${extraPaths.join(path.delimiter)}${path.delimiter}${process.env.PATH || ""}`,
   };
 
   const result = spawnSync(command, args, {
