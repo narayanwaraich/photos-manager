@@ -8,6 +8,15 @@
 - `IMPLEMENTATION_SPEC.md` §3.3 (fallback ladder), §3.4 (native dependency release gate), §17 (platform matrix, validation, packaging), §18 Phase 0
 - `docs/native-dependencies.md` (from TASK-0A)
 
+## Known issues carried over from the 0A/0B reviews (must be handled here)
+1. `src-tauri/build.rs` hard-codes `/opt/homebrew/lib` and `metadata::which_exiftool` hard-codes Homebrew/system paths. Both are dev-only; the release build must locate libvips and ExifTool from the bundle. Remove or gate them behind an explicit dev switch.
+2. The libvips build to bundle must be **minimal**: JPEG, PNG, WebP, TIFF, GIF, HEIF/AVIF decode only. Do not ship `magickload` (ImageMagick) or `svgload` (librsvg): large attack surface and not v1 formats. For HEIF use a decode-only stack (libde265 / dav1d); do **not** bundle x265 (GPL-2.0, encoder) from a stock Homebrew install. Record each library's licence.
+3. ExifTool packaging claims in `docs/native-dependencies.md` are unverified: the current official Windows package may be an exe **plus a support folder**, not a single file; do not assume macOS `/usr/bin/perl` exists on current macOS (check on macOS 27 and prefer a bundled Perl). Launch ExifTool from Rust with the resolved resource path; do not enable the Tauri shell plugin.
+4. Test ExifTool on Windows with a non-ASCII and a >260-character path (`-charset filename=UTF8` behaviour on Windows is unproven).
+5. Bundle the ONNX Runtime library inside the signed app (see `docs/embedding-spike.md`); `ort` is pinned to a release candidate, so pin the exact version with `=` and record which ONNX Runtime library version it needs. Do not integrate it; record the bundling steps.
+6. Add `rust-toolchain.toml` (spec §17.3) and a `cargo deny`/`cargo audit` step.
+7. The app identifier `com.photosmanager.desktop` is a placeholder; the owner confirms the real one before the first packaged build.
+
 ## Goal
 A GitHub Actions workflow runs `pnpm verify` and a packaging smoke test on Windows x64 and macOS arm64 (and macOS x64 only if the project claims it), producing unsigned bundles whose native dependencies are located from the bundle, not from the machine.
 

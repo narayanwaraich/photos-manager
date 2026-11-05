@@ -56,6 +56,7 @@ Your training knowledge ends before today's date (the Gemini 3.8 Flash model car
 - DB and cache stay on local disk. No WAL database on a network share.
 - No O(n²) image comparison at scale. BLAKE3 for exact; versioned pHash with Hamming-distance candidate search for visual. Similarity is not transitive; avoid naive connected components.
 - Pin dependencies in lockfiles. Add libraries only with a clear need, and list each new one in the report.
+- Write Rust the owner can read: simple, explicit code, no clever one-liners. Add short comments for non-obvious Rust (ownership and borrowing, `?`, async, lifetimes). Explain why, not what.
 - `pnpm verify` is the single verification command (created in TASK-0A). Run it before reporting.
 - Keep this file under 12,000 characters; `pnpm verify` checks it.
 
@@ -66,4 +67,4 @@ Your training knowledge ends before today's date (the Gemini 3.8 Flash model car
 - Platform honesty: say which OS you actually tested (primary dev is macOS; the owner validates on a Windows PC and CI). Never claim Windows or macOS support from a build on only one. Write path, drive and Trash code for both OSes from the start.
 
 ## Report format
-Use `reports/_REPORT_TEMPLATE.md`. Be concise and factual. List what is not done.
+Use `reports/_REPORT_TEMPLATE.md`. Be concise and factual. List what is not done. End with a short "Concepts used" section (max 5 items): the owner is a React/full-stack developer learning Rust and Git, so for each Rust or Git concept your change relies on, give one plain sentence and a `file:line` example from this task.

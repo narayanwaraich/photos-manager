@@ -38,3 +38,6 @@ Include `pnpm verify` output.
 
 ## 10. Proposed next task
 <One paragraph. Do not start it.>
+
+## Concepts used (for the owner, a React developer learning Rust and Git)
+<Max 5 items. Each: concept name, one plain sentence, and a `file:line` example from this task.>

@@ -14,7 +14,7 @@ Used by the orchestrator (Claude) and by you when reading a report. Verdicts: **
 8. **Stopping:** the agent did not begin the next task.
 9. **Spec fidelity:** names, tables and behaviour match `IMPLEMENTATION_SPEC.md` (section numbers cited in the report); differences are listed as proposals, not silently applied.
 10. **No future-feature scaffolding:** no stub modules, empty tables, commands or UI for spec §13 features (faces, maps, RAW, video, import, backup).
-11. **Repo hygiene:** no secrets, weights, large binaries or private photos committed (`git ls-files | xargs du -ch | tail -1`; extension scan below).
+11. **Repo hygiene:** no secrets, weights, large binaries or private photos committed (`git ls-files -z | xargs -0 du -ck | awk '$2=="total"{s+=$1} END{printf "%.1f MB\n", s/1024}'`; extension scan below). Do not use `xargs du -ch | tail -1`: xargs splits long file lists and `tail -1` then shows only the last batch..
 
 ## 2. Mechanical checks (run from the repo root; paste the output into the review)
 
@@ -30,8 +30,8 @@ rg -n "Command::new\(\"(sh|bash|zsh|cmd|powershell)\"|\.arg\(\"-c\"\)|shell=True
 # Permanent deletion only inside the operations module (and ideally nowhere in Phase 0-4)
 rg -n "remove_file|remove_dir|fs::rename|fs::copy" src-tauri/src
 
-# Panics in non-test code
-rg -n "unwrap\(\)|expect\(|panic!|todo!|unimplemented!" src-tauri/src -g '!*test*'
+# Panics in non-test code (use SINGLE quotes in zsh: double quotes break on "!")
+rg -n 'unwrap\(\)|expect\(|panic!|todo!|unimplemented!' src-tauri/src -g '!*test*'
 
 # Secrets and keys
 rg -n "AIza[0-9A-Za-z_-]{20,}|sk-[A-Za-z0-9]{20,}|api[_-]?key\s*[:=]" -g '!*.lock' -g '!docs/**' .

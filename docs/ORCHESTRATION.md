@@ -8,6 +8,8 @@ How this project is run. Three roles, one loop.
 | Orchestrator / reviewer | Claude (in the "Photo Manager" Project) | Writes task files, reviews reports and diffs against the spec and checklist, updates `docs/STATUS.md`, issues the next task |
 | Implementer | Antigravity with Gemini 3.8 Flash | Executes exactly one task file, writes a report, stops |
 
+**One place to look:** at the end of every Claude conversation, Claude overwrites `docs/NEXT_STEPS.md` with exact step-by-step instructions for you (commands, what you should see, what to do if not). Open that file first. Lessons on Rust and Git accumulate in `docs/LEARNING.md`; the current lesson is also inside NEXT_STEPS, so you never have to hunt.
+
 Claude cannot see your repository or run your code. Reviews are only as good as the evidence you bring back (section 4).
 
 ---
@@ -51,6 +53,15 @@ Review TASK-<ID>. Evidence below.
 <pnpm verify log tail>
 <any files I list as "also needed">
 ```
+
+**Start a new Claude conversation (inside this Project)** — recommended for each review, so chats stay short. The Project docs persist; the old chat does not. Paste:
+
+```
+Orchestrator session. Read docs/NEXT_STEPS.md and docs/STATUS.md, then the files STATUS.md points to for the current task.
+Review TASK-<ID>. Evidence attached: <REPORT-<ID>.md, verify log tail, any files requested>.
+```
+
+Everything Claude needs to carry over must live in the Project docs: `docs/STATUS.md` (state), `reports/REPORT-<ID>.md` and `reports/REVIEW-<ID>.md` (evidence and verdicts), and the spec. Claude updates STATUS and writes the review file at the end of each review; if a decision was made only in chat, ask Claude to write it into the docs before you close the chat.
 
 ## 3. The loop
 
