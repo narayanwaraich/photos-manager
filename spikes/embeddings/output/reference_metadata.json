@@ -1,0 +1,11 @@
+{
+  "model_id": "google/embeddinggemma-2",
+  "device": "cpu",
+  "precision": "fp32",
+  "load_time_s": 1.0602880840888247,
+  "num_queries": 20,
+  "query_avg_ms": 27.31390835251659,
+  "num_images": 185,
+  "image_avg_ms": 1273.258557037224,
+  "dim": 768
+}
