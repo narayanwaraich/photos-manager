@@ -23,13 +23,14 @@ A local-first, privacy-respecting cross-platform desktop photo manager built wit
   brew install pillow
   ```
 
-### Windows 10/11 x64 *(Untested in TASK-0A; to be validated on Windows PC / TASK-0C)*
-- **Node.js**: v22+
-- **pnpm**: v12+ (`npm install -g pnpm` or via winget)
+### Windows 10/11 x64
+- **Node.js**: v22+ (`winget install OpenJS.NodeJS.LTS`)
+- **pnpm**: v12+ (`npm install -g pnpm`)
 - **Rust Toolchain**: `rustup-init.exe` targeting `x86_64-pc-windows-msvc`
-- **Build Tools**: Microsoft C++ Build Tools (Visual Studio 2022)
-- **libvips**: Windows dev binary release unpacked and added to `PATH`
-- **ExifTool**: Standalone Windows executable `exiftool.exe` added to `PATH`
+- **Build Tools**: Microsoft C++ Build Tools (Visual Studio 2022) with "Desktop development with C++"
+- **libvips (Dev Only)**: Windows web binary release (`vips-dev-w64-web`) unpacked and added to `PATH`
+- **ExifTool (Dev Only)**: Standalone Windows executable `exiftool.exe` via `winget install OliverBetz.ExifTool`
+*(See `docs/windows-validation.md` for the complete Windows manual validation checklist).*
 
 ---
 
@@ -49,7 +50,6 @@ python3 scripts/generate-fixtures.py
 ```bash
 pnpm tauri dev
 ```
-*(Windows PowerShell: `pnpm tauri dev` - untested)*
 
 ### 4. Run Full Verification Suite
 The project enforces a single verification command (`pnpm verify`) which checks formatting, clippy linter warnings, Rust unit/integration tests, TypeScript type checks, frontend linter, Vite production build, and `AGENTS.md` length invariant:
@@ -58,15 +58,25 @@ pnpm verify
 ```
 Logs are saved automatically to `reports/logs/verify-<date>.txt`.
 
-### 5. Build Production Application
+### 5. Build Packaged Application & Smoke Test
 ```bash
-# Build frontend and compile release binary (without packaging)
-pnpm tauri build --no-bundle
+# Stage native bundled resources (ExifTool, fixtures)
+node scripts/prepare-bundle.mjs
 
-# Build packaged installer (.dmg on macOS, .msi/.exe on Windows)
+# Build production application bundle (unsigned)
 pnpm tauri build
+
+# Post-build relocatable library packaging (macOS @rpath / Windows DLLs)
+node scripts/package-bundle.mjs
+
+# Run hermetic clean-environment smoke test
+# macOS:
+env -i PATH=/usr/bin:/bin ./src-tauri/target/release/bundle/macos/photos-manager.app/Contents/MacOS/photos-manager --smoke-test
+
+# Windows (PowerShell):
+# $env:PATH = "C:\Windows\System32;C:\Windows"
+# .\src-tauri\target\release\photos-manager.exe --smoke-test
 ```
-*(Windows PowerShell: `pnpm tauri build` - untested)*
 
 ---
 
@@ -75,6 +85,9 @@ pnpm tauri build
 ```bash
 # Full test suite
 cargo test --manifest-path src-tauri/Cargo.toml
+
+# Dependency policy & security check
+cargo deny check --manifest-path src-tauri/Cargo.toml
 
 # Security check: verify no shell invocations
 rg -n "Command::new\(\"(sh|bash|cmd|powershell)" src-tauri/src   # must return no matches
