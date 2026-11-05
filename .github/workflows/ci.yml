@@ -67,12 +67,17 @@ jobs:
         run: |
           # 1. Download and unpack minimal libvips web distribution
           New-Item -ItemType Directory -Path deps\vips -Force
-          curl.exe -L -o vips.zip https://github.com/libvips/build-win64-mxe/releases/download/v8.18.6/vips-dev-w64-web-8.18.6.zip
+          curl.exe -fL -o vips.zip https://github.com/libvips/build-win64-mxe/releases/download/v8.18.6/vips-dev-x64-web-8.18.6.zip
           tar.exe -xf vips.zip -C deps\vips --strip-components=1
+
+          # Ensure link libraries match rustc cargo:rustc-link-lib requests (both with and without lib prefix)
+          Copy-Item "deps\vips\lib\libvips.lib" "deps\vips\lib\vips.lib" -Force -ErrorAction SilentlyContinue
+          Copy-Item "deps\vips\lib\libglib-2.0.lib" "deps\vips\lib\glib-2.0.lib" -Force -ErrorAction SilentlyContinue
+          Copy-Item "deps\vips\lib\libgobject-2.0.lib" "deps\vips\lib\gobject-2.0.lib" -Force -ErrorAction SilentlyContinue
 
           # 2. Download and unpack ExifTool standalone distribution
           New-Item -ItemType Directory -Path deps\exiftool -Force
-          curl.exe -L -o exiftool.zip https://exiftool.org/exiftool-13.55_64.zip
+          curl.exe -fL -o exiftool.zip https://sourceforge.net/projects/exiftool/files/exiftool-13.61_64.zip/download
           tar.exe -xf exiftool.zip -C deps\exiftool --strip-components=1
           if (Test-Path "deps\exiftool\exiftool(-k).exe") {
             Move-Item "deps\exiftool\exiftool(-k).exe" "deps\exiftool\exiftool.exe" -Force
@@ -82,9 +87,11 @@ jobs:
           $vipsLib = "$PWD\deps\vips\lib"
           $vipsBin = "$PWD\deps\vips\bin"
           $exifDir = "$PWD\deps\exiftool"
+          $pkgConfigDir = "$PWD\deps\vips\lib\pkgconfig"
           echo "VIPS_LIB_DIR=$vipsLib" | Out-File -FilePath $env:GITHUB_ENV -Append
           echo "VIPS_DIR=$PWD\deps\vips" | Out-File -FilePath $env:GITHUB_ENV -Append
           echo "EXIFTOOL_DIR=$exifDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "PKG_CONFIG_PATH=$pkgConfigDir" | Out-File -FilePath $env:GITHUB_ENV -Append
           echo "$vipsBin" | Out-File -FilePath $env:GITHUB_PATH -Append
           echo "$exifDir" | Out-File -FilePath $env:GITHUB_PATH -Append
 

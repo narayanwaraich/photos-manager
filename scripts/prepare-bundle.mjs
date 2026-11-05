@@ -86,11 +86,19 @@ if (isWindows) {
       const targetLibDir = path.join(exiftoolTargetDir, "lib");
       fs.mkdirSync(targetLibDir, { recursive: true });
 
+      let dynamicBrewLib = null;
+      try {
+        const prefix = execSync("brew --prefix exiftool", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+        dynamicBrewLib = path.join(prefix, "libexec", "lib", "perl5");
+      } catch {}
+
       const libSources = [
-        "/opt/homebrew/Cellar/exiftool/13.55_1/libexec/lib/perl5",
+        dynamicBrewLib,
         "/opt/homebrew/opt/exiftool/libexec/lib/perl5",
+        "/usr/local/opt/exiftool/libexec/lib/perl5",
+        "/opt/homebrew/Cellar/exiftool/13.55_1/libexec/lib/perl5",
         "/usr/local/Cellar/exiftool",
-      ];
+      ].filter(Boolean);
 
       for (const libSrc of libSources) {
         if (fs.existsSync(path.join(libSrc, "Image"))) {

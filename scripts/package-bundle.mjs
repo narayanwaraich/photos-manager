@@ -166,7 +166,9 @@ if (isMac) {
   const targetDir = path.join(rootDir, "src-tauri", "target", "release");
   const customVipsDir = process.env.VIPS_DIR || process.env.VIPS_LIB_DIR;
   const candidates = [
+    customVipsDir ? path.join(customVipsDir, "bin") : null,
     customVipsDir ? path.join(customVipsDir, "..", "bin") : null,
+    customVipsDir,
     path.join(rootDir, "deps", "vips", "bin"),
   ].filter(Boolean);
 
@@ -180,10 +182,18 @@ if (isMac) {
           copied++;
         }
       }
-      break;
+      if (copied > 0) break;
     }
   }
   console.log(`✓ Copied ${copied} Windows libvips DLLs to release target directory.`);
+
+  // Also copy staged resources (exiftool and test fixtures) adjacent to target/release/photos-manager.exe
+  const stagedResources = path.join(rootDir, "src-tauri", "resources");
+  const targetResources = path.join(targetDir, "resources");
+  if (fs.existsSync(stagedResources)) {
+    fs.cpSync(stagedResources, targetResources, { recursive: true });
+    console.log("✓ Copied staged resources to release target directory.");
+  }
 }
 
 console.log("Post-build packaging complete.\n");
