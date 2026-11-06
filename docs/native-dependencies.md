@@ -91,9 +91,10 @@ Per TASK-0C invariants, libvips must ship with a **minimal attack surface**:
 - All dependencies resolve relative to `@executable_path/../Frameworks`, independent of `/opt/homebrew`.
 
 #### Bundling on Windows x64:
-- Built with `vips-dev-w64-web` minimal distribution (`https://github.com/libvips/build-win64-mxe/releases`).
-- `libvips-42.dll` and its dependency DLLs are placed directly in the application binary folder adjacent to `photos-manager.exe`.
+- Built with `vips-dev-w64-web` minimal distribution (`https://github.com/libvips/build-win64-mxe/releases`, version 8.18.6).
+- `libvips-42.dll` and its 43 dependency DLLs are placed directly in the application binary folder adjacent to `photos-manager.exe`.
 - The Windows PE loader loads adjacent DLLs as the highest priority without requiring `PATH` modifications.
+- **MSVC ABI & LLP64 Compatibility:** The upstream `libvips` crate 2.3.0 generated FFI bindings with `c_ulong`/`c_long` (`u32`/`i32` on Windows LLP64 data model vs `u64`/`i64` on Unix LP64), leading to 283 compiler type mismatches. Photos Manager applies a git patch (`kuma-00/libvips-rust-bindings-for-windows` at commit `80097ad9387180f678b21482b8b0cfbfb436a308`) using `c_ulonglong`/`c_longlong` across all platforms and omitting nonexistent `vips_target_finish`.
 
 ---
 
@@ -107,28 +108,47 @@ Per TASK-0C invariants, libvips must ship with a **minimal attack surface**:
   .arg("-j")
   .arg("-n")
   .arg("-charset")
-  .arg("filename=UTF8")
+  .arg("utf8")
+  .arg("-charset")
+  .arg("filename=utf8")
   .arg("-api")
   .arg("WindowsLongPath=1")
-  .arg(file_path.as_os_str())
+  .arg("-@")
+  .arg("-")
   ```
+- **Stdin Argument List (`-@ -`):** On Windows, passing Unicode filenames through command-line argument lists (`lpCommandLine`) corrupts non-ASCII characters due to MSVC CRT converting arguments to the active ANSI code page (e.g. CP1252). Piping the absolute file path via stdin with `-@ -` and `-charset utf8 -charset filename=utf8` bypasses CRT code-page conversion and command-line length limits.
 - Bounded execution with a 5-second default timeout and 512 KB stdout limit.
 
 #### Verification of Packaging Claims (TASK-0C Findings):
 1. **Windows Package Structure:**
    - In TASK-0A, it was speculated that Windows ExifTool is a single standalone executable.
-   - **Verification Finding:** The official Oliver Betz Windows standalone release (`exiftool(-k).exe`, renamed to `exiftool.exe`) requires the adjacent runtime folder `exiftool_files/` containing Strawberry Perl runtime libraries. The executable breaks if separated from this directory.
+   - **Verification Finding:** The official Oliver Betz Windows standalone release (`exiftool(-k).exe`, renamed to `exiftool.exe`, version 13.61) requires the adjacent runtime folder `exiftool_files/` containing Strawberry Perl runtime libraries. The executable breaks if separated from this directory.
    - **Bundling Solution:** Both `exiftool.exe` and `exiftool_files/` are staged into `src-tauri/resources/exiftool/`.
 2. **macOS System Perl Availability:**
    - In TASK-0A, macOS system `/usr/bin/perl` availability was noted as unverified.
    - **Verification Finding:** Verified on macOS 27.0 (Apple Silicon, Darwin 27.0.0). `/usr/bin/perl` exists and runs Perl v5.34.1.
    - **Bundling Solution:** Staged pure Perl script `exiftool` and standard modules `lib/Image/` and `lib/File/RandomAccess.pm` into `Contents/Resources/resources/exiftool/`. The script invokes system `/usr/bin/perl` without third-party package dependencies.
 3. **Windows Long Paths and Unicode:**
-   - Windows file paths exceeding 260 characters (`MAX_PATH`) and containing non-ASCII Unicode (Cyrillic, CJK, diacritics) are supported by passing `-charset filename=UTF8` and `-api WindowsLongPath=1`. Tested and proven in `test_exiftool_non_ascii_filename` and `test_exiftool_long_path`.
+   - Windows file paths exceeding 260 characters (`MAX_PATH`) and containing non-ASCII Unicode (Cyrillic, CJK, diacritics) are supported by passing `-charset filename=utf8 -api WindowsLongPath=1` and piping file paths over stdin. Tested and proven in `test_exiftool_non_ascii_filename` and `test_exiftool_long_path`.
 
 ---
 
-### 4.3 ONNX Runtime Packaging (EmbeddingGemma 2 local runtime)
+### 4.3 Verified Clean-Environment Smoke Test Matrix
+
+| Metric | macOS arm64 (`macos-latest`) | Windows x64 (`windows-latest`) | Status |
+|---|---|---|---|
+| **OS / Architecture** | macOS 15+ (Darwin arm64) | Windows Server 2022 / 11 (x86_64) | Verified |
+| **Clean Environment PATH** | `/usr/bin:/bin:/usr/sbin:/sbin` (No `/opt/homebrew`) | `C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem` (No dev tools) | Verified |
+| **libvips Version** | `8.18.7` | `8.18.6` | Verified |
+| **libvips Loaded Path** | `.../photos-manager.app/Contents/Frameworks/libvips.42.dylib` | `.../target/release/libvips-42.dll` (Adjacent to EXE) | In-Bundle |
+| **Supported Loaders** | `jpegload`, `pngload`, `webpload`, `tiffload`, `gifload`, `svgload` | `jpegload`, `pngload`, `webpload`, `tiffload`, `heifload`, `gifload`, `svgload` | Verified |
+| **Disallowed Loaders** | `magickload: false`, `svgload: true` (Gated dev) | `magickload: false`, `svgload: true` (Gated dev) | No ImageMagick |
+| **ExifTool Version** | `13.55` | `13.61` | Verified |
+| **ExifTool Loaded Path** | `.../photos-manager.app/Contents/Resources/resources/exiftool/exiftool` | `.../target/release/resources/exiftool/exiftool.exe` | In-Bundle |
+| **ExifTool Extraction** | Orientation 6, Camera Make "PhotoCorp" | Orientation 6, Camera Make "PhotoCorp" | Verified |
+| **WebP Thumbnailing** | Generated 240x320 WebP (1,364 bytes) | Generated 240x320 WebP (1,364 bytes) | Verified |
+
+### 4.4 ONNX Runtime Packaging (EmbeddingGemma 2 local runtime)
 
 Per the TASK-0B spike recommendation (`docs/embedding-spike.md`):
 - **Crate Version Pin:** `ort = "=2.0.0-rc.15"` pinned in `Cargo.toml`.

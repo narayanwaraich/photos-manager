@@ -1,0 +1,43 @@
+{
+  "status": "ok",
+  "os": "macos",
+  "arch": "aarch64",
+  "environment": {
+    "path_var": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "has_homebrew_in_path": false,
+    "is_clean_environment": true
+  },
+  "libvips": {
+    "version": "8.18.7",
+    "loaded_library_path": "/Users/runner/work/photos-manager/photos-manager/src-tauri/target/release/bundle/macos/photos-manager.app/Contents/Frameworks/libvips.42.dylib",
+    "is_in_bundle": true,
+    "supported_loaders": [
+      "jpegload",
+      "pngload",
+      "webpload",
+      "tiffload",
+      "gifload",
+      "svgload"
+    ],
+    "disallowed_loaders_absent": true,
+    "has_magickload": false,
+    "has_svgload": true
+  },
+  "exiftool": {
+    "version": "13.55",
+    "resolved_path": "/Users/runner/work/photos-manager/photos-manager/src-tauri/target/release/bundle/macos/photos-manager.app/Contents/Resources/resources/exiftool/exiftool",
+    "is_bundled": true,
+    "extraction_success": true,
+    "detected_orientation": 6,
+    "camera_make": "PhotoCorp"
+  },
+  "thumbnail": {
+    "success": true,
+    "input_path": "/Users/runner/work/photos-manager/photos-manager/src-tauri/target/release/bundle/macos/photos-manager.app/Contents/Resources/resources/fixtures/image_orientation_6.jpg",
+    "output_path": "/var/folders/h5/t85nd63d71x27_8gl5gw3l_w0000gn/T/photos_manager_smoke_thumb.webp",
+    "width": 240,
+    "height": 320,
+    "byte_size": 1364
+  },
+  "errors": []
+}
