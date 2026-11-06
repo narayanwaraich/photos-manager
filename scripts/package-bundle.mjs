@@ -160,16 +160,52 @@ if (isMac) {
     // 5. Re-sign the application bundle ad-hoc to satisfy macOS code integrity
     runCmd(`codesign --force --deep -s - "${appBundlePath}"`);
     console.log("✓ Relocatable @rpath patching and ad-hoc codesign complete for macOS bundle.");
+
+    // 6. Verify zero Homebrew or /usr/local references in main binary and all bundled dylibs
+    console.log("Verifying clean otool -L dependency graph...");
+    const checkLibs = [exePath, ...fs.readdirSync(frameworksDir).map(f => path.join(frameworksDir, f))];
+    let leaks = [];
+    for (const lib of checkLibs) {
+      const otoolOut = runCmd(`otool -L "${lib}"`);
+      if (otoolOut) {
+        for (const line of otoolOut.split("\n").slice(1)) {
+          const trimmed = line.trim().split(" ")[0];
+          if (trimmed.includes("/opt/homebrew") || trimmed.includes("/usr/local")) {
+            leaks.push(`${path.basename(lib)} -> ${trimmed}`);
+          }
+        }
+      }
+    }
+    if (leaks.length > 0) {
+      console.error("❌ Homebrew / usr/local linkage leaks found in bundled dylibs:");
+      for (const leak of leaks) {
+        console.error("  " + leak);
+      }
+      process.exit(1);
+    } else {
+      console.log(`✓ Zero Homebrew or /usr/local linkages detected across all ${checkLibs.length} binaries/libraries.`);
+    }
+
+    // 7. Produce a relocatable zip archive of photos-manager.app
+    const macosBundleDir = path.dirname(appBundlePath);
+    const zipPath = path.join(macosBundleDir, "photos-manager-macos-arm64.zip");
+    try {
+      if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+      runCmd(`ditto -c -k --keepParent "${appBundlePath}" "${zipPath}"`);
+      console.log(`✓ Created portable macOS zip package: ${zipPath}`);
+    } catch (err) {
+      console.warn("⚠️ Warning creating zip:", err.message);
+    }
   }
 } else if (isWindows) {
-  // On Windows, copy libvips DLLs next to photos-manager.exe
+  // On Windows, ensure all libvips DLLs are present in target/release adjacent to photos-manager.exe
   const targetDir = path.join(rootDir, "src-tauri", "target", "release");
   const customVipsDir = process.env.VIPS_DIR || process.env.VIPS_LIB_DIR;
   const candidates = [
+    path.join(rootDir, "deps", "vips", "bin"),
     customVipsDir ? path.join(customVipsDir, "bin") : null,
     customVipsDir ? path.join(customVipsDir, "..", "bin") : null,
     customVipsDir,
-    path.join(rootDir, "deps", "vips", "bin"),
   ].filter(Boolean);
 
   let copied = 0;

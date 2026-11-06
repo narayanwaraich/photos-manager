@@ -1,0 +1,5 @@
+# Bundle staging resources populated by scripts/prepare-bundle.mjs
+resources/*
+!resources/.gitkeep
+vips_dlls/*
+!vips_dlls/.gitkeep

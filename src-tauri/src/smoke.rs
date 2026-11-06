@@ -20,6 +20,7 @@ pub struct SmokeResult {
 pub struct EnvironmentInfo {
     pub path_var: String,
     pub has_homebrew_in_path: bool,
+    pub dev_tools_found_on_path: Vec<String>,
     pub is_clean_environment: bool,
 }
 
@@ -32,6 +33,7 @@ pub struct LibvipsInfo {
     pub disallowed_loaders_absent: bool,
     pub has_magickload: bool,
     pub has_svgload: bool,
+    pub blocked_untrusted_svg_load_verified: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -39,6 +41,7 @@ pub struct ExifToolInfo {
     pub version: Option<String>,
     pub resolved_path: Option<String>,
     pub is_bundled: bool,
+    pub perl_path: Option<String>,
     pub extraction_success: bool,
     pub detected_orientation: Option<u32>,
     pub camera_make: Option<String>,
@@ -107,10 +110,10 @@ fn get_loaded_libvips_path() -> Option<String> {
     None
 }
 
-fn find_fixture_image() -> Option<PathBuf> {
+fn find_fixture(filename: &str) -> Option<PathBuf> {
     // 1. Check override
     if let Ok(override_dir) = std::env::var("PHOTOS_FIXTURES_DIR") {
-        let p = PathBuf::from(override_dir).join("image_orientation_6.jpg");
+        let p = PathBuf::from(override_dir).join(filename);
         if p.is_file() {
             return Some(p);
         }
@@ -122,8 +125,8 @@ fn find_fixture_image() -> Option<PathBuf> {
             // macOS bundle
             if let Some(contents) = parent.parent() {
                 for rel in [
-                    "Resources/resources/fixtures/image_orientation_6.jpg",
-                    "Resources/fixtures/image_orientation_6.jpg",
+                    format!("Resources/resources/fixtures/{}", filename),
+                    format!("Resources/fixtures/{}", filename),
                 ] {
                     let cand = contents.join(rel);
                     if cand.is_file() {
@@ -133,8 +136,8 @@ fn find_fixture_image() -> Option<PathBuf> {
             }
             // Windows flat layout
             for rel in [
-                "resources/fixtures/image_orientation_6.jpg",
-                "fixtures/image_orientation_6.jpg",
+                format!("resources/fixtures/{}", filename),
+                format!("fixtures/{}", filename),
             ] {
                 let cand = parent.join(rel);
                 if cand.is_file() {
@@ -145,11 +148,9 @@ fn find_fixture_image() -> Option<PathBuf> {
     }
 
     // 3. Fallback to repo test fixtures
-    let repo_fixture = PathBuf::from("tests/fixtures/generated/image_orientation_6.jpg");
+    let repo_fixture = PathBuf::from(format!("tests/fixtures/generated/{}", filename));
     if repo_fixture.is_file() {
-        return Some(std::fs::canonicalize(repo_fixture).unwrap_or(PathBuf::from(
-            "tests/fixtures/generated/image_orientation_6.jpg",
-        )));
+        return Some(std::fs::canonicalize(&repo_fixture).unwrap_or(repo_fixture));
     }
 
     None
@@ -164,16 +165,41 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
     let path_var = std::env::var("PATH").unwrap_or_default();
     let has_homebrew_in_path =
         path_var.contains("/opt/homebrew") || path_var.contains("/usr/local");
-    // Clean environment means no package manager or user developer paths
+
+    let mut dev_tools_found_on_path = Vec::new();
+    if os == "windows" {
+        // Windows clean-environment check: verify dev tools (vips, perl, exiftool) are NOT found in PATH
+        for dir in std::env::split_paths(&path_var) {
+            for tool in ["vips.exe", "libvips-42.dll", "perl.exe", "exiftool.exe"] {
+                if dir.join(tool).is_file() {
+                    dev_tools_found_on_path.push(format!("{}/{}", dir.display(), tool));
+                }
+            }
+        }
+    }
+
     let is_clean_environment = if os == "macos" {
         !has_homebrew_in_path
     } else {
-        !path_var.to_lowercase().contains("perl") && !path_var.to_lowercase().contains("vips")
+        dev_tools_found_on_path.is_empty()
     };
+
+    if !is_clean_environment {
+        if os == "macos" && has_homebrew_in_path {
+            errors.push("Homebrew detected on PATH in clean environment test".to_string());
+        }
+        if os == "windows" && !dev_tools_found_on_path.is_empty() {
+            errors.push(format!(
+                "Developer tools detected on Windows PATH: {:?}",
+                dev_tools_found_on_path
+            ));
+        }
+    }
 
     let env_info = EnvironmentInfo {
         path_var: path_var.clone(),
         has_homebrew_in_path,
+        dev_tools_found_on_path,
         is_clean_environment,
     };
 
@@ -198,13 +224,29 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
     let supported_loaders = processor.query_supported_loaders();
     let has_magickload = processor.is_loader_supported("magickload");
     let has_svgload = processor.is_loader_supported("svgload");
-    let allow_svg = std::env::var("PHOTOS_DEV_ALLOW_SVGLOAD").is_ok();
-    let disallowed_loaders_absent = !has_magickload && (!has_svgload || allow_svg);
 
+    // Probe SVG loading: must fail because svgload and untrusted loaders are blocked at startup
+    let svg_fixture = find_fixture("fixture_blocked.svg").unwrap_or_else(|| {
+        let temp_svg = std::env::temp_dir().join("photos_manager_probe_blocked.svg");
+        let _ = std::fs::write(&temp_svg, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\"><rect width=\"100\" height=\"100\" fill=\"red\"/></svg>\n");
+        temp_svg
+    });
+
+    let temp_svg_out = std::env::temp_dir().join("photos_manager_smoke_svg_out.webp");
+    let svg_load_attempt = processor.generate_thumbnail(&svg_fixture, &temp_svg_out, 100);
+    let blocked_untrusted_svg_load_verified = svg_load_attempt.is_err();
+    let _ = std::fs::remove_file(&temp_svg_out);
+
+    if !blocked_untrusted_svg_load_verified {
+        errors.push("CRITICAL SECURITY ERROR: svgload was able to execute on an SVG file; untrusted loaders must be blocked".to_string());
+    }
+
+    let disallowed_loaders_absent =
+        !has_magickload && !has_svgload && blocked_untrusted_svg_load_verified;
     if !disallowed_loaders_absent {
         errors.push(format!(
-            "Disallowed loaders detected: magickload={}, svgload={}",
-            has_magickload, has_svgload
+            "Disallowed loaders detected: magickload={}, svgload={}, blocked_svg_verified={}",
+            has_magickload, has_svgload, blocked_untrusted_svg_load_verified
         ));
     }
 
@@ -216,10 +258,11 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
         disallowed_loaders_absent,
         has_magickload,
         has_svgload,
+        blocked_untrusted_svg_load_verified,
     };
 
     // 3. Test Thumbnail Generation from Fixture
-    let fixture_opt = find_fixture_image();
+    let fixture_opt = find_fixture("image_orientation_6.jpg");
     let mut thumb_info = ThumbnailInfo {
         success: false,
         input_path: String::new(),
@@ -273,9 +316,31 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
     let resolved_exiftool = which_exiftool();
     let is_bundled = bundled_exiftool.is_some();
     let mut exiftool_ver = None;
+    let mut perl_path = None;
     let mut extraction_success = false;
     let mut detected_orientation = None;
     let mut camera_make = None;
+
+    if os == "macos" {
+        if Path::new("/usr/bin/perl").exists() {
+            perl_path = Some("/usr/bin/perl".to_string());
+        }
+    } else if os == "windows" {
+        if let Some(ref exe) = resolved_exiftool {
+            if let Some(parent) = exe.parent() {
+                let bundled_perl = parent
+                    .join("exiftool_files")
+                    .join("perl")
+                    .join("bin")
+                    .join("perl.exe");
+                if bundled_perl.exists() {
+                    perl_path = Some(bundled_perl.to_string_lossy().to_string());
+                } else {
+                    perl_path = Some("embedded Strawberry Perl (exiftool_files)".to_string());
+                }
+            }
+        }
+    }
 
     if let Some(ref exe) = resolved_exiftool {
         // Query ExifTool version
@@ -317,6 +382,7 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
         version: exiftool_ver,
         resolved_path: resolved_exiftool.map(|p| p.to_string_lossy().to_string()),
         is_bundled,
+        perl_path,
         extraction_success,
         detected_orientation,
         camera_make,
