@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -111,25 +111,38 @@ impl ExifToolAdapter {
         let timeout = timeout_duration.unwrap_or(DEFAULT_TIMEOUT);
 
         // Invoked directly without any shell wrapper (no sh, bash, cmd, powershell).
-        // Argument array strictly defined. Stderr sent to Stdio::null(). Child killed on drop.
+        // Argument array strictly defined. We use `-@ -` to pass the target file path over stdin,
+        // which completely bypasses Windows C-runtime command-line ANSI code page corruption for non-ASCII paths.
         let mut child = Command::new(&self.executable_path)
             .arg("-j")
             .arg("-n")
             .arg("-charset")
-            .arg("filename=UTF8")
+            .arg("utf8")
+            .arg("-charset")
+            .arg("filename=utf8")
             .arg("-api")
             .arg("WindowsLongPath=1")
-            .arg(file_path.as_os_str())
+            .arg("-@")
+            .arg("-")
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .map_err(MetadataError::Io)?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            let mut path_bytes = file_path.to_string_lossy().into_owned().into_bytes();
+            path_bytes.push(b'\n');
+            let _ = stdin.write_all(&path_bytes).await;
+            drop(stdin);
+        }
 
         let mut stdout = child
             .stdout
             .take()
             .ok_or_else(|| MetadataError::ExecutionFailed("Failed to capture stdout".into()))?;
+        let stderr = child.stderr.take();
 
         // Read stdout with size cap
         let read_future = async {
@@ -153,9 +166,20 @@ impl ExifToolAdapter {
             Ok(Ok(bytes)) => {
                 let status = child.wait().await?;
                 if !status.success() && bytes.is_empty() {
+                    let mut err_msg = String::new();
+                    if let Some(mut err_stream) = stderr {
+                        let mut buf = Vec::new();
+                        let _ = err_stream.read_to_end(&mut buf).await;
+                        err_msg = String::from_utf8_lossy(&buf).trim().to_string();
+                    }
                     return Err(MetadataError::ExecutionFailed(format!(
-                        "ExifTool exited with status: {}",
-                        status
+                        "ExifTool exited with status: {}{}",
+                        status,
+                        if err_msg.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {}", err_msg)
+                        }
                     )));
                 }
                 bytes

@@ -24,6 +24,9 @@ allow = [
     "CC0-1.0",
 ]
 
+[licenses.private]
+ignore = true
+
 [bans]
 multiple-versions = "warn"
 wildcards = "allow"

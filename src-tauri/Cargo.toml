@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Photos Manager"
 authors = ["Photos Manager Authors"]
 edition = "2021"
+publish = false
+license = "MIT"
 
 [lib]
 name = "photos_manager_lib"
