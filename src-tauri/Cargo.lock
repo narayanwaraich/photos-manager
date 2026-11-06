@@ -1933,7 +1933,7 @@ dependencies = [
 [[package]]
 name = "libvips"
 version = "1.7.2"
-source = "git+https://github.com/kuma-00/libvips-rust-bindings-for-windows.git?rev=4128ec877ab3fc28ece566f266bc23fb8104b1df#4128ec877ab3fc28ece566f266bc23fb8104b1df"
+source = "git+https://github.com/kuma-00/libvips-rust-bindings-for-windows.git?rev=80097ad9387180f678b21482b8b0cfbfb436a308#80097ad9387180f678b21482b8b0cfbfb436a308"
 dependencies = [
  "num-derive",
  "num-traits",

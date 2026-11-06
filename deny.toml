@@ -7,13 +7,11 @@ all-features = false
 no-default-features = false
 
 [advisories]
-vulnerability = "deny"
 unmaintained = "workspace"
 unsound = "workspace"
 yanked = "warn"
 
 [licenses]
-default = "deny"
 confidence-threshold = 0.8
 allow = [
     "MIT",

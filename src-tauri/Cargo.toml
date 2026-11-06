@@ -33,4 +33,4 @@ opt-level = 3
 strip = true
 
 [patch.crates-io]
-libvips = { git = "https://github.com/kuma-00/libvips-rust-bindings-for-windows.git", rev = "4128ec877ab3fc28ece566f266bc23fb8104b1df" }
+libvips = { git = "https://github.com/kuma-00/libvips-rust-bindings-for-windows.git", rev = "80097ad9387180f678b21482b8b0cfbfb436a308" }
