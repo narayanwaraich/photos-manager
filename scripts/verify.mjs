@@ -28,14 +28,17 @@ function runStep(name, command, args, cwd = rootDir) {
   log(`CWD: ${cwd}`);
   log(`======================================================\n`);
 
-  // Ensure cargo path is included in PATH and git global config avoids permission issues
+  // Ensure cargo path and native dependencies are included in PATH and git global config avoids permission issues
   const isWindows = process.platform === "win32";
   const homeDir = process.env.HOME || process.env.USERPROFILE || "";
   const cargoBin = isWindows
     ? path.join(homeDir, ".cargo", "bin")
     : `${homeDir}/.cargo/bin`;
+  const vipsBin = isWindows
+    ? (process.env.VIPS_DIR ? path.join(process.env.VIPS_DIR, "bin") : path.join(rootDir, "deps", "vips", "bin"))
+    : null;
   const extraPaths = isWindows
-    ? [cargoBin]
+    ? [cargoBin, vipsBin].filter(Boolean)
     : [cargoBin, "/opt/homebrew/bin", "/usr/local/bin"];
 
   const env = {

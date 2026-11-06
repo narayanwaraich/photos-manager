@@ -100,12 +100,12 @@ jobs:
           $vipsBin = "$PWD\deps\vips\bin"
           $exifDir = "$PWD\deps\exiftool"
           $pkgConfigDir = "$PWD\deps\vips\lib\pkgconfig"
-          echo "VIPS_LIB_DIR=$vipsLib" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "VIPS_DIR=$PWD\deps\vips" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "EXIFTOOL_DIR=$exifDir" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "PKG_CONFIG_PATH=$pkgConfigDir" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "$vipsBin" | Out-File -FilePath $env:GITHUB_PATH -Append
-          echo "$exifDir" | Out-File -FilePath $env:GITHUB_PATH -Append
+          Add-Content -Path $env:GITHUB_ENV -Value "VIPS_LIB_DIR=$vipsLib" -Encoding utf8
+          Add-Content -Path $env:GITHUB_ENV -Value "VIPS_DIR=$PWD\deps\vips" -Encoding utf8
+          Add-Content -Path $env:GITHUB_ENV -Value "EXIFTOOL_DIR=$exifDir" -Encoding utf8
+          Add-Content -Path $env:GITHUB_ENV -Value "PKG_CONFIG_PATH=$pkgConfigDir" -Encoding utf8
+          Add-Content -Path $env:GITHUB_PATH -Value "$vipsBin" -Encoding utf8
+          Add-Content -Path $env:GITHUB_PATH -Value "$exifDir" -Encoding utf8
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
