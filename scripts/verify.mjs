@@ -52,6 +52,7 @@ function runStep(name, command, args, cwd = rootDir) {
     env,
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "pipe"],
+    shell: isWindows,
   });
 
   if (result.stdout) {
@@ -62,11 +63,15 @@ function runStep(name, command, args, cwd = rootDir) {
     process.stderr.write(result.stderr);
     logStream.write(result.stderr);
   }
+  if (result.error) {
+    process.stderr.write(`Spawn error: ${result.error.message}\n`);
+    logStream.write(`Spawn error: ${result.error.message}\n`);
+  }
 
   if (result.status !== 0) {
     log(`\n❌ FAILED: ${name} (exit code ${result.status})`);
     logStream.end();
-    process.exit(result.status || 1);
+    process.exit(result.status ?? 1);
   }
 
   log(`\n✓ PASSED: ${name}`);
