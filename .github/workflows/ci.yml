@@ -157,6 +157,7 @@ jobs:
           # Execute in stripped clean environment (only system32/windows on PATH, no vips/perl/exiftool)
           $origPath = $env:PATH
           $env:PATH = "C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem"
+          $env:PHOTOS_DEV_ALLOW_SVGLOAD = "1"
           $proc = Start-Process -FilePath "$PWD\$exePath" -ArgumentList @("--smoke-test", "--out", "smoke-windows-x64.json") -NoNewWindow -Wait -PassThru
           $exitCode = $proc.ExitCode
           $env:PATH = $origPath
