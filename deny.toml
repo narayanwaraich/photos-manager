@@ -8,8 +8,8 @@ no-default-features = false
 
 [advisories]
 vulnerability = "deny"
-unmaintained = "warn"
-unsound = "warn"
+unmaintained = "workspace"
+unsound = "workspace"
 yanked = "warn"
 
 [licenses]

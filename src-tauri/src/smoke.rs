@@ -88,7 +88,7 @@ fn get_loaded_libvips_path() -> Option<String> {
         ) -> u32;
     }
     unsafe {
-        for name in [b"libvips-42.dll\0".as_ptr(), b"vips-42.dll\0".as_ptr()] {
+        for name in [c"libvips-42.dll".as_ptr(), c"vips-42.dll".as_ptr()] {
             let handle = GetModuleHandleA(name as *const _);
             if !handle.is_null() {
                 let mut buffer = [0u16; 1024];
