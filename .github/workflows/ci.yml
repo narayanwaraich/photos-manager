@@ -102,8 +102,8 @@ jobs:
           New-Item -ItemType Directory -Path deps\exiftool -Force
           curl.exe -fL -o exiftool.zip https://downloads.sourceforge.net/project/exiftool/exiftool-13.61_64.zip
           $exifHash = (Get-FileHash exiftool.zip -Algorithm SHA256).Hash
-          if ($exifHash -ne "AB75B37515385A753AA60A58F68FFFE1FF81E43B319DF9540978FB19E0580E5") {
-            throw "Checksum mismatch for exiftool.zip: expected AB75B37515385A753AA60A58F68FFFE1FF81E43B319DF9540978FB19E0580E5, got $exifHash"
+          if ($exifHash -ne "AB75B37515385A753AA60A58F68FFFFE1FF81E43B319DF9540978FB19E0580E5") {
+            throw "Checksum mismatch for exiftool.zip: expected AB75B37515385A753AA60A58F68FFFFE1FF81E43B319DF9540978FB19E0580E5, got $exifHash"
           }
           tar.exe -xf exiftool.zip -C deps\exiftool --strip-components=1
           if (Test-Path "deps\exiftool\exiftool(-k).exe") {

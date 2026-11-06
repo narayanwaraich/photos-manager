@@ -140,20 +140,36 @@ if (isMac) {
     // 4. Update rpath and install names using install_name_tool
     runCmd(`install_name_tool -add_rpath "@executable_path/../Frameworks" "${exePath}"`);
 
-    // Patch executable dependencies
-    for (const [name, origPath] of dylibMap.entries()) {
-      runCmd(`install_name_tool -change "${origPath}" "@rpath/${name}" "${exePath}"`);
+    function fixLinkages(filePath, isLib, libFilename) {
+      if (isLib) {
+        runCmd(`install_name_tool -id "@rpath/${libFilename}" "${filePath}"`);
+      }
+      const out = runCmd(`otool -L "${filePath}"`) || "";
+      const lines = out.split("\n").slice(1);
+      for (const line of lines) {
+        const match = line.trim().match(/^([@\/][^\s]+)\s+\(compatibility/);
+        if (match) {
+          const dep = match[1];
+          if (
+            dep.includes("/opt/homebrew") ||
+            dep.includes("/usr/local") ||
+            dep.includes("Cellar")
+          ) {
+            const base = path.basename(dep);
+            runCmd(`install_name_tool -change "${dep}" "@rpath/${base}" "${filePath}"`);
+          }
+        }
+      }
     }
 
-    // Patch each bundled library ID and references
+    // Fix main binary
+    fixLinkages(exePath, false);
+
+    // Fix all bundled dylibs
     for (const filename of fs.readdirSync(frameworksDir)) {
       if (filename.endsWith(".dylib") || filename.includes(".dylib.")) {
         const libTarget = path.join(frameworksDir, filename);
-        runCmd(`install_name_tool -id "@rpath/${filename}" "${libTarget}"`);
-
-        for (const [name, origPath] of dylibMap.entries()) {
-          runCmd(`install_name_tool -change "${origPath}" "@rpath/${name}" "${libTarget}"`);
-        }
+        fixLinkages(libTarget, true, filename);
       }
     }
 
