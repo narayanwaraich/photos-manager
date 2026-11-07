@@ -28,7 +28,7 @@ A local-first, privacy-respecting cross-platform desktop photo manager built wit
 - **pnpm**: v12+ (`npm install -g pnpm`)
 - **Rust Toolchain**: `rustup-init.exe` targeting `x86_64-pc-windows-msvc`
 - **Build Tools**: Microsoft C++ Build Tools (Visual Studio 2022) with "Desktop development with C++"
-- **libvips (Dev Only)**: Windows web binary release (`vips-dev-w64-web`) unpacked and added to `PATH`
+- **libvips (Dev Only)**: Windows web binary release (`vips-dev-x64-web`) unpacked and added to `PATH`
 - **ExifTool (Dev Only)**: Standalone Windows executable `exiftool.exe` via `winget install OliverBetz.ExifTool`
 *(See `docs/windows-validation.md` for the complete Windows manual validation checklist).*
 

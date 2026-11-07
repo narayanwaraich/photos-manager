@@ -1,6 +1,7 @@
 # Windows Validation Guide & Manual Checklist
 
 **Target Platform:** Windows 10/11 x64 (MSVC ABI `x86_64-pc-windows-msvc`)  
+**Reference Low-End Machine:** Acer Swift SF314-43, Ryzen 7 5700U, 8 GB RAM, Radeon graphics, Windows 11  
 **Applicability:** Phase 0 feasibility gate and platform-sensitive release milestones (Phases 1, 2, 5, 7 per spec §17.2).
 
 > [!IMPORTANT]
@@ -16,22 +17,38 @@ Run the following in PowerShell (Administrator where noted):
 1. **Install Node.js & pnpm:**
    ```powershell
    winget install OpenJS.NodeJS.LTS
-   npm install -g pnpm
+   npm install -g pnpm@12.8.1
    ```
 2. **Install Rust Toolchain (MSVC):**
    ```powershell
    winget install Rustlang.Rustup
-   rustup default stable-x86_64-pc-windows-msvc
    rustup component add clippy rustfmt
    ```
+   *(Note: Do not run `rustup default stable`; `rust-toolchain.toml` in the repository root automatically selects the pinned `1.99.1` toolchain).*
+
 3. **Install Visual Studio 2022 C++ Build Tools:**
-   Ensure "Desktop development with C++" workload is selected.
+   Ensure the "Desktop development with C++" workload is selected.
+
 4. **Install Development libvips & ExifTool (Dev Only):**
+   Download `vips-dev-x64-web-8.18.6.zip` from `https://github.com/libvips/build-win64-mxe/releases` and unpack to `C:\vips`.
+   Download `exiftool-13.61_64.zip` from `https://exiftool.org/` and unpack to `C:\tools\exiftool` (ensure `exiftool.exe` and `exiftool_files\` are directly in `C:\tools\exiftool`).
+
+   Configure developer environment variables:
    ```powershell
-   # Development libvips web distribution
-   # Unpack to C:\libvips and add C:\libvips\bin to system PATH
-   # Development ExifTool standalone distribution
-   winget install OliverBetz.ExifTool
+   [System.Environment]::SetEnvironmentVariable("VIPS_DIR", "C:\vips", "User")
+   [System.Environment]::SetEnvironmentVariable("VIPS_LIB_DIR", "C:\vips\lib", "User")
+   [System.Environment]::SetEnvironmentVariable("EXIFTOOL_DIR", "C:\tools\exiftool", "User")
+   [System.Environment]::SetEnvironmentVariable("PKG_CONFIG_PATH", "C:\vips\lib\pkgconfig", "User")
+   [System.Environment]::SetEnvironmentVariable("LIB", "C:\vips\lib;$env:LIB", "User")
+   $env:Path += ";C:\vips\bin;C:\tools\exiftool"
+   [System.Environment]::SetEnvironmentVariable("Path", $env:Path, "User")
+   ```
+   *(Note: `src-tauri/build.rs` automatically adds `cargo:rustc-link-search=native` for `VIPS_LIB_DIR`, `VIPS_DIR\lib`, and `C:\vips\lib` if present).*
+
+5. **Memory Constraint Limit for 8 GB Laptops:**
+   On machines with 8 GB RAM, running `cargo clippy` and `cargo test` with unbounded parallelism can cause memory exhaustion. Limit build concurrency in PowerShell:
+   ```powershell
+   $env:CARGO_BUILD_JOBS = "2"
    ```
 
 ---
@@ -67,31 +84,69 @@ pnpm tauri dev
 
 To ensure native dependencies are truly self-contained in the built package, validate the packaged release build on a clean machine or fresh user profile without developer tools.
 
-### Step 3.1: Download CI Artifact
+### Step 3.1: Download & Unpack CI Artifact
 1. Navigate to the GitHub repository **Actions** tab.
-2. Select the latest run on branch `task/0C` (or release tag).
+2. Select the latest successful run on branch `task/0C`.
 3. Download the `photos-manager-windows-x64` artifact.
-4. Extract the zip to a clean local directory: e.g. `C:\TestApp\`.
+4. Extract the zip to a clean local directory: e.g. `C:\DownloadArtifact\`.
+5. Unblock downloaded files in PowerShell:
+   ```powershell
+   Get-ChildItem -Path "C:\DownloadArtifact" -Recurse | Unblock-File
+   ```
 
-### Step 3.2: Run Hermetic Smoke Test under Stripped PATH
-Open standard PowerShell (as regular user) and run:
+### Step 3.2: Check Host System Prerequisites
+Before testing, record whether Visual C++ runtime and LongPaths are present:
+```powershell
+# 1. Check if LongPathsEnabled is set in Windows Registry
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled
+
+# 2. Check if VC++ runtime DLL exists in System32
+Test-Path "C:\Windows\System32\vcruntime140.dll"
+```
+*(Note: A pass on a machine that already has Visual Studio or the VC++ redistributable installed does not prove the app runs without them. For production release testing in Phase 7, test on a virgin VM or ensure the installer bundles the redistributable).*
+
+### Step 3.3: Install Package Silently
+The NSIS installer produced by Tauri must be installed into a fresh target folder:
+```powershell
+$installer = (Get-ChildItem -Path "C:\DownloadArtifact\bundle\nsis\*.exe").FullName | Select-Object -First 1
+
+# Note: SmartScreen may warn about the unsigned installer. Select "More info" -> "Run anyway" if running interactively.
+# NSIS silent installation requires /D= to be the last argument and unquoted:
+Start-Process -FilePath $installer -ArgumentList "/S /D=C:\pm-test" -Wait
+
+# Verify installation directory
+Get-ChildItem -Path "C:\pm-test"
+```
+
+### Step 3.4: Run Hermetic Smoke Test under Stripped PATH
+The release executable is a Windows GUI-subsystem binary (`subsystem = "windows"`), so PowerShell will not wait for it or display console stdout unless invoked with `Start-Process -Wait -PassThru`:
 
 ```powershell
-# Strip PATH of any dev tools (simulate a virgin machine without Git, Rust, Perl, Python, vips)
+# 1. Strip PATH of developer tools (simulate a clean machine)
+$origPath = $env:PATH
 $env:PATH = "C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem"
 
-# Execute packaged smoke test binary
-Set-Location "C:\TestApp"
-.\photos-manager.exe --smoke-test --out smoke-windows-local.json
+# 2. Execute packaged smoke test binary with output file
+$proc = Start-Process -FilePath "C:\pm-test\photos-manager.exe" -ArgumentList @("--smoke-test", "--out", "C:\pm-test\smoke-laptop.json") -Wait -NoNewWindow -PassThru
+$env:PATH = $origPath
+
+# 3. Print exit code and JSON result
+echo "Smoke test ExitCode: $($proc.ExitCode)"
+Get-Content "C:\pm-test\smoke-laptop.json"
 ```
 
 *Verification Points:*
 - [ ] Process exits with code `0`.
-- [ ] Console outputs clean JSON report.
-- [ ] `libvips.loaded_library_path` indicates `libvips-42.dll` was loaded from `C:\TestApp\`, **not** from a global dev path.
-- [ ] `exiftool.is_bundled` is `true`, resolving to `C:\TestApp\resources\exiftool\exiftool.exe`.
-- [ ] `libvips.disallowed_loaders_absent` is `true` (`magickload: false`, `svgload: false`).
+- [ ] `libvips.loaded_library_path` indicates `libvips-42.dll` was loaded from `C:\pm-test\libvips-42.dll`, **not** from a global path.
+- [ ] `exiftool.is_bundled` is `true`, resolving to `C:\pm-test\resources\exiftool\exiftool.exe`.
+- [ ] `libvips.disallowed_loaders_absent` is `true` (`magickload: false`, `svgload: false`, `blocked_untrusted_svg_load_verified: true`).
 - [ ] Thumbnail generation creates `photos_manager_smoke_thumb.webp` (240x320) with non-zero size.
+
+### Step 3.5: Clean Up / Uninstall
+```powershell
+Start-Process -FilePath "C:\pm-test\uninstall.exe" -ArgumentList "/S" -Wait
+Remove-Item -Recurse -Force "C:\pm-test" -ErrorAction SilentlyContinue
+```
 
 ---
 

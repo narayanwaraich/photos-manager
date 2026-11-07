@@ -7,7 +7,7 @@ all-features = false
 no-default-features = false
 
 [advisories]
-unmaintained = "workspace"
+unmaintained = "all"
 unsound = "workspace"
 yanked = "warn"
 

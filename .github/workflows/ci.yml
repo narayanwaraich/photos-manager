@@ -30,9 +30,11 @@ jobs:
           - os: macos-latest
             os-name: macos-arm64
             target: aarch64-apple-darwin
+            bundle-arg: "--bundles app"
           - os: windows-latest
             os-name: windows-x64
             target: x86_64-pc-windows-msvc
+            bundle-arg: "--bundles nsis"
 
     steps:
       - name: Checkout code
@@ -137,7 +139,7 @@ jobs:
       - name: Build Tauri application (unsigned)
         env:
           PHOTOS_DEV_HOMEBREW: "1"
-        run: pnpm tauri build
+        run: pnpm tauri build ${{ matrix.bundle-arg }}
 
       - name: Post-build bundle packaging & library relocation
         run: node scripts/package-bundle.mjs
@@ -145,18 +147,22 @@ jobs:
       - name: Clean-environment smoke test (macOS arm64)
         if: runner.os == 'macOS'
         run: |
-          # 1. Locate built .app bundle and copy to a clean testing folder outside target/
-          APP_PATH=$(find src-tauri/target/release/bundle/macos -name "*.app" -maxdepth 1 | head -n 1)
-          if [ -z "$APP_PATH" ]; then
-            echo "❌ No .app bundle found"
+          # 1. Unzip portable zip package to fresh testing folder outside target/
+          ZIP_PATH="src-tauri/target/release/bundle/macos/photos-manager-macos-arm64.zip"
+          if [ ! -f "$ZIP_PATH" ]; then
+            echo "❌ Portable zip package not found at $ZIP_PATH"
             exit 1
           fi
-          echo "Source bundle found at: $APP_PATH"
+          echo "Testing zip package: $ZIP_PATH"
 
           mkdir -p /tmp/smoke-extracted
-          rm -rf /tmp/smoke-extracted/photos-manager.app
-          cp -R "$APP_PATH" /tmp/smoke-extracted/
-          TEST_APP="/tmp/smoke-extracted/$(basename "$APP_PATH")"
+          rm -rf /tmp/smoke-extracted/*
+          unzip -q "$ZIP_PATH" -d /tmp/smoke-extracted/
+          TEST_APP=$(find /tmp/smoke-extracted -name "*.app" -maxdepth 1 | head -n 1)
+          if [ -z "$TEST_APP" ]; then
+            echo "❌ No .app bundle found in extracted archive"
+            exit 1
+          fi
           EXE_PATH="$TEST_APP/Contents/MacOS/photos-manager"
           chmod +x "$EXE_PATH"
           echo "Testing extracted bundle at: $TEST_APP"
@@ -196,6 +202,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # 0. Record host system prerequisites
+          echo "=== Windows Host System Prerequisites ==="
+          reg query "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled
+          $vcExists = Test-Path "C:\Windows\System32\vcruntime140.dll"
+          echo "C:\Windows\System32\vcruntime140.dll exists: $vcExists"
+
           # 1. Locate NSIS installer artifact produced by tauri build
           $installer = (Get-ChildItem -Path "src-tauri\target\release\bundle\nsis\*.exe").FullName | Select-Object -First 1
           if (-not $installer) {
@@ -224,7 +236,17 @@ jobs:
           }
           Get-ChildItem -Path $installDir
 
-          # 3. Execute in stripped clean environment (only system32/windows on PATH, no vips/perl/exiftool, no bypass)
+          # 3. Print DLL imports of installed photos-manager.exe using dumpbin
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem -Path "$vsPath\VC\Tools\MSVC" -Filter "dumpbin.exe" -Recurse | Where-Object { $_.FullName -match "bin\\Hostx64\\x64\\dumpbin\.exe" } | Select-Object -First 1 -ExpandProperty FullName
+          if ($dumpbin) {
+            echo "=== DLL Dependencies of installed photos-manager.exe (dumpbin /dependents) ==="
+            & $dumpbin /dependents "$installDir\photos-manager.exe"
+          } else {
+            echo "dumpbin.exe not found via vswhere"
+          }
+
+          # 4. Execute in stripped clean environment (only system32/windows on PATH, no vips/perl/exiftool, no bypass)
           $origPath = $env:PATH
           $env:PATH = "C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem"
           $proc = Start-Process -FilePath "$installDir\photos-manager.exe" -ArgumentList @("--smoke-test", "--out", "smoke-windows-x64.json") -NoNewWindow -Wait -PassThru
@@ -249,10 +271,18 @@ jobs:
           name: verify-logs-${{ matrix.os-name }}
           path: reports/logs/
 
-      - name: Upload built packages
+      - name: Upload macOS application bundle (zip)
+        if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: photos-manager-${{ matrix.os-name }}
-          path: |
-            src-tauri/target/release/bundle/
-            src-tauri/target/release/*.exe
+          name: photos-manager-macos-arm64
+          path: src-tauri/target/release/bundle/macos/photos-manager-macos-arm64.zip
+          if-no-files-found: error
+
+      - name: Upload Windows installer package (.exe)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: photos-manager-windows-x64
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error

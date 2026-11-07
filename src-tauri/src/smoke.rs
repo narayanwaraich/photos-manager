@@ -225,20 +225,38 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
     let has_magickload = processor.is_loader_supported("magickload");
     let has_svgload = processor.is_loader_supported("svgload");
 
-    // Probe SVG loading: must fail because svgload and untrusted loaders are blocked at startup
-    let svg_fixture = find_fixture("fixture_blocked.svg").unwrap_or_else(|| {
-        let temp_svg = std::env::temp_dir().join("photos_manager_probe_blocked.svg");
-        let _ = std::fs::write(&temp_svg, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\"><rect width=\"100\" height=\"100\" fill=\"red\"/></svg>\n");
-        temp_svg
-    });
-
-    let temp_svg_out = std::env::temp_dir().join("photos_manager_smoke_svg_out.webp");
-    let svg_load_attempt = processor.generate_thumbnail(&svg_fixture, &temp_svg_out, 100);
-    let blocked_untrusted_svg_load_verified = svg_load_attempt.is_err();
-    let _ = std::fs::remove_file(&temp_svg_out);
+    // Probe SVG loading: must fail because svgload and untrusted loaders are blocked at startup.
+    // The fixture must exist in the bundle resources; no temporary fallback is permitted.
+    let svg_fixture_opt = find_fixture("fixture_blocked.svg");
+    let (blocked_untrusted_svg_load_verified, svg_err_detail) = match svg_fixture_opt {
+        Some(ref svg_fixture) if svg_fixture.exists() => {
+            let temp_svg_out = std::env::temp_dir().join("photos_manager_smoke_svg_out.webp");
+            let svg_load_attempt = processor.generate_thumbnail(svg_fixture, &temp_svg_out, 100);
+            let _ = std::fs::remove_file(&temp_svg_out);
+            match svg_load_attempt {
+                Err(ref e) => {
+                    let msg = e.to_string();
+                    let matches_block =
+                        msg.contains("not a known file format") || msg.contains("blocked");
+                    (matches_block, Some(msg))
+                }
+                Ok(_) => (
+                    false,
+                    Some("Unexpectedly succeeded in loading SVG".to_string()),
+                ),
+            }
+        }
+        _ => {
+            errors.push("CRITICAL ERROR: fixture_blocked.svg was not found in application bundle or resources".to_string());
+            (false, None)
+        }
+    };
 
     if !blocked_untrusted_svg_load_verified {
-        errors.push("CRITICAL SECURITY ERROR: svgload was able to execute on an SVG file; untrusted loaders must be blocked".to_string());
+        errors.push(format!(
+            "CRITICAL SECURITY ERROR: svgload was not blocked as expected. Detail: {:?}",
+            svg_err_detail
+        ));
     }
 
     let disallowed_loaders_absent =
@@ -322,7 +340,17 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
     let mut camera_make = None;
 
     if os == "macos" {
-        if Path::new("/usr/bin/perl").exists() {
+        // Measure the perl interpreter from the shebang line of the resolved exiftool script
+        if let Some(ref script_path) = resolved_exiftool {
+            if let Ok(content) = std::fs::read_to_string(script_path) {
+                if let Some(first_line) = content.lines().next() {
+                    if let Some(shebang) = first_line.strip_prefix("#!") {
+                        perl_path = Some(shebang.trim().to_string());
+                    }
+                }
+            }
+        }
+        if perl_path.is_none() && Path::new("/usr/bin/perl").exists() {
             perl_path = Some("/usr/bin/perl".to_string());
         }
     } else if os == "windows" {

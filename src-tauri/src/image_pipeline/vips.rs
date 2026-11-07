@@ -223,7 +223,10 @@ mod tests {
 
         let fixtures = fixtures_dir();
         let svg_file = fixtures.join("fixture_blocked.svg");
-        assert!(svg_file.exists(), "SVG fixture must exist");
+        assert!(
+            svg_file.exists(),
+            "SVG fixture fixture_blocked.svg must exist"
+        );
 
         let temp_dir = tempdir().expect("tempdir");
         let out_file = temp_dir.path().join("out_svg.webp");
@@ -234,6 +237,11 @@ mod tests {
         );
         let err_msg = result.unwrap_err().to_string();
         println!("Expected SVG failure message: {}", err_msg);
+        assert!(
+            err_msg.contains("not a known file format") || err_msg.contains("blocked"),
+            "Error message must indicate untrusted loader failure / unknown file format, got: {}",
+            err_msg
+        );
     }
 
     #[test]
