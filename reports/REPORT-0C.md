@@ -1,6 +1,6 @@
 # REPORT-0C: CI Matrix and Clean-Machine Packaging
 
-**Branch:** `task/0C` · **Commit:** `8d08c0f` · **Date:** 2026-11-06  
+**Branch:** `task/0C` · **Commit:** `fd3a831` (CI run tested at `8d08c0f`) · **Date:** 2026-11-06  
 **OS actually tested:**
 - macOS 27.0 (Apple Silicon arm64 local workstation + GitHub Actions `macos-latest` runner M1/arm64)
 - Microsoft Windows Server 2025 Datacenter (10.0.26100, x86_64 via GitHub Actions `windows-latest` runner)  
