@@ -10,12 +10,16 @@ on:
       - 'reports/**'
       - 'tasks/**'
       - '**/*.md'
+      - '.github/workflows/deps-win64-vips.yml'
+      - 'deps/win64-vips/**'
   pull_request:
     paths-ignore:
       - 'docs/**'
       - 'reports/**'
       - 'tasks/**'
       - '**/*.md'
+      - '.github/workflows/deps-win64-vips.yml'
+      - 'deps/win64-vips/**'
   workflow_dispatch:
 
 concurrency:
