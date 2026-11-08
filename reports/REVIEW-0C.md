@@ -1,10 +1,39 @@
 # Review of TASK-0C
 
-Three rounds so far. Round 3 is the current one; rounds 2 and 1 are kept in short form at the end.
+Four rounds. **Round 4 (this one) is the ACCEPT.** Earlier rounds follow in short form.
 
 ---
 
-## Round 3 · 2026-11-08
+## Round 4 · 2026-11-08
+
+### Verdict: ACCEPT
+All six round-3 items are done, with real output, and I verified them against the repo at `20fb0ee` (HEAD) and the last code commit `1932e66`. CI run 42439046831 (code commit) and run 42463475881 (HEAD, three green jobs, six artifacts per your screenshot) are green. The owner's Windows laptop passed the installer test.
+
+### What I verified
+- **Item 1 (§4.2):** rewritten from `versions.json`; the 28 components, versions and DLL mapping match what I read in the zip myself; false claims about `manifest.txt` and `licenses/` removed; raw `unzip -l`, `versions.json` and `strings ... | grep -ci de265` (0) pasted. Licence URLs are cited per component; I could not open them from my environment, so they are not independently checked (see notes).
+- **Item 2:** `scripts/check-dylib-table.mjs` is correct and runs in the macOS job after the unzip; CI log shows 67 files = 67 rows. The 65-versus-67 difference is explained (the owner's Mac linked 65; the CI runner also pulled `brotli`, two dylibs).
+- **Item 3:** CLI control added to both jobs, with failure paths; raw output on both OSes shows unblocked success and `VIPS_BLOCK_UNTRUSTED=1` failure with "not a known file format". §4.4 now says `has_svgload` is a constant and the extra in-app block calls are untested redundancy.
+- **Item 4:** measured: `exiftool.exe` is a single process (no child in `-stay_open` mode). The Job Object plan is gone from the report. Good use of a measurement.
+- **Item 5:** real diffstats; `gh run view` for both runs; the "21.8 MB" question is explained correctly: the Actions page shows the outer artifact zip (22,893,523 bytes = 21.83 MiB) around the 23,078,148-byte inner zip. (My guess that this meant a different build was wrong.) The two runs' inner zips have different checksums with identical file lists; the agent attributes this to timestamps.
+- **Item 6:** all 38 installed DLLs scanned, none imports the VC++ runtime; the scan's limit (the ExifTool Perl DLLs were not scanned) is stated honestly. My own `objdump` of the same DLLs agrees.
+- Checks 1–10 of REVIEW_CHECKLIST §2: same results as before, production hits unchanged (`lib.rs:55, 64, 78`; `vips.rs:14`). `pnpm verify` passes on your Mac (18 tests).
+- Your own tests: Windows laptop installer test passed (twice); your Mac decoded a real iPhone HEIC with Homebrew's libvips (input for TASK-0D).
+
+### Non-blocking notes (tracked in STATUS risk 19)
+- Report details: §6 still shows the smoke JSONs from the older run 42369216568, and the Round 2 text still says "65 rows". Both are history and do not affect acceptance.
+- The macOS dylib check will fail whenever Homebrew changes the dependency set (it is working as designed; update the table then). The macOS build is not reproducible.
+- The agent explains the checksum difference of two same-code macOS zips by timestamps; the 65-versus-67 difference shows Homebrew floats too. Both go away with the TASK-0D own build.
+- Windows: no test yet that a timeout kills `exiftool.exe` (single process measured; add a Windows variant of the timeout test in Phase 1).
+- Licence URLs in §4.2 were not independently opened by me; spot-check before any distribution.
+- Housekeeping: Project docs were committed on the task branch (`docs/STATUS.md`, `reports/REVIEW-0C.md`, `tasks/TASK-0D-heic-decode.md`, and a stray `docs/LEARNING copy 2.md`). The merge steps in NEXT_STEPS remove the stray file and sync the real docs afterwards.
+- Everything carried over from round 2 (init `.expect()`/`set_var`, `runCmd` swallowing errors, CI pins, `--smoke-test` in the production binary, installer `.gitkeep`) is on the STATUS carry-forward list.
+
+### Owner decisions recorded
+Identifier `com.narayanwaraich.photosmanager`; HEIC on both OSes is TASK-0D (next); full Windows checklist after 0D.
+
+---
+
+## Round 3 · 2026-11-08 (history; fixed in round 4)
 
 ### Verdict: FIX (round 3: documentation and evidence, plus two small CI additions)
 The product work is done and holds up on both OSes, including your own Windows laptop. What blocks ACCEPT is not code: the Windows dependency list in the docs was **not** taken from the zip (the report says it was), and two claims have no evidence behind them. Six items, all small; after this I expect to accept.
