@@ -2,6 +2,7 @@ pub mod database;
 pub mod filesystem;
 pub mod image_pipeline;
 pub mod metadata;
+pub mod smoke;
 
 use image_pipeline::ImageProcessor;
 use std::path::PathBuf;

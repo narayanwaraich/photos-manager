@@ -62,5 +62,10 @@ def generate_fixtures():
     txt_path.write_text("This is plain text content and not a valid image format.\n")
     print(f"Generated: {txt_path}")
 
+    # 6. SVG vector fixture to test untrusted loader blocking
+    svg_path = FIXTURES_DIR / "fixture_blocked.svg"
+    svg_path.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="red"/></svg>\n')
+    print(f"Generated: {svg_path}")
+
 if __name__ == "__main__":
     generate_fixtures()

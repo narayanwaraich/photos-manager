@@ -34,9 +34,10 @@ pub fn blob_to_native(blob: &[u8]) -> PathBuf {
     {
         use std::ffi::OsString;
         use std::os::windows::ffi::OsStringExt;
-        let mut wide = Vec::with_capacity(blob.len() / 2);
-        for chunk in blob.chunks_exact(2) {
-            wide.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+        let (chunks, _) = blob.as_chunks::<2>();
+        let mut wide = Vec::with_capacity(chunks.len());
+        for &[b0, b1] in chunks {
+            wide.push(u16::from_le_bytes([b0, b1]));
         }
         PathBuf::from(OsString::from_wide(&wide))
     }

@@ -20,6 +20,7 @@ src-tauri/models/
 # OS metadata
 .DS_Store
 Thumbs.db
+.stignore
 # Operating System
 .DS_Store?
 ._*

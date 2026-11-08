@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Photos Manager"
 authors = ["Photos Manager Authors"]
 edition = "2021"
+publish = false
+license = "MIT"
 
 [lib]
 name = "photos_manager_lib"
@@ -18,7 +20,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "migrate", "macros"] }
 tokio = { version = "1", features = ["full"] }
-libvips = "2.3.0"
+libvips = "1.7.2"
 thiserror = "2"
 anyhow = "1"
 http = "1"
@@ -31,3 +33,6 @@ codegen-units = 1
 lto = true
 opt-level = 3
 strip = true
+
+[patch.crates-io]
+libvips = { git = "https://github.com/kuma-00/libvips-rust-bindings-for-windows.git", rev = "80097ad9387180f678b21482b8b0cfbfb436a308" }

@@ -28,10 +28,23 @@ function runStep(name, command, args, cwd = rootDir) {
   log(`CWD: ${cwd}`);
   log(`======================================================\n`);
 
-  // Ensure cargo path is included in PATH
+  // Ensure cargo path and native dependencies are included in PATH and git global config avoids permission issues
+  const isWindows = process.platform === "win32";
+  const homeDir = process.env.HOME || process.env.USERPROFILE || "";
+  const cargoBin = isWindows
+    ? path.join(homeDir, ".cargo", "bin")
+    : `${homeDir}/.cargo/bin`;
+  const vipsBin = isWindows
+    ? (process.env.VIPS_DIR ? path.join(process.env.VIPS_DIR, "bin") : path.join(rootDir, "deps", "vips", "bin"))
+    : null;
+  const extraPaths = isWindows
+    ? [cargoBin, vipsBin].filter(Boolean)
+    : [cargoBin, "/opt/homebrew/bin", "/usr/local/bin"];
+
   const env = {
     ...process.env,
-    PATH: `${process.env.HOME}/.cargo/bin:/opt/homebrew/bin:${process.env.PATH}`,
+    GIT_CONFIG_GLOBAL: isWindows ? "NUL" : "/dev/null",
+    PATH: `${extraPaths.join(path.delimiter)}${path.delimiter}${process.env.PATH || ""}`,
   };
 
   const result = spawnSync(command, args, {
@@ -39,6 +52,7 @@ function runStep(name, command, args, cwd = rootDir) {
     env,
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "pipe"],
+    shell: isWindows,
   });
 
   if (result.stdout) {
@@ -49,11 +63,15 @@ function runStep(name, command, args, cwd = rootDir) {
     process.stderr.write(result.stderr);
     logStream.write(result.stderr);
   }
+  if (result.error) {
+    process.stderr.write(`Spawn error: ${result.error.message}\n`);
+    logStream.write(`Spawn error: ${result.error.message}\n`);
+  }
 
   if (result.status !== 0) {
     log(`\n❌ FAILED: ${name} (exit code ${result.status})`);
     logStream.end();
-    process.exit(result.status || 1);
+    process.exit(result.status ?? 1);
   }
 
   log(`\n✓ PASSED: ${name}`);

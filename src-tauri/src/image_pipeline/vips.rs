@@ -9,7 +9,29 @@ static VIPS_APP: OnceLock<VipsApp> = OnceLock::new();
 
 fn get_vips_app() -> &'static VipsApp {
     VIPS_APP.get_or_init(|| {
-        VipsApp::new("photos-manager", false).expect("Failed to initialize libvips")
+        // Enforce untrusted loader blocking via environment variable before VipsApp initialization
+        std::env::set_var("VIPS_BLOCK_UNTRUSTED", "1");
+        let app = VipsApp::new("photos-manager", false).expect("Failed to initialize libvips");
+        unsafe {
+            // Block all untrusted loaders at start-up per spec §3.4 and TASK-0C review
+            bindings::vips_block_untrusted_set(1);
+            // Explicitly block untrusted loader operation classes: svgload and magickload
+            for name in [
+                c"svgload".as_ptr(),
+                c"svgload_buffer".as_ptr(),
+                c"VipsForeignLoadSvg".as_ptr(),
+                c"VipsForeignLoadSvgFile".as_ptr(),
+                c"VipsForeignLoadSvgBuffer".as_ptr(),
+                c"magickload".as_ptr(),
+                c"magickload_buffer".as_ptr(),
+                c"VipsForeignLoadMagick".as_ptr(),
+                c"VipsForeignLoadMagickFile".as_ptr(),
+                c"VipsForeignLoadMagickBuffer".as_ptr(),
+            ] {
+                bindings::vips_operation_block_set(name, 1);
+            }
+        }
+        app
     })
 }
 
@@ -57,11 +79,25 @@ impl ImageProcessor for VipsImageProcessor {
             size: Size::Both,
             no_rotate: false,
             crop: Interesting::None,
+            export_profile: "srgb".into(),
             ..Default::default()
         };
 
-        let thumb = ops::thumbnail_with_opts(input_str, max_edge as i32, &opts)
-            .map_err(|e| ImageProcessorError::Processing(format!("Thumbnail failed: {:?}", e)))?;
+        let thumb = ops::thumbnail_with_opts(input_str, max_edge as i32, &opts).map_err(|e| {
+            let detail = unsafe {
+                let err_ptr = bindings::vips_error_buffer();
+                if !err_ptr.is_null() {
+                    let s = std::ffi::CStr::from_ptr(err_ptr)
+                        .to_string_lossy()
+                        .to_string();
+                    bindings::vips_error_clear();
+                    s
+                } else {
+                    format!("{:?}", e)
+                }
+            };
+            ImageProcessorError::Processing(format!("Thumbnail failed: {}", detail))
+        })?;
 
         let width = thumb.get_width() as u32;
         let height = thumb.get_height() as u32;
@@ -82,6 +118,10 @@ impl ImageProcessor for VipsImageProcessor {
     }
 
     fn is_loader_supported(&self, loader: &str) -> bool {
+        // Disallowed untrusted loaders are blocked at startup and never supported in product code
+        if loader == "svgload" || loader == "magickload" {
+            return false;
+        }
         let Ok(c_op) = CString::new("VipsOperation") else {
             return false;
         };
@@ -93,14 +133,7 @@ impl ImageProcessor for VipsImageProcessor {
 
     fn query_supported_loaders(&self) -> Vec<String> {
         let candidates = [
-            "jpegload",
-            "pngload",
-            "webpload",
-            "tiffload",
-            "heifload",
-            "gifload",
-            "svgload",
-            "magickload",
+            "jpegload", "pngload", "webpload", "tiffload", "heifload", "gifload",
         ];
         candidates
             .into_iter()
@@ -182,6 +215,33 @@ mod tests {
             ImageProcessorError::FileNotFound(_) => (),
             other => panic!("Expected FileNotFound error, got: {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_vips_blocks_svgload() {
+        let processor = VipsImageProcessor::new();
+
+        let fixtures = fixtures_dir();
+        let svg_file = fixtures.join("fixture_blocked.svg");
+        assert!(
+            svg_file.exists(),
+            "SVG fixture fixture_blocked.svg must exist"
+        );
+
+        let temp_dir = tempdir().expect("tempdir");
+        let out_file = temp_dir.path().join("out_svg.webp");
+        let result = processor.generate_thumbnail(&svg_file, &out_file, 100);
+        assert!(
+            result.is_err(),
+            "Loading SVG must fail because untrusted loaders are blocked"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        println!("Expected SVG failure message: {}", err_msg);
+        assert!(
+            err_msg.contains("not a known file format") || err_msg.contains("blocked"),
+            "Error message must indicate untrusted loader failure / unknown file format, got: {}",
+            err_msg
+        );
     }
 
     #[test]

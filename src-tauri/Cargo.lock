@@ -1932,9 +1932,8 @@ dependencies = [
 
 [[package]]
 name = "libvips"
-version = "2.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29c2daabf7114fd6e626fef46e3ba187d204554cf94d31312424300bd8160d9b"
+version = "1.7.2"
+source = "git+https://github.com/kuma-00/libvips-rust-bindings-for-windows.git?rev=80097ad9387180f678b21482b8b0cfbfb436a308#80097ad9387180f678b21482b8b0cfbfb436a308"
 dependencies = [
  "num-derive",
  "num-traits",

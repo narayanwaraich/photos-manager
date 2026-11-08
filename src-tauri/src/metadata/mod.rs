@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -111,23 +111,38 @@ impl ExifToolAdapter {
         let timeout = timeout_duration.unwrap_or(DEFAULT_TIMEOUT);
 
         // Invoked directly without any shell wrapper (no sh, bash, cmd, powershell).
-        // Argument array strictly defined. Stderr sent to Stdio::null(). Child killed on drop.
+        // Argument array strictly defined. We use `-@ -` to pass the target file path over stdin,
+        // which completely bypasses Windows C-runtime command-line ANSI code page corruption for non-ASCII paths.
         let mut child = Command::new(&self.executable_path)
             .arg("-j")
             .arg("-n")
             .arg("-charset")
-            .arg("filename=UTF8")
-            .arg(file_path.as_os_str())
+            .arg("utf8")
+            .arg("-charset")
+            .arg("filename=utf8")
+            .arg("-api")
+            .arg("WindowsLongPath=1")
+            .arg("-@")
+            .arg("-")
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .map_err(MetadataError::Io)?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            let mut path_bytes = file_path.to_string_lossy().into_owned().into_bytes();
+            path_bytes.push(b'\n');
+            let _ = stdin.write_all(&path_bytes).await;
+            drop(stdin);
+        }
 
         let mut stdout = child
             .stdout
             .take()
             .ok_or_else(|| MetadataError::ExecutionFailed("Failed to capture stdout".into()))?;
+        let stderr = child.stderr.take();
 
         // Read stdout with size cap
         let read_future = async {
@@ -151,9 +166,20 @@ impl ExifToolAdapter {
             Ok(Ok(bytes)) => {
                 let status = child.wait().await?;
                 if !status.success() && bytes.is_empty() {
+                    let mut err_msg = String::new();
+                    if let Some(mut err_stream) = stderr {
+                        let mut buf = Vec::new();
+                        let _ = err_stream.read_to_end(&mut buf).await;
+                        err_msg = String::from_utf8_lossy(&buf).trim().to_string();
+                    }
                     return Err(MetadataError::ExecutionFailed(format!(
-                        "ExifTool exited with status: {}",
-                        status
+                        "ExifTool exited with status: {}{}",
+                        status,
+                        if err_msg.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {}", err_msg)
+                        }
                     )));
                 }
                 bytes
@@ -228,36 +254,121 @@ impl ExifToolAdapter {
     }
 }
 
-fn which_exiftool() -> Option<PathBuf> {
-    // DEV-ONLY: Hardcoded Homebrew and system paths are for local development convenience only.
-    // Clean-machine production packaging (TASK-0C) will locate bundled sidecar binaries via Tauri path/resource APIs.
-    for candidate in [
-        "/opt/homebrew/bin/exiftool",
-        "/usr/local/bin/exiftool",
-        "/usr/bin/exiftool",
-    ] {
-        let p = PathBuf::from(candidate);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-
-    // Check system PATH
-    if let Ok(path_var) = std::env::var("PATH") {
-        for entry in std::env::split_paths(&path_var) {
-            let candidate = entry.join("exiftool");
+/// Attempts to locate a hermetic bundled ExifTool from application resources.
+pub fn find_bundled_exiftool() -> Option<PathBuf> {
+    // 1. Explicit override environment variable (used by tests / custom deployment)
+    if let Ok(override_dir) = std::env::var("PHOTOS_RESOURCES_DIR") {
+        let base = PathBuf::from(override_dir);
+        for rel in [
+            "exiftool/exiftool",
+            "exiftool/exiftool.exe",
+            "resources/exiftool/exiftool",
+            "resources/exiftool/exiftool.exe",
+        ] {
+            let candidate = base.join(rel);
             if candidate.is_file() {
                 return Some(candidate);
             }
-            #[cfg(windows)]
-            {
-                let candidate_exe = entry.join("exiftool.exe");
-                if candidate_exe.is_file() {
-                    return Some(candidate_exe);
+        }
+    }
+
+    // 2. Relative to current running executable
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(parent) = current_exe.parent() {
+            // macOS .app bundle structure:
+            //   Contents/MacOS/<exe>
+            //   Contents/Resources/resources/exiftool/exiftool or Contents/Resources/exiftool/exiftool
+            if let Some(contents_dir) = parent.parent() {
+                let resources = contents_dir.join("Resources");
+                for rel in [
+                    "resources/exiftool/exiftool",
+                    "exiftool/exiftool",
+                    "resources/exiftool/exiftool.exe",
+                    "exiftool/exiftool.exe",
+                ] {
+                    let candidate = resources.join(rel);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+
+            // Windows / Linux flat bundle structure (resources adjacent to executable)
+            for rel in [
+                "resources/exiftool/exiftool.exe",
+                "resources/exiftool/exiftool",
+                "exiftool/exiftool.exe",
+                "exiftool/exiftool",
+            ] {
+                let candidate = parent.join(rel);
+                if candidate.is_file() {
+                    return Some(candidate);
                 }
             }
         }
     }
+
+    // 3. Staged resources relative to CARGO_MANIFEST_DIR (for dev/test runners)
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let base = PathBuf::from(manifest_dir)
+            .join("resources")
+            .join("exiftool");
+        for file in ["exiftool", "exiftool.exe"] {
+            let candidate = base.join(file);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+/// Locates the ExifTool executable.
+/// In production release builds, this strictly resolves the bundled ExifTool.
+/// In debug/development mode or when `PHOTOS_DEV_ALLOW_SYSTEM_EXIFTOOL` is set,
+/// it falls back to system PATH and standard developer locations.
+pub fn which_exiftool() -> Option<PathBuf> {
+    // 1. Always prioritize hermetic bundled resource
+    if let Some(bundled) = find_bundled_exiftool() {
+        return Some(bundled);
+    }
+
+    // 2. Dev-only fallback: only in debug builds or when explicitly allowed via dev environment variable
+    let allow_system =
+        cfg!(debug_assertions) || std::env::var("PHOTOS_DEV_ALLOW_SYSTEM_EXIFTOOL").is_ok();
+
+    if allow_system {
+        // Check system PATH
+        if let Ok(path_var) = std::env::var("PATH") {
+            for entry in std::env::split_paths(&path_var) {
+                let candidate = entry.join("exiftool");
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+                #[cfg(windows)]
+                {
+                    let candidate_exe = entry.join("exiftool.exe");
+                    if candidate_exe.is_file() {
+                        return Some(candidate_exe);
+                    }
+                }
+            }
+        }
+
+        // Standard local development paths (e.g. Homebrew on macOS)
+        for candidate in [
+            "/opt/homebrew/bin/exiftool",
+            "/usr/local/bin/exiftool",
+            "/usr/bin/exiftool",
+        ] {
+            let p = PathBuf::from(candidate);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+
     None
 }
 
@@ -448,5 +559,61 @@ mod tests {
         let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         // ESRCH (3) = No such process
         assert_eq!(errno, 3, "errno must be ESRCH (3), got: {}", errno);
+    }
+
+    #[tokio::test]
+    async fn test_exiftool_non_ascii_filename() {
+        let adapter = ExifToolAdapter::new().expect("ExifTool must be available");
+        let fixtures = fixtures_dir();
+        let src_file = fixtures.join("image_orientation_6.jpg");
+        assert!(src_file.exists());
+
+        let temp_dir = tempdir().expect("tempdir");
+        // Non-ASCII filename containing Cyrillic, Japanese, and accented characters
+        let non_ascii_name = "фото_写真_café_2026.jpg";
+        let target_file = temp_dir.path().join(non_ascii_name);
+        std::fs::copy(&src_file, &target_file).expect("copy fixture to non-ascii path");
+
+        let meta = adapter
+            .extract_metadata(&target_file, None)
+            .await
+            .expect("Metadata extraction for non-ASCII path should succeed");
+
+        assert_eq!(meta.orientation, Some(6));
+        assert_eq!(meta.width, Some(640));
+        assert_eq!(meta.height, Some(480));
+    }
+
+    #[tokio::test]
+    async fn test_exiftool_long_path() {
+        let adapter = ExifToolAdapter::new().expect("ExifTool must be available");
+        let fixtures = fixtures_dir();
+        let src_file = fixtures.join("image_orientation_6.jpg");
+        assert!(src_file.exists());
+
+        let temp_dir = tempdir().expect("tempdir");
+        // Build a deeply nested directory path exceeding 260 characters
+        let mut deep_dir = temp_dir.path().to_path_buf();
+        for i in 0..10 {
+            deep_dir = deep_dir.join(format!("long_path_segment_{:02}_abcdefghij", i));
+        }
+        std::fs::create_dir_all(&deep_dir).expect("create deep dirs");
+        let long_file = deep_dir.join("image_deeply_nested_orientation_6.jpg");
+        std::fs::copy(&src_file, &long_file).expect("copy to long path");
+
+        // Verify total path length is indeed > 260 characters
+        let path_len = long_file.to_string_lossy().len();
+        assert!(
+            path_len > 260,
+            "Target path must exceed 260 characters, was: {}",
+            path_len
+        );
+
+        let meta = adapter
+            .extract_metadata(&long_file, None)
+            .await
+            .expect("Metadata extraction for long path (>260 chars) should succeed");
+
+        assert_eq!(meta.orientation, Some(6));
     }
 }
