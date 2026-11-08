@@ -55,8 +55,8 @@ $ git diff --stat 8f9b7829ff3513cdd3fa1921b621661beec156f3 HEAD
 Real diffstat between the last code commit (`1932e66`) and HEAD (report update only):
 ```bash
 $ git diff --stat 1932e66 HEAD
- reports/REPORT-0C.md | 234 +++++++++++++++++++++++++++++++++++++++++++++++----
- 1 file changed, 219 insertions(+), 15 deletions(-)
+ reports/REPORT-0C.md | 248 +++++++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 233 insertions(+), 15 deletions(-)
 ```
 
 ---
@@ -202,7 +202,9 @@ No child processes detected (exiftool is single process).
 
 #### Fix 5: Report Evidence, Archive Analysis & Hygiene
 - **(a) Real Header Diffstat:** Provided exact output of `git diff --stat 1932e66 HEAD` (and against branch point `8f9b782`).
-- **(b) Full `gh run view`:** Pasted complete raw job output and durations for CI run `42439046831`.
+- **(b) Full `gh run view`:** Pasted complete raw job output and durations for CI run of the last code commit (`1932e66`) AND for the CI run of the final HEAD commit (`afba6f4`):
+
+CI run of last code commit (`1932e66`):
 ```
 $ gh run view 42439046831
 ✓ task/0C CI & Packaging Matrix · 42439046831
@@ -212,6 +214,18 @@ JOBS
 ✓ windows-x64 in 8m3s (ID 128604115446)
 ✓ Security & License check (cargo deny) in 1m0s (ID 128604115610)
 ✓ macos-arm64 in 3m13s (ID 128604115639)
+```
+
+CI run of final HEAD commit (`afba6f4`):
+```
+$ gh run view 42462407906
+✓ task/0C CI & Packaging Matrix · 42462407906
+Triggered via push about 9 minutes ago
+
+JOBS
+✓ macos-arm64 in 3m43s (ID 128674329767)
+✓ Security & License check (cargo deny) in 46s (ID 128674329923)
+✓ windows-x64 in 7m39s (ID 128674330107)
 ```
 - **(c) macOS Zip Analysis (Run 42369216568 vs 42375063888):**
   - Downloaded both artifacts. The inner archive `photos-manager-macos-arm64.zip` in both runs is exactly **23,078,148 bytes**.
