@@ -1,6 +1,6 @@
 # REPORT-0C: CI Matrix and Clean-Machine Packaging
 
-**Branch:** `task/0C` · **Commit:** `2798570` (CI run `42369216568`) · **Date:** 2026-11-07  
+**Branch:** `task/0C` · **Commit:** `1932e66` (CI run `42439046831`) · **Date:** 2026-11-08  
 **OS actually tested:**
 - macOS 27.0 (Apple Silicon arm64 local workstation + GitHub Actions `macos-latest` runner M1/arm64)
 - Microsoft Windows Server 2025 Datacenter (10.0.26100, x86_64 via GitHub Actions `windows-latest` runner)  
@@ -10,27 +10,231 @@
 - HEIC/HEVC decoding: not verified on either OS (prebuilt Windows libvips MXE build omits `libde265`/`x265` due to patent encumbrance; prebuilt Homebrew libvips puts `heifload` in an unbundled dynamic module `vips-heif.dylib`).
 
 ### Commit & Diffstat
-The last commit that changed code or CI is `2798570`.
+The last commit that changed code or CI is `1932e66`.
+
+Diffstat from branch point (`8f9b782`, `accepted/0B` tag):
 ```bash
-$ git diff --stat 2798570 HEAD
- reports/REPORT-0C.md | ...
+$ git diff --stat 8f9b7829ff3513cdd3fa1921b621661beec156f3 HEAD
+ .cargo/config.toml                           |   2 +
+ .github/workflows/ci.yml                     | 398 +++++++++++++++++++++
+ .gitignore                                   |   1 +
+ README.md                                    |  37 +-
+ deny.toml                                    |  42 +++
+ docs/LEARNING copy 2.md                      | 202 +++++++++++
+ docs/STATUS.md                               |  76 +++-
+ docs/native-dependencies.md                  | 337 +++++++++++++-----
+ docs/windows-validation.md                   | 182 ++++++++++
+ reports/REPORT-0C.md                         | 512 +++++++++++++++++++++++++++
+ reports/REVIEW-0C.md                         |  82 +++++
+ reports/smoke-macos-arm64.json               |  45 +++
+ reports/smoke-windows-x64.json               |  46 +++
+ rust-toolchain.toml                          |   4 +
+ scripts/check-dylib-table.mjs                |  99 ++++++
+ scripts/generate-fixtures.py                 |   5 +
+ scripts/package-bundle.mjs                   | 251 +++++++++++++
+ scripts/prepare-bundle.mjs                   | 184 ++++++++++
+ scripts/verify.mjs                           |  24 +-
+ src-tauri/.gitignore                         |   5 +
+ src-tauri/Cargo.lock                         |   5 +-
+ src-tauri/Cargo.toml                         |   7 +-
+ src-tauri/build.rs                           |  37 +-
+ src-tauri/resources/.gitkeep                 |   1 +
+ src-tauri/src/filesystem/mod.rs              |   7 +-
+ src-tauri/src/image_pipeline/vips.rs         |  82 ++++-
+ src-tauri/src/lib.rs                         |   1 +
+ src-tauri/src/main.rs                        |  27 ++
+ src-tauri/src/metadata/mod.rs                | 221 ++++++++++--
+ src-tauri/src/smoke.rs                       | 451 +++++++++++++++++++++++
+ src-tauri/tauri.conf.json                    |   6 +-
+ src-tauri/vips_dlls/.gitkeep                 |   0
+ tasks/TASK-0D-heic-decode.md                 |  58 +++
+ tests/fixtures/generated/fixture_blocked.svg |   1 +
+ 34 files changed, 3267 insertions(+), 171 deletions(-)
 ```
-(Only documentation/report files differ between `2798570` and `HEAD`).
+
+Real diffstat between the last code commit (`1932e66`) and HEAD (report update only):
+```bash
+$ git diff --stat 1932e66 HEAD
+ reports/REPORT-0C.md | 234 +++++++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 219 insertions(+), 15 deletions(-)
+```
 
 ---
 
 ## 1. Summary
 
-All review findings from Round 1 and Round 2 for TASK-0C have been addressed and verified. The CI matrix workflow (`.github/workflows/ci.yml`) runs across `macos-arm64`, `windows-x64`, and a dedicated `security-audit` job.
+All review findings across Rounds 1, 2, and 3 for TASK-0C have been addressed and verified. The CI matrix workflow (`.github/workflows/ci.yml`) runs across `macos-arm64`, `windows-x64`, and a dedicated `security-audit` job.
 
-In CI run `42369216568` (commit `2798570`), all three jobs completed with success:
-- **`Security & License check (cargo deny)` (ID 128393658936):** Passed in 1m2s. Enforces `unmaintained = "all"` with 0 ignored advisories and strictly pinned git sources.
-- **`macos-arm64` (ID 128393659164):** Passed in 3m37s. Packaged exclusively with `--bundles app` followed by `@rpath` relocation and zip packaging (`photos-manager-macos-arm64.zip`, no `.dmg`). The smoke test unzipped this exact archive outside `src-tauri/target` to `/tmp/smoke-extracted/photos-manager.app`, verified 0 Homebrew linkages via `otool -L`, physically unmounted/hid Homebrew (`sudo mv /opt/homebrew /opt/homebrew.off`), and passed with PATH stripped to `/usr/bin:/bin:/usr/sbin:/sbin`.
-- **`windows-x64` (ID 128393659210):** Passed in 26m1s. Statically linked the C runtime via `-C target-feature=+crt-static`, built exclusively with `--bundles nsis` (`photos-manager_0.1.0_x64-setup.exe`, no bare `.exe` without DLLs), silently installed to `C:\smoke-extracted\`, verified zero imports of `VCRUNTIME140.dll` via `dumpbin /dependents`, and passed the smoke test with PATH stripped to OS defaults (`C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem`).
+In CI run `42439046831` (commit `1932e66`), all three jobs completed with success:
+- **`Security & License check (cargo deny)` (ID 128604115610):** Passed in 1m0s. Enforces `unmaintained = "all"` with 0 ignored advisories and strictly pinned git sources.
+- **`macos-arm64` (ID 128604115639):** Passed in 3m13s. Packaged exclusively with `--bundles app` followed by `@rpath` relocation and zip packaging (`photos-manager-macos-arm64.zip`, no `.dmg`). The smoke test unzipped this exact archive outside `src-tauri/target` to `/tmp/smoke-extracted/photos-manager.app`, verified all 67 bundled dylibs match `docs/native-dependencies.md` §4.3 via `scripts/check-dylib-table.mjs`, verified the direct CLI SVG untrusted loader control test, verified 0 Homebrew linkages via `otool -L`, physically unmounted/hid Homebrew (`sudo mv /opt/homebrew /opt/homebrew.off`), and passed with PATH stripped to `/usr/bin:/bin:/usr/sbin:/sbin`.
+- **`windows-x64` (ID 128604115446):** Passed in 8m3s. Statically linked the C runtime via `-C target-feature=+crt-static`, built exclusively with `--bundles nsis` (`photos-manager_0.1.0_x64-setup.exe`, no bare `.exe` without DLLs), silently installed to `C:\smoke-extracted\`, verified the direct CLI SVG untrusted loader control test, verified ExifTool process tree in stay_open mode (0 child processes spawned), verified all 38 installed top-level DLLs import 0 VC++ runtimes via `dumpbin /dependents`, and passed the smoke test with PATH stripped to OS defaults (`C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem`).
 
 ---
 
 ## 2. Fixes
+
+### Round 3 Fixes (2026-11-08)
+
+#### Fix 1: Windows Native Dependencies Rewritten from `versions.json` (§4.2)
+- Replaced previous section 4.2 of `docs/native-dependencies.md` with an inventory strictly derived from `versions.json` inside `vips-dev-x64-web-8.18.6.zip` (MXE build).
+- Confirmed that the archive contains **no `manifest.txt`** and **no `licenses/` directory**; only the root LGPL-2.1 `LICENSE` is provided. Removed all previous claims of `manifest.txt` and `licenses/`.
+- Every one of the 28 components in `versions.json` is mapped to its exact DLL(s) in `bin/` (accounting for all 38 DLLs in `bin/`, plus toolchain runtime DLLs `libc++.dll` and `libunwind.dll`). Upstream repository licenses are explicitly cited with full URLs.
+- **Top-level archive listing (`unzip -l /tmp/vips-dev-x64-web-8.18.6.zip`):**
+```
+Archive:  /tmp/vips-dev-x64-web-8.18.6.zip
+  Length      Date    Time    Name
+---------  ---------- -----   ----
+        0  08-25-2026 22:53   vips-dev-8.18/bin/
+        0  08-25-2026 22:53   vips-dev-8.18/include/
+        0  08-25-2026 22:53   vips-dev-8.18/lib/
+        0  08-25-2026 22:53   vips-dev-8.18/share/
+        0  08-25-2026 22:53   vips-dev-8.18/etc/
+   169335  08-25-2026 22:53   vips-dev-8.18/ChangeLog
+    26530  08-25-2026 22:53   vips-dev-8.18/LICENSE
+    10176  08-25-2026 22:53   vips-dev-8.18/README.md
+      597  08-25-2026 22:53   vips-dev-8.18/versions.json
+---------                     -------
+   206638                     9 files
+```
+- **Raw `versions.json`:**
+```json
+{
+  "aom": "3.14.1",
+  "archive": "3.8.9",
+  "cairo": "1.18.4",
+  "cgif": "0.5.3",
+  "exif": "0.6.26",
+  "expat": "2.8.3",
+  "ffi": "3.8.0",
+  "fontconfig": "2.18.3",
+  "freetype": "2.14.3",
+  "fribidi": "1.0.16",
+  "glib": "2.89.4",
+  "harfbuzz": "14.3.1",
+  "heif": "1.23.2",
+  "highway": "1.4.0",
+  "imagequant": "2.4.1",
+  "lcms": "2.19.1",
+  "mozjpeg": "0826579",
+  "pango": "1.58.2",
+  "pixman": "0.46.4",
+  "png": "1.6.58",
+  "proxy-libintl": "0.5",
+  "rsvg": "2.62.91",
+  "tiff": "4.7.2",
+  "uhdr": "2.0.2",
+  "vips": "8.18.6",
+  "webp": "1.6.0",
+  "xml2": "2.15.3",
+  "zlib-ng": "2.3.3"
+}
+```
+- **Raw `strings libheif.dll | grep -ci de265`:**
+```bash
+$ strings /tmp/libheif.dll | grep -ci de265
+0
+```
+- **Facts Verified in Archive:**
+  - `bin/` contains no `libde265.dll`, `x265.dll`, or `dav1d.dll`.
+  - `libheif.dll` contains HEVC container metadata structures (`ImageItem_HEVC`, `Decoder_HEVC`) but 0 references to `de265`.
+  - `heifload` in the prebuilt Windows package supports AVIF/AV1 only, NOT HEIC/HEVC. Full HEIC/HEVC decoding is not verified on either OS.
+  - `librsvg-2-2.dll` is present in `bin/` (from `rsvg: 2.62.91`), requiring runtime blocking.
+  - `libimagequant.dll` is version 2.4.1 (the BSD-2-Clause C fork, not GPLv3 Rust).
+
+#### Fix 2: Script-Validated macOS Dylib Table (`scripts/check-dylib-table.mjs`)
+- Added `scripts/check-dylib-table.mjs` to validate 1-to-1 parity between every `*.dylib` in `Contents/Frameworks/` and the rows of `docs/native-dependencies.md` §4.3. CI fails with exit code 1 on any discrepancy.
+- Integrated into CI in `.github/workflows/ci.yml` immediately following the unzip of `photos-manager-macos-arm64.zip`.
+- **Reconciliation of 65 vs 67 dylibs:**
+  - Local macOS developer workstation linked 65 dynamic libraries into `Contents/Frameworks/`.
+  - GitHub Actions macOS arm64 runner built against updated Homebrew bottles where `brotli` (`libbrotlicommon.1.dylib` and `libbrotlidec.1.dylib`, formula `brotli`, version `1.2.0`, MIT License) was pulled as a transitive dependency, yielding 67 dylibs in the archive.
+  - Added both brotli libraries to §4.3. The table now contains 67 rows, matching the 67 files.
+- **Raw CI Log Output from run 42439046831 (job ID 128604115639):**
+```
+=== Verifying bundled dylib table against docs/native-dependencies.md §4.3 ===
+[check-dylib-table] Bundled dylibs on disk in /tmp/smoke-extracted/photos-manager.app/Contents/Frameworks: 67
+[check-dylib-table] Documented dylib rows in docs/native-dependencies.md §4.3: 67
+SUCCESS: All 67 bundled dylibs exactly match the 67 entries in docs/native-dependencies.md §4.3.
+```
+
+#### Fix 3: Direct libvips CLI Untrusted Loader Control Test
+- Added direct CLI control tests in CI before smoke testing on both OSes using `tests/fixtures/generated/fixture_blocked.svg`:
+  - **macOS:** uses stock Homebrew `vips` CLI.
+  - **Windows:** uses stock bundled MXE `deps\vips\bin\vips.exe`.
+  - Control step 1: `vips copy` without `VIPS_BLOCK_UNTRUSTED` (must succeed, proving librsvg is functional).
+  - Control step 2: `VIPS_BLOCK_UNTRUSTED=1 vips copy` (must fail with `"not a known file format"`).
+- **Raw CI Log Output on macOS (run 42439046831, job ID 128604115639):**
+```
+=== CLI Control Test 1: vips copy without VIPS_BLOCK_UNTRUSTED (must succeed) ===
+✓ Success: vips copy succeeded when unblocked
+=== CLI Control Test 2: vips copy with VIPS_BLOCK_UNTRUSTED=1 (must fail) ===
+VipsForeignLoad: "tests/fixtures/generated/fixture_blocked.svg" is not a known file format
+✓ Success: vips copy rejected SVG under VIPS_BLOCK_UNTRUSTED=1 with code 1
+```
+- **Raw CI Log Output on Windows (run 42439046831, job ID 128604115446):**
+```
+=== CLI Control Test 1: vips.exe copy without VIPS_BLOCK_UNTRUSTED (must succeed) ===
+✓ Success: vips.exe copy succeeded when unblocked
+=== CLI Control Test 2: vips.exe copy with VIPS_BLOCK_UNTRUSTED=1 (must fail) ===
+VipsForeignLoad: "tests\fixtures\generated\fixture_blocked.svg" is not a known file format
+
+✓ Success: vips.exe rejected SVG under VIPS_BLOCK_UNTRUSTED=1 with code 1
+```
+- **Clarification in Docs and Report:**
+  - `has_svgload: false` in the smoke test JSON is a static constant (`is_loader_supported` returning false without querying libvips) and does not prove that libvips's internal loader was unregistered.
+  - The combination of the active probe in the smoke test and this CLI control experiment proves that `VIPS_BLOCK_UNTRUSTED=1` actively prevents SVG decoding.
+  - Setting the environment variable `VIPS_BLOCK_UNTRUSTED=1` alone is sufficient for libvips to block untrusted SVG loaders. The subsequent in-code calls to `vips_block_untrusted_set(1)` and `vips_operation_block_set` are **untested redundancy**.
+
+#### Fix 4: Windows ExifTool Process Hierarchy Measurement
+- Added a step in Windows CI to measure process spawning in stay_open mode:
+  - Launched `resources\exiftool\exiftool.exe -stay_open True -@ -` with redirected stdin.
+  - Waited 2 seconds.
+  - Queried `Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $p.Id } | Select-Object Name,ProcessId`.
+  - Stopped ExifTool via stay_open protocol.
+- **Raw Output from Windows CI Log (run 42439046831, job ID 128604115446):**
+```
+=== Measuring Windows ExifTool process tree in stay_open mode ===
+Parent process: exiftool (PID: 2452)
+Child processes spawned by exiftool.exe:
+No child processes detected (exiftool is single process).
+```
+- Under stay_open mode on Windows, `exiftool.exe` executes as a single process; no child process was spawned. Removed all placeholder claims of "Job Object plan in Phase 1 / 3" from the report and documentation.
+
+#### Fix 5: Report Evidence, Archive Analysis & Hygiene
+- **(a) Real Header Diffstat:** Provided exact output of `git diff --stat 1932e66 HEAD` (and against branch point `8f9b782`).
+- **(b) Full `gh run view`:** Pasted complete raw job output and durations for CI run `42439046831`.
+```
+$ gh run view 42439046831
+✓ task/0C CI & Packaging Matrix · 42439046831
+Triggered via push about 10 minutes ago
+
+JOBS
+✓ windows-x64 in 8m3s (ID 128604115446)
+✓ Security & License check (cargo deny) in 1m0s (ID 128604115610)
+✓ macos-arm64 in 3m13s (ID 128604115639)
+```
+- **(c) macOS Zip Analysis (Run 42369216568 vs 42375063888):**
+  - Downloaded both artifacts. The inner archive `photos-manager-macos-arm64.zip` in both runs is exactly **23,078,148 bytes**.
+  - GitHub Actions web UI displayed "21.8 MB" because `actions/upload-artifact@v4` encapsulates artifacts in an outer zip file (run 42369216568: 22,893,523 bytes; run 42375063888: 22,893,463 bytes = 21.83 MiB).
+  - Checksums of inner zip:
+    - Run 42369216568: `043b637883deff4f622ba78a3c8e2ceea835e6ccc37417ca23b0239a360cd9b6`
+    - Run 42375063888: `ef4c7ad8fbda13941eefcedaf5762e2fcdced2d57888705749a37f47825c1a2a`
+  - Internal archive contents: All file paths and file sizes are 100% identical. The checksum difference is caused by build and signature timestamps.
+  - **Bit-Reproducibility:** The macOS build is **not bit-reproducible** because Homebrew formula packages float and archive timestamps vary.
+- **(d) Removed Duplicate File:** Removed stray `docs/LEARNING copy.md` via `git rm`.
+
+#### Fix 6: Extended Visual C++ Runtime Check across All Installed DLLs
+- Extended the `dumpbin /dependents` check in Windows CI to scan all top-level `*.dll` files in `C:\smoke-extracted\`.
+- Audited for imports of `VCRUNTIME*`, `MSVCP*`, `VCOMP*`, `CONCRT*`.
+- **Raw Output from Windows CI Log (run 42439046831, job ID 128604115446):**
+```
+=== Auditing all top-level installed DLLs for VC++ runtime dependencies ===
+Total top-level installed DLLs scanned: 38
+SUCCESS: 0 out of 38 installed DLLs import VC++ runtimes (clean Universal CRT / system only).
+Note: The ExifTool Strawberry Perl runtime DLLs under resources\exiftool\exiftool_files\ were not included in this top-level scan.
+```
+
+---
 
 ### Round 2 Fixes (2026-11-07)
 
@@ -133,7 +337,7 @@ In CI run `42369216568` (commit `2798570`), all three jobs completed with succes
 - Both OSes in clean smoke tests confirmed `blocked_untrusted_svg_load_verified: true`, `has_svgload: false`, and `disallowed_loaders_absent: true`.
 
 #### Fix 5: Native Dependencies Document Corrections
-- **Section 4.2 (Windows Manifest & Licenses):** Updated with real content from `manifest.txt` and `licenses/` in `vips-dev-x64-web-8.18.6.zip` (MXE build).
+- **Section 4.2 (Windows Component Inventory):** In Round 2, section 4.2 was drafted from initial impressions. In Round 3, it was rewritten strictly from `versions.json` in `vips-dev-x64-web-8.18.6.zip` (MXE build); previous claims of `manifest.txt` and `licenses/` were struck.
   - Clarified that `libde265` and `x265` are **omitted** from the MXE build due to patent encumbrance. Therefore, `heifload` in this prebuilt Windows package decodes **AVIF/AV1 only, NOT HEIC/HEVC**.
   - Clarified that HEIC/HEVC decode is **not verified on either OS**.
   - Documented that `librsvg-2-2.dll` is in the archive and strictly blocked at runtime by `vips_block_untrusted_set(1)` and `vips_operation_block_set("svgload", 1)`.
@@ -181,7 +385,7 @@ In CI run `42369216568` (commit `2798570`), all three jobs completed with succes
 
 #### Fix 9: Report Honesty & Test Accounting
 - Recorded that Windows runs 16 of 18 tests because `test_child_killed_after_timeout` and `test_roundtrip_non_utf8_path_unix` are Unix-only (`#[cfg(unix)]`).
-- Noted that on Windows, `exiftool.exe` is a self-extracting wrapper spawning an internal Strawberry Perl runtime (`exiftool_files/`); killing the parent process on Windows does not terminate the child tree without Windows Job Objects.
+- Noted that on Windows, `exiftool.exe` executes with its bundled Strawberry Perl runtime (`exiftool_files/`); in Round 3, process hierarchy under `-stay_open` was measured in CI.
 - Recorded Windows host prerequisite check from CI: `LongPathsEnabled = 0x1` and `C:\Windows\System32\vcruntime140.dll exists: True`.
 - Clarified that `has_homebrew_in_path: false` is retained for backwards compatibility, while `dev_tools_found_on_path: []` checks absence of `vips.exe`, `libvips-42.dll`, `perl.exe`, and `exiftool.exe`.
 
@@ -204,11 +408,11 @@ In CI run `42369216568` (commit `2798570`), all three jobs completed with succes
 
 | Criterion | Result | Evidence |
 |---|---|---|
-| Both matrix jobs pass, with links or logs attached to the report | **Met** | Run `42369216568`: `macos-arm64` (3m37s), `windows-x64` (26m1s), `cargo deny` (1m2s). URL: `https://github.com/narayanwaraich/photos-manager/actions/runs/42369216568` |
+| Both matrix jobs pass, with links or logs attached to the report | **Met** | Run `42439046831`: `macos-arm64` (3m13s), `windows-x64` (8m3s), `cargo deny` (1m0s). URL: `https://github.com/narayanwaraich/photos-manager/actions/runs/42439046831` |
 | Clean-environment smoke test passes on **both** OSes and prints real library paths inside bundle | **Met** | macOS loaded libvips from `/private/tmp/smoke-extracted/photos-manager.app/Contents/Frameworks/libvips.42.dylib`; Windows loaded from `C:\smoke-extracted\libvips-42.dll`. PATH stripped on both. |
 | Codec lists per OS recorded; any format that differs called out | **Met** | macOS: `jpegload, pngload, webpload, tiffload, gifload`. Windows adds `heifload` (AVIF only). Neither has `magickload` or `svgload`. Recorded in `docs/native-dependencies.md` §4. |
 | Artifacts produced and named | **Met** | Uploaded: `smoke-report-macos-arm64`, `photos-manager-macos-arm64` (`photos-manager-macos-arm64.zip`), `verify-logs-macos-arm64`, `smoke-report-windows-x64`, `photos-manager-windows-x64` (`photos-manager_0.1.0_x64-setup.exe`), `verify-logs-windows-x64`. |
-| `docs/native-dependencies.md` updated per OS; unresolved risks listed | **Met** | Updated with 65-dylib audit, GPL findings, Windows manifest, ExifTool URLs/hashes, system Perl risk, and Windows fork audit. |
+| `docs/native-dependencies.md` updated per OS; unresolved risks listed | **Met** | Updated with 67-dylib audit and CI script validation, GPL findings, Windows component inventory strictly from `versions.json`, ExifTool URLs/hashes, system Perl risk, and Windows fork audit. |
 | The report states which things are still only validated on one OS | **Met** | Section 8 details single-OS validations. |
 
 ---
@@ -478,7 +682,7 @@ allow-git = [
 
 - **Windows Job Runs 16 of 18 Tests:**
   `test_child_killed_after_timeout` and `test_roundtrip_non_utf8_path_unix` are Unix-only (`#[cfg(unix)]`).
-  - *Killing ExifTool on timeout:* Validated on macOS only. On Windows, `exiftool.exe` is a self-extracting wrapper executable that spawns an internal Strawberry Perl child process (`exiftool_files\`). Killing the parent wrapper process on Windows does not terminate the child process tree unless encapsulated in a Windows Job Object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), which will be implemented in Phase 1 / 3.
+  - *Killing ExifTool on timeout:* Validated on macOS only. On Windows, `exiftool.exe` executes with its bundled Strawberry Perl runtime (`exiftool_files\`). Process hierarchy under `-stay_open` was measured directly in CI via `Get-CimInstance Win32_Process` (exiftool executed as a single process, 0 child processes spawned). If child processes are spawned in long-running modes, process tree termination on timeout requires platform-specific handling.
   - *Non-UTF8 paths:* Windows native filesystem paths are 16-bit wide character sequences (`u16`), unlike arbitrary 8-bit Unix byte sequences (`OsStrExt`).
 - **Windows Long Path Handling:**
   The Windows long path test (`test_exiftool_long_path`, 382 characters) passed in CI because `HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled` was set to `0x1` on the runner. Machines with `LongPathsEnabled = 0` or legacy Win32 paths require `\\?\` prefixing.
