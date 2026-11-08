@@ -167,7 +167,33 @@ jobs:
           chmod +x "$EXE_PATH"
           echo "Testing extracted bundle at: $TEST_APP"
 
-          # 2. Verify otool -L for main binary and all bundled dylibs (expect zero Homebrew or /usr/local lines)
+          # 2. Check bundled dylib table in docs/native-dependencies.md §4.3
+          echo "=== Verifying bundled dylib table against docs/native-dependencies.md §4.3 ==="
+          node scripts/check-dylib-table.mjs "$TEST_APP"
+
+          # 3. Verify libvips CLI untrusted loader control test (proves libvips honours VIPS_BLOCK_UNTRUSTED)
+          echo "=== CLI Control Test 1: vips copy without VIPS_BLOCK_UNTRUSTED (must succeed) ==="
+          vips copy tests/fixtures/generated/fixture_blocked.svg /tmp/svg_control_allowed.png
+          test -f /tmp/svg_control_allowed.png
+          echo "✓ Success: vips copy succeeded when unblocked"
+
+          echo "=== CLI Control Test 2: vips copy with VIPS_BLOCK_UNTRUSTED=1 (must fail) ==="
+          set +e
+          CLI_BLOCK_OUTPUT=$(VIPS_BLOCK_UNTRUSTED=1 vips copy tests/fixtures/generated/fixture_blocked.svg /tmp/svg_control_blocked.png 2>&1)
+          CLI_BLOCK_EXIT=$?
+          set -e
+          echo "$CLI_BLOCK_OUTPUT"
+          if [ $CLI_BLOCK_EXIT -eq 0 ]; then
+            echo "❌ Control failure: vips copy loaded SVG despite VIPS_BLOCK_UNTRUSTED=1"
+            exit 1
+          fi
+          if ! echo "$CLI_BLOCK_OUTPUT" | grep -q "not a known file format"; then
+            echo "❌ Expected error message containing 'not a known file format'"
+            exit 1
+          fi
+          echo "✓ Success: vips copy rejected SVG under VIPS_BLOCK_UNTRUSTED=1 with code $CLI_BLOCK_EXIT"
+
+          # 4. Verify otool -L for main binary and all bundled dylibs (expect zero Homebrew or /usr/local lines)
           echo "=== Checking otool -L on main binary for Homebrew / usr/local ==="
           otool -L "$EXE_PATH" | grep -E "/opt/homebrew|/usr/local" || echo "✓ Main binary clean: no Homebrew or /usr/local references"
           echo "=== Checking otool -L on all bundled dylibs ==="
@@ -180,16 +206,16 @@ jobs:
           done
           echo "✓ All bundled dylibs clean: zero Homebrew or /usr/local references"
 
-          # 3. Physically hide Homebrew on runner to prove complete hermeticity
+          # 5. Physically hide Homebrew on runner to prove complete hermeticity
           sudo mv /opt/homebrew /opt/homebrew.off
 
-          # 4. Execute smoke test in stripped clean environment (no bypass flags)
+          # 6. Execute smoke test in stripped clean environment (no bypass flags)
           set +e
           env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "$EXE_PATH" --smoke-test --out smoke-macos-arm64.json
           SMOKE_EXIT=$?
           set -e
 
-          # 5. Restore Homebrew
+          # 7. Restore Homebrew
           sudo mv /opt/homebrew.off /opt/homebrew
 
           cat smoke-macos-arm64.json
@@ -236,12 +262,96 @@ jobs:
           }
           Get-ChildItem -Path $installDir
 
-          # 3. Print DLL imports of installed photos-manager.exe using dumpbin
+          # 2.5 Verify libvips CLI untrusted loader control test (using deps\vips\bin\vips.exe)
+          $vipsExe = "deps\vips\bin\vips.exe"
+          echo "=== CLI Control Test 1: vips.exe copy without VIPS_BLOCK_UNTRUSTED (must succeed) ==="
+          & $vipsExe copy tests\fixtures\generated\fixture_blocked.svg "$env:RUNNER_TEMP\svg_control_allowed.png"
+          if ($LASTEXITCODE -ne 0) {
+            echo "❌ Control failure: vips.exe failed to copy SVG when unblocked"
+            exit 1
+          }
+          echo "✓ Success: vips.exe copy succeeded when unblocked"
+
+          echo "=== CLI Control Test 2: vips.exe copy with VIPS_BLOCK_UNTRUSTED=1 (must fail) ==="
+          $env:VIPS_BLOCK_UNTRUSTED = "1"
+          $cliBlockOutput = & $vipsExe copy tests\fixtures\generated\fixture_blocked.svg "$env:RUNNER_TEMP\svg_control_blocked.png" 2>&1 | Out-String
+          $cliBlockExit = $LASTEXITCODE
+          $env:VIPS_BLOCK_UNTRUSTED = $null
+          Write-Host $cliBlockOutput
+          if ($cliBlockExit -eq 0) {
+            echo "❌ Control failure: vips.exe loaded SVG despite VIPS_BLOCK_UNTRUSTED=1"
+            exit 1
+          }
+          if ($cliBlockOutput -notmatch "not a known file format") {
+            echo "❌ Expected error message containing 'not a known file format'"
+            exit 1
+          }
+          echo "✓ Success: vips.exe rejected SVG under VIPS_BLOCK_UNTRUSTED=1 with code $cliBlockExit"
+
+          # 2.6 ExifTool child process spawning measurement
+          echo "=== Measuring Windows ExifTool process tree in stay_open mode ==="
+          $exiftoolExe = "$installDir\resources\exiftool\exiftool.exe"
+          if (Test-Path $exiftoolExe) {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $exiftoolExe
+            $psi.Arguments = "-stay_open True -@ -"
+            $psi.RedirectStandardInput = $true
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $p = [System.Diagnostics.Process]::Start($psi)
+            Start-Sleep -Seconds 2
+            $children = Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $p.Id } | Select-Object Name,ProcessId
+            echo "Parent process: $($p.ProcessName) (PID: $($p.Id))"
+            echo "Child processes spawned by exiftool.exe:"
+            if ($children) {
+              $children | Format-Table -AutoSize | Out-String | Write-Host
+            } else {
+              echo "No child processes detected (exiftool is single process)."
+            }
+            # Terminate stay_open session
+            $p.StandardInput.WriteLine("-stay_open")
+            $p.StandardInput.WriteLine("False")
+            $p.StandardInput.Flush()
+            $exited = $p.WaitForExit(3000)
+            if (-not $exited) {
+              $p.Kill()
+            }
+          } else {
+            echo "exiftool.exe not found at $exiftoolExe"
+          }
+
+          # 3. Print DLL imports of installed photos-manager.exe and all installed DLLs using dumpbin
           $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           $dumpbin = Get-ChildItem -Path "$vsPath\VC\Tools\MSVC" -Filter "dumpbin.exe" -Recurse | Where-Object { $_.FullName -match "bin\\Hostx64\\x64\\dumpbin\.exe" } | Select-Object -First 1 -ExpandProperty FullName
           if ($dumpbin) {
             echo "=== DLL Dependencies of installed photos-manager.exe (dumpbin /dependents) ==="
             & $dumpbin /dependents "$installDir\photos-manager.exe"
+
+            echo "=== Auditing all top-level installed DLLs for VC++ runtime dependencies ==="
+            $installedDlls = Get-ChildItem -Path $installDir -Filter "*.dll" -File
+            $dllCount = $installedDlls.Count
+            echo "Total top-level installed DLLs scanned: $dllCount"
+
+            $vcMatches = @()
+            foreach ($dll in $installedDlls) {
+              $deps = & $dumpbin /dependents $dll.FullName | Out-String
+              $matched = [regex]::Matches($deps, "(?i)(vcruntime\S*|msvcp\S*|vcomp\S*|concrt\S*)") | ForEach-Object { $_.Value } | Select-Object -Unique
+              if ($matched) {
+                $vcMatches += [PSCustomObject]@{
+                  DLL = $dll.Name
+                  VCRuntimeImports = ($matched -join ", ")
+                }
+              }
+            }
+
+            if ($vcMatches.Count -gt 0) {
+              echo "WARNING: The following DLLs import Visual C++ runtime:"
+              $vcMatches | Format-Table -AutoSize | Out-String | Write-Host
+            } else {
+              echo "SUCCESS: 0 out of $dllCount installed DLLs import VC++ runtimes (clean Universal CRT / system only)."
+            }
+            echo "Note: The ExifTool Strawberry Perl runtime DLLs under resources\exiftool\exiftool_files\ were not included in this top-level scan."
           } else {
             echo "dumpbin.exe not found via vswhere"
           }

@@ -66,40 +66,59 @@ All external archives downloaded during CI and packaging are pinned with exact u
 
 ---
 
-### 4.2 Windows `vips-dev-x64-web-8.18.6` Manifest & License Audit
+### 4.2 Windows `vips-dev-x64-web-8.18.6` Component & License Audit
 
 The official Windows minimal precompiled package (`vips-dev-x64-web-8.18.6.zip`) provides a clean-machine runtime without GPL contamination:
 - **Build System:** MXE cross-compilation environment (`https://mxe.cc`).
-- **Archive Manifest (`manifest.txt`):** Includes core image decoding and platform support libraries:
-  - `libvips 8.18.6` (core engine via `libvips-42.dll`, `libvips-cpp-42.dll`)
-  - `libjpeg-turbo 3.0.4` (JPEG decoder/encoder via `libjpeg-62.dll`)
-  - `libpng 1.6.44` / `libspng 0.7.4` (PNG via `libpng16-16.dll`)
-  - `libwebp 1.4.0` (WebP via `libwebp-7.dll`, `libwebpdemux-2.dll`, `libwebpmux-3.dll`, `libsharpyuv-0.dll`)
-  - `libtiff 4.7.0` (TIFF via `libtiff-6.dll`)
-  - `libheif 1.18.2` and `aom 3.9.1` (AVIF/AV1 decode via `libheif.dll` and `libaom.dll`)
-  - `cgif 0.4.1` (GIF via `libcgif-0.dll`)
-  - `lcms2 2.16` (LittleCMS color management via `liblcms2-2.dll`)
-  - `libultrahdr 1.2.0` (UltraHDR via `libuhdr.dll`)
-  - `libimagequant 2.4.1` (BSD-2-Clause C fork palette quantization via `libimagequant.dll`)
-  - `librsvg 2.40.21` (SVG rendering via `librsvg-2-2.dll`, blocked at runtime)
-  - `glib 2.82.2`, `pango 1.54.0`, `cairo 1.18.2` (GNOME support stack via `libglib-2.0-0.dll`, `libgobject-2.0-0.dll`, `libgmodule-2.0-0.dll`, `libgio-2.0-0.dll`, `libcairo-2.dll`, `libpango-1.0-0.dll`, `libpangocairo-1.0-0.dll`, `libpangoft2-1.0-0.dll`, `libpixman-1-0.dll`)
-  - `zlib 1.3.1`, `expat 2.6.3`, `libexif 0.6.24`, `freetype 2.13.3`, `fontconfig 2.15.0`, `harfbuzz 9.0.0`, `fribidi 1.0.15`, `highway 1.2.0`, `libarchive 3.7.7`, `libffi 3.4.6`, `libxml2 2.13.3`, `libc++.dll`, `libunwind.dll`
-- **Licenses (`COPYING` and `licenses/`):**
-  - `libvips`: LGPL-2.1-or-later
-  - `glib`, `cairo`, `pango`, `libexif`: LGPL-2.1-or-later
-  - `libheif`: LGPL-3.0-or-later
-  - `libimagequant`: BSD-2-Clause (Note: MXE builds the original 2.4.1 C library, which is BSD-2-Clause, not the modern GPLv3 Rust rewrite)
-  - `libjpeg-turbo`, `libpng`, `libwebp`, `libtiff`, `cgif`, `lcms2`, `aom`, `expat`, `harfbuzz`, `highway`, `libarchive`, `libffi`, `libxml2`, `zlib`: Permissive (BSD, MIT, IJG, Zlib, Apache-2.0)
-- **Omitted Codecs & HEIC/HEVC Clarification:**
-  - `libde265` and `x265` are **omitted** from the MXE build due to patent encumbrance (explicitly documented in MXE build README). Therefore, `heifload` in this prebuilt Windows libvips package decodes **AVIF/AV1 only, NOT HEIC/HEVC**. HEIC/HEVC decoding is **not verified on either OS**.
+- **Archive Structure:** Contains a single root directory `vips-dev-8.18/` with `bin/` (38 DLLs and 4 EXEs: `vips.exe`, `vipsedit.exe`, `vipsheader.exe`, `vipsthumbnail.exe`), `include/`, `lib/`, `share/`, `etc/`, `ChangeLog`, `LICENSE` (LGPL-2.1 text), `README.md`, and `versions.json`.
+- **Archive License Policy:** The archive ships **no per-component license files** and no `licenses/` directory; only the root LGPL-2.1 `LICENSE` is bundled. Per-component licenses cited below are verified directly from upstream package repositories.
+- **Component Inventory (`versions.json`):** Exactly 28 upstream components are documented in `versions.json`. All 38 DLLs in `bin/` are accounted for by these 28 components plus the MXE LLVM toolchain runtime libraries:
+
+| Component | Version (`versions.json`) | Bundled DLL(s) in `bin/` | Upstream License & Citation URL | Distribution Status |
+|---|---|---|---|---|
+| `aom` | `3.14.1` | `libaom.dll` | [BSD-2-Clause](https://aomedia.googlesource.com/aom/+/refs/heads/main/LICENSE) | Permissive |
+| `archive` | `3.8.9` | `libarchive-13.dll` | [BSD-2-Clause](https://github.com/libarchive/libarchive/blob/v3.8.9/COPYING) | Permissive |
+| `cairo` | `1.18.4` | `libcairo-2.dll` | [LGPL-2.1-only OR MPL-1.1](https://gitlab.freedesktop.org/cairo/cairo/-/blob/1.18.4/COPYING) | LGPL (Permitted via dynamic linking) |
+| `cgif` | `0.5.3` | `libcgif-0.dll` | [MIT](https://github.com/dloebl/cgif/blob/v0.5.3/LICENSE) | Permissive |
+| `exif` | `0.6.26` | `libexif-12.dll` | [LGPL-2.1-or-later](https://github.com/libexif/libexif/blob/libexif-0_6_26-release/COPYING) | LGPL (Permitted via dynamic linking) |
+| `expat` | `2.8.3` | `libexpat-1.dll` | [MIT](https://github.com/libexpat/libexpat/blob/R_2_8_3/expat/COPYING) | Permissive |
+| `ffi` | `3.8.0` | `libffi-8.dll` | [MIT](https://github.com/libffi/libffi/blob/v3.8.0/LICENSE) | Permissive |
+| `fontconfig` | `2.18.3` | `libfontconfig-1.dll` | [Fontconfig (MIT-like)](https://gitlab.freedesktop.org/fontconfig/fontconfig/-/blob/2.18.3/COPYING) | Permissive |
+| `freetype` | `2.14.3` | `libfreetype-6.dll` | [FTL OR GPL-2.0-only](https://gitlab.freedesktop.org/freetype/freetype/-/blob/VER-2-14-3/docs/FTL.TXT) | Permissive (under FTL) |
+| `fribidi` | `1.0.16` | `libfribidi-0.dll` | [LGPL-2.1-or-later](https://github.com/fribidi/fribidi/blob/v1.0.16/COPYING) | LGPL (Permitted via dynamic linking) |
+| `glib` | `2.89.4` | `libgio-2.0-0.dll`, `libglib-2.0-0.dll`, `libgmodule-2.0-0.dll`, `libgobject-2.0-0.dll` | [LGPL-2.1-or-later](https://gitlab.gnome.org/GNOME/glib/-/blob/2.89.4/LICENSES/LGPL-2.1-or-later.txt) | LGPL (Permitted via dynamic linking) |
+| `harfbuzz` | `14.3.1` | `libharfbuzz-0.dll` | [MIT](https://github.com/harfbuzz/harfbuzz/blob/14.3.1/COPYING) | Permissive |
+| `heif` | `1.23.2` | `libheif.dll` | [LGPL-3.0-or-later](https://github.com/strukturag/libheif/blob/v1.23.2/COPYING) | LGPL (Permitted via dynamic linking) |
+| `highway` | `1.4.0` | `libhwy.dll` | [Apache-2.0 OR BSD-3-Clause](https://github.com/google/highway/blob/1.4.0/LICENSE) | Permissive |
+| `imagequant` | `2.4.1` | `libimagequant.dll` | [BSD-2-Clause](https://github.com/ImageOptim/libimagequant/blob/2.4.1/COPYRIGHT) | Permissive (Original C v2.4.1 fork) |
+| `lcms` | `2.19.1` | `liblcms2-2.dll` | [MIT](https://github.com/mm2/Little-CMS/blob/lcms2.19.1/LICENSE) | Permissive |
+| `mozjpeg` | `0826579` | `libjpeg-62.dll` | [BSD-3-Clause](https://github.com/mozilla/mozjpeg/blob/0826579/LICENSE.md) | Permissive |
+| `pango` | `1.58.2` | `libpango-1.0-0.dll`, `libpangocairo-1.0-0.dll`, `libpangoft2-1.0-0.dll` | [LGPL-2.1-or-later](https://gitlab.gnome.org/GNOME/pango/-/blob/1.58.2/COPYING) | LGPL (Permitted via dynamic linking) |
+| `pixman` | `0.46.4` | `libpixman-1-0.dll` | [MIT](https://gitlab.freedesktop.org/pixman/pixman/-/blob/pixman-0.46.4/COPYING) | Permissive |
+| `png` | `1.6.58` | `libpng16-16.dll` | [libpng-2.0](https://github.com/pnggroup/libpng/blob/v1.6.58/LICENSE) | Permissive |
+| `proxy-libintl` | `0.5` | *(integrated statically into glib)* | [LGPL-2.1-or-later](https://github.com/frida/proxy-libintl/blob/0.5/COPYING) | LGPL |
+| `rsvg` | `2.62.91` | `librsvg-2-2.dll` | [LGPL-2.1-or-later](https://gitlab.gnome.org/GNOME/librsvg/-/blob/2.62.91/COPYING.LIB) | LGPL (Blocked at startup) |
+| `tiff` | `4.7.2` | `libtiff-6.dll` | [libtiff (BSD-like)](https://gitlab.com/libtiff/libtiff/-/blob/v4.7.2/LICENSE.md) | Permissive |
+| `uhdr` | `2.0.2` | `libuhdr.dll` | [Apache-2.0](https://github.com/google/libultrahdr/blob/v2.0.2/LICENSE) | Permissive |
+| `vips` | `8.18.6` | `libvips-42.dll`, `libvips-cpp-42.dll` | [LGPL-2.1-or-later](https://github.com/libvips/libvips/blob/v8.18.6/LICENSE) | LGPL (Permitted via dynamic linking) |
+| `webp` | `1.6.0` | `libsharpyuv-0.dll`, `libwebp-7.dll`, `libwebpdemux-2.dll`, `libwebpmux-3.dll` | [BSD-3-Clause](https://chromium.googlesource.com/webm/libwebp/+/refs/tags/v1.6.0/COPYING) | Permissive |
+| `xml2` | `2.15.3` | `libxml2-16.dll` | [MIT](https://gitlab.gnome.org/GNOME/libxml2/-/blob/v2.15.3/Copyright) | Permissive |
+| `zlib-ng` | `2.3.3` | `libz1.dll` | [Zlib](https://github.com/zlib-ng/zlib-ng/blob/2.3.3/LICENSE.md) | Permissive |
+| *(MXE Toolchain)* | N/A | `libc++.dll`, `libunwind.dll` | [Apache-2.0 with LLVM Exception](https://llvm.org/LICENSE.txt) | Permissive |
+
+- **Key Facts Observed in Archive:**
+  - `bin/` contains **no** `libde265.dll`, `x265.dll`, or `dav1d.dll`.
+  - `libheif.dll` contains HEVC container metadata structures (`ImageItem_HEVC`, `Decoder_HEVC`) but **no HEVC decoder** (`strings libheif.dll | grep -ci de265` yields `0`).
+  - `heifload` in this prebuilt Windows libvips package therefore decodes **AVIF/AV1 only, NOT HEIC/HEVC**. Full HEIC/HEVC decoding is **not verified on either OS**.
+  - `librsvg-2-2.dll` **is** present in the archive, which makes runtime blocking strictly mandatory.
+  - `libimagequant` is version 2.4.1 (the BSD-2-Clause C library, not the GPL-3.0 Rust rewrite).
   - ImageMagick (`magickload`) is omitted entirely from the web build.
-  - `librsvg-2-2.dll` **is** present in the archive, which makes runtime blocking via `vips_block_untrusted_set(1)` and `vips_operation_block_set("svgload", 1)` strictly mandatory.
 
 ---
 
 ### 4.3 macOS Bundled Dynamic Libraries Audit & GPL Findings
 
-All 65 dynamic library files bundled into `Photos Manager.app/Contents/Frameworks/` from the host environment were audited against Homebrew formula metadata (`brew info --json=v2`). The table row count matches the exact file count in `Contents/Frameworks/`:
+All 67 dynamic library files bundled into `Photos Manager.app/Contents/Frameworks/` from the host environment were audited against Homebrew formula metadata (`brew info --json=v2`). The table row count matches the exact file count in `Contents/Frameworks/` (verified automatically by `scripts/check-dylib-table.mjs` in CI):
 
 | Library (`.dylib`) | Homebrew Formula | Formula Version | License | Copyleft Risk / Distribution Status |
 |---|---|---|---|---|
@@ -116,6 +135,8 @@ All 65 dynamic library files bundled into `Photos Manager.app/Contents/Framework
 | `libaec.0.dylib` | `libaec` | `1.1.7` | `BSD-2-Clause` | Permissive |
 | `libarchive.13.dylib` | `libarchive` | `3.8.9` | `BSD-2-Clause` | Permissive |
 | `libb2.1.dylib` | `libb2` | `0.98.1` | `CC0-1.0` | Public Domain / Permissive |
+| `libbrotlicommon.1.dylib` | `brotli` | `1.2.0` | `MIT` | Permissive |
+| `libbrotlidec.1.dylib` | `brotli` | `1.2.0` | `MIT` | Permissive |
 | `libcairo-gobject.2.dylib` | `cairo` | `1.18.6` | `LGPL-2.1-only OR MPL-1.1` | LGPL (Permitted via dynamic linking) |
 | `libcairo.2.dylib` | `cairo` | `1.18.6` | `LGPL-2.1-only OR MPL-1.1` | LGPL (Permitted via dynamic linking) |
 | `libcfitsio.10.dylib` | `cfitsio` | `4.7.0` | `CFITSIO` | Permissive |
@@ -189,11 +210,18 @@ All 65 dynamic library files bundled into `Photos Manager.app/Contents/Framework
 
 Per TASK-0C Known Issue 2 and Review Finding 3, `svgload` (librsvg) and `magickload` (ImageMagick) present substantial attack surfaces that must never execute in production.
 
-- **Startup Blocking Mechanism:** In `src-tauri/src/image_pipeline/vips.rs`, libvips initialization blocks untrusted operations:
+- **Startup Blocking Mechanism:** In `src-tauri/src/image_pipeline/vips.rs`, libvips initialization configures blocking for untrusted operations:
   1. Sets environment variable `VIPS_BLOCK_UNTRUSTED=1`.
   2. Calls C API `vips_block_untrusted_set(1)` on startup.
   3. Explicitly calls `vips_operation_block_set("svgload", 1)` and `vips_operation_block_set("magickload", 1)`.
-- **Validation Probe:** The smoke test runs an active probe loading `tests/fixtures/generated/fixture_blocked.svg`. The probe requires failure; if libvips successfully parses the SVG, the smoke test reports an error and fails. The bypass flag `PHOTOS_DEV_ALLOW_SVGLOAD` was removed.
+- **Validation Probe & Smoke JSON Clarification:**
+  - `has_svgload: false` in the smoke test JSON is a static constant (`is_loader_supported` hardcodes `false` for svgload and magickload before querying libvips). It proves that application code refuses to dispatch to svgload, but **does not** prove that libvips's own internal loader was unregistered.
+  - The active probe inside the smoke test attempts to decode `tests/fixtures/generated/fixture_blocked.svg` via `libvips`. It requires that libvips returns an error ("is not a known file format"), proving that this SVG cannot be decoded at runtime.
+- **Stock CLI Control Verification (macOS & Windows CI):**
+  To distinguish "blocked by security policy" from "loader absent":
+  1. **Unblocked Control:** Running stock CLI `vips copy tests/fixtures/generated/fixture_blocked.svg <out>.png` without `VIPS_BLOCK_UNTRUSTED` succeeds (exit code 0), proving that librsvg is present and functional in the distribution.
+  2. **Blocked Control:** Running `VIPS_BLOCK_UNTRUSTED=1 vips copy tests/fixtures/generated/fixture_blocked.svg <out>.png` fails with `"VipsForeignLoad: ... is not a known file format"` (exit code 1).
+  This control experiment proves that setting the environment variable `VIPS_BLOCK_UNTRUSTED=1` alone is sufficient for libvips to block untrusted SVG loaders. The subsequent in-code calls to `vips_block_untrusted_set(1)` and `vips_operation_block_set` are **untested redundancy**.
 
 ---
 
