@@ -58,3 +58,46 @@ Then: pnpm verify, update the report header with `git rev-parse --short HEAD` fo
 0C merged, tag `accepted/0C`. 0D: FIX, route decided. New: 0E (Windows build), 0F (macOS, proposed). D10, D11. Risks 12, 20, 21, 22 updated or added.
 
 Next task: 0E (written, `tasks/TASK-0E-windows-heic-libvips.md`), issued after 0D is accepted and merged.
+
+---
+
+# Round 2 (2026-11-08, late evening)
+
+## Verdict: ACCEPT, after one check by the owner (the `ci.yml` diff). Merge follows.
+
+All seven fix items were done, the evidence is raw, and CI proves the one code change. The only thing I could not see is the actual `ci.yml` diff (the report has the diffstat, 13 lines, but not the lines). The owner pastes it (NEXT_STEPS step 1); if it shows what the report says, 0D is accepted and merged.
+
+## What I looked at
+REPORT-0D.md at `7e1282c`; `git log` (HEAD `7e1282c`, then `88aa1f4`, `766a8d9`, `3dbfb90`, `70e5b90`, base `7f4c31b`); `gh run list` and `pnpm verify` (18 tests, green); screenshots of the Actions list (runs #21 to #25) and of run 42506080374 (three jobs green, six artifacts); the log of `gh run rerun 42464971330 --failed`; the GitHub billing page. Not seen: the repo, the `ci.yml` diff, the Windows smoke JSON.
+
+## Status of the seven fix items
+| # | Item | Result |
+|---|---|---|
+| 1 | macOS evidence raw | Done: `ls` shows `vips-heif.dylib` in the module folder; `otool -L` shows `libheif.1.dylib` linking `libx265.217`, `libde265.0`, `libaom.3`, `libsharpyuv.0`; `nm -mu` shows `_x265_api_get_217` and `_x265_cleanup` undefined (from libx265). CI smoke JSON from the clean macOS runner lists `jpegload, pngload, webpload, tiffload, gifload` and no `heifload`: today's packaged app cannot open HEIC. |
+| 2 | Windows evidence | Done: README text and URL quoted (the flag turns on libde265 and x265 together); the `strings` output is raw and "source not read" is stated honestly. Note: most of the plugin strings are generic error-table text that every libheif build contains. The strong evidence is the string `Plugins are not supported` (only present when plugin loading is compiled out) together with no `LIBHEIF_PLUGIN_PATH`. Good enough; 0E's audit step makes it moot. |
+| 3 | ExifTool claim | Done, and it exposed an error: the staged copy on the owner's Mac says **13.55**, not the pinned 13.61. The round-1 sentence was wrong for the local copy. Positive: a `sips`-made HEIC keeps `Orientation: Rotate 90 CW`, `Make: PhotoCorp`, `Model: CameraPro 1` (640x480), so `sips` is a usable fixture generator for 0E. It still has to be shown that the file is HEVC. |
+| 4 | Acceptance table | Done, except the SVG row still carries my literal wording ("CI control not run on this branch") next to a sentence saying the CI matrix is green. The CI log in the report shows the control passing on macOS (unblocked copy succeeds, blocked copy rejected). Not blocking; the Windows half will be shown by 0E. |
+| 5 | `package-bundle.mjs` | Done. I read the diff: `runRequiredCmd` exits 1 only through `execSync`'s exception (non-zero exit code), so stderr warnings cannot fail it; the `otool -l` check before `-add_rpath` makes a re-run safe; `ditto` failure is now fatal instead of a warning. CI proof: macOS job green on `88aa1f4` with the 67 = 67 dylib check, both SVG control tests, and zero Homebrew references. |
+| 6 | `ci.yml` retries | Claimed, not seen (see above). Windows job green on both branch runs, so the step works on the happy path; the retry path has not been exercised. |
+| 7 | Concepts used | Done: repo-relative `file:line`. |
+
+## What the CI evidence tells us
+- **The 504 was a flake.** I had the owner re-run the failed job: `windows-x64` on run 42464971330 passed (24m39s, a long cold build), so `main` is green.
+- Run 42503425432 (`88aa1f4`, the last code commit): macOS 3m27s, Windows 6m35s, cargo deny 50s, all green. Run 42506080374 (`7e1282c`, docs only): all green, 7m7s.
+- Run #21 on the closed branch `task/0C` ("update docs") is red after 3m35s at about the same time as the 504 outage. I did not investigate; the branch is finished.
+
+## Small findings (none blocks)
+1. The `ci.yml` push trigger names branches one by one; 0D added `task/0D`. If that is merged as is, `task/0E` runs no CI until someone edits the list again. Fixed in 0E Part 0 (`task/**`).
+2. ExifTool drift: the dev copy is 13.55, CI is 13.61 (risk 23).
+3. The macOS evidence (d) shows the `env -i ... VIPSHOME=.../Contents` command with "..." instead of the real path. The CI JSON is the real proof, so I let it pass.
+
+## Actions budget (new, and now the tightest resource)
+From the billing page: compute **$10.12 of $12.00 included** used, resets in 23 days (about 1 December), nothing billed so far. By system: macOS 117 min = $7.25 ($0.062/min), Windows 268 min = $2.68 ($0.01/min), Linux 31 min = $0.19 ($0.006/min). One full run of our matrix costs about **$0.32** (macOS ~$0.25, Windows ~$0.07, Linux ~$0.01). That leaves **about 5 full runs this month**. Three runs this week were pure waste: docs-only pushes to `main` and to `task/0D` each ran the whole matrix.
+
+What I decided (D12, the owner can veto): docs commits carry `[skip ci]`; `ci.yml` gets `paths-ignore` for docs, a `concurrency` group that cancels superseded runs, and the macOS job runs only on `main` and on manual dispatch, so a task-branch push costs about $0.08 (Windows + cargo deny). The big macOS build for 0F happens on the owner's Mac and is published as a checksum-pinned release asset. TASK-0E starts with this as its Part 0.
+
+What the budget does not cover: 0E itself. A Linux MXE build is cheap per minute but long (my estimate 1 to 2 hours, not measured: $0.36 to $0.72 per attempt, two attempts allowed), plus a handful of Windows runs and one full matrix. I expect 0E to need more than the $1.88 left. The owner decides how to pay for it (options in NEXT_STEPS and STATUS): a small spending budget, a public repo (Actions are free for public repos), or waiting for the reset.
+
+## Owner decisions in this round
+- Phase 1 waits for 0E and 0F (owner, 2026-11-08).
+- Still open: how to cover the Actions budget (above).

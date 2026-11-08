@@ -1,13 +1,13 @@
 # Project Status
 
-Last updated: 2026-11-08 (evening) · Updated by the orchestrator after each review.
+Last updated: 2026-11-08 (late evening) · Updated by the orchestrator after each review.
 
 ## Phase gates
 
 | Phase | State | Gate evidence |
 |---|---|---|
-| 0 Feasibility | **In progress** (0A, 0B, 0C accepted and merged; 0D investigation reviewed, fix round open; 0E, 0F next) | reports/REVIEW-0A-0B.md, reports/REVIEW-0C.md, reports/REVIEW-0D.md. Still needed: 0D merged, 0E accepted (Windows HEIC), 0F accepted (macOS HEIC packaging), owner's full Windows checklist pass |
-| 1 Catalogue and scanning | Blocked on Phase 0 (owner may relax: see pending decisions) | |
+| 0 Feasibility | **In progress** (0A, 0B, 0C accepted and merged; 0D accepted pending the ci.yml check and merge; 0E, 0F next) | reports/REVIEW-0A-0B.md, reports/REVIEW-0C.md, reports/REVIEW-0D.md. Still needed: 0D merged, 0E accepted (Windows HEIC), 0F accepted (macOS HEIC packaging), owner's full Windows checklist pass |
+| 1 Catalogue and scanning | Blocked on Phase 0 (owner decided 2026-11-08: it waits for 0E and 0F) | |
 | 2 Grid and viewer | Blocked | |
 | 3 Metadata and search | Blocked | |
 | 4 Exact and visual duplicates | Blocked | |
@@ -24,9 +24,9 @@ Last updated: 2026-11-08 (evening) · Updated by the orchestrator after each rev
 | 0B | EmbeddingGemma 2 runtime spike | Accepted, merged to main: ONNX Runtime Q8, 256 d, budget 140 | ACCEPT | reports/REPORT-0B.md | accepted/0B |
 | 0B2 | Rust tokenisation + image preprocessing parity for the chosen ONNX files; run on both machines (proposed; write after 0D/0E/0F; before Phase 4B) | Proposed | | | |
 | 0C | CI matrix and clean-machine packaging | Accepted, squash-merged to main (`7f4c31b`) | ACCEPT | reports/REPORT-0C.md | accepted/0C |
-| 0D | HEIC decode: investigation (stopped on the stop condition, correctly) | Reviewed 2026-11-08: **FIX** (five evidence/overclaim items, plus CI proof for the `package-bundle.mjs` change and download retries in ci.yml). Branch `task/0D`, not yet pushed. Route decided (D10, D11). Once accepted, merge it; it carries no HEIC capability, only the investigation and the loud-failure packaging fix | FIX | reports/REPORT-0D.md, reports/REVIEW-0D.md | accepted/0D (after merge) |
-| 0E | Windows: own HEVC-decode-only libvips build (MXE recipe with libde265 on, x265 off), pinned release asset, app CI consumes it, HEIC fixtures, smoke test `heic_decode_verified` | Task file final (`tasks/TASK-0E-windows-heic-libvips.md`); issue after 0D is merged | | | |
-| 0F | macOS: HEIC in the packaged app (candidates: rebuild only libheif without x265 and bundle the heif module as a stopgap, or full own build; decided after 0E) | Proposed; write after 0E accepted | | | |
+| 0D | HEIC decode: investigation (stopped on the stop condition, correctly) | Round 2 reviewed 2026-11-08 (late): all seven fix items done with raw evidence; CI green on `88aa1f4` (run 42503425432, last code commit) and on `7e1282c` (docs only, run 42506080374). **ACCEPT once the owner pastes the `ci.yml` diff** (the report had only the diffstat). Then squash-merge; it carries no HEIC capability (investigation, fail-loud packaging, CI download retries) | ACCEPT (pending ci.yml diff) | reports/REPORT-0D.md, reports/REVIEW-0D.md | accepted/0D (after merge) |
+| 0E | Windows: own HEVC-decode-only libvips build (MXE recipe with libde265 on, x265 off), pinned release asset, app CI consumes it, HEIC fixtures, smoke test `heic_decode_verified` | Task file final (`tasks/TASK-0E-windows-heic-libvips.md`, now with a Part 0: CI economy). Issue after 0D is merged and the owner has answered the Actions budget question | | | |
+| 0F | macOS: HEIC in the packaged app (candidates: rebuild only libheif without x265 and bundle the heif module as a stopgap, or full own build; decided after 0E) | Proposed; write after 0E accepted. Plan: build on the owner's Mac (free), publish as a checksum-pinned release asset, CI only downloads it (macOS runner minutes are the expensive ones) | | | |
 
 ## Decisions
 
@@ -45,13 +45,14 @@ Decision IDs refer to spec §3.5.
 | D9 | iPhone HEIC decode on both OSes is a Phase 0 task | Accepted in principle (owner, 2026-11-07); route decided in D10/D11; tasks 0D (investigation), 0E (Windows), 0F (macOS) |
 | D10 | libvips stays the only image engine on both OSes. No macOS ImageIO (or Windows WIC) seam in v1: a second decode path with different colour/orientation/HDR behaviour on one OS, new unsafe FFI, a spec change, and no help for Windows. Documented fallback only, and only with the owner's agreement | Accepted (orchestrator, 2026-11-08) |
 | D11 | HEIC-capable libvips comes from our own pinned build recipe, Windows first: upstream MXE builder with libde265 on and x265 off, manually started workflow, checksum-pinned release asset in this repo (0E). macOS after (0F). Rejected: swapping in a clang/CMake-built `libheif.dll` inside the MXE zip | Accepted (orchestrator, 2026-11-08); owner may veto |
+| D12 | CI cost control: docs-only commits carry `[skip ci]` and `paths-ignore`; `concurrency` cancels superseded runs; the macOS job runs only on `main` and manual `workflow_dispatch` (task-branch pushes run Windows + cargo deny, about $0.08); heavy macOS builds happen on the owner's Mac and are published as checksum-pinned release assets; Linux builds in CI are cheap | Accepted (orchestrator, 2026-11-08); implemented by 0E Part 0; owner may veto |
 
 ### Pending owner decisions (not yet in the spec)
 
 | Topic | State |
 |---|---|
-| Start Phase 1 while 0E/0F run? | Default no (strict gates). Phase 1 does not decode images, so relaxing is low risk; the first Phase 1 task also needs spec v2.1 and I prefer one thing at a time. Owner may say otherwise |
-| GitHub Actions minutes | Repo is private; macOS runners count 10x and Windows 2x against the free allowance. Owner to report usage (Settings, Billing); if high, CI runs less often |
+| Start Phase 1 while 0E/0F run? | **Decided (owner, 2026-11-08): no. Phase 1 waits for 0E and 0F.** |
+| GitHub Actions minutes | **Open, needed before 0E.** Billing page 2026-11-08: compute $10.12 of $12.00 included used, resets in 23 days (about 1 Dec), nothing billed. macOS 117 min = $7.25, Windows 268 min = $2.68, Linux 31 min = $0.19. A full CI run costs about $0.32 (macOS about $0.25 of it), so about 5 full runs are left this month. Options: a small spending budget (owner's amount), a public repo (Actions free), or wait for the reset. D12 cuts the cost in every case; 0E probably still needs more than is left |
 | HEIF/HEIC decode route | Decided: D10/D11. HEVC patent pools are separate from the library licence: fine for personal use, legal check before Phase 7 |
 | Windows libvips binding: personal git fork of the Rust bindings (rung 1 of the §3.3 ladder) | Provisional; 0C fix item 8 documents it (crate resolves as libvips 1.7.2 via `[patch.crates-io]` in src-tauri/Cargo.toml). Revisit once the own-build zip exists (0E keeps the same layout, so the fork should keep working) |
 | D4 | Open (see above) |
@@ -67,6 +68,10 @@ Decision IDs refer to spec §3.5.
 - Purpose confirmed: the app exists to manage iPhone photos on the Mac and the laptop, so HEIC on both is needed soon.
 - A Syncthing problem must be cleaned up before the Windows checklist (code moves via GitHub, not Syncthing). Solved by the owner 2026-11-08.
 
+2026-11-08 (late):
+- Phase 1 waits for 0E and 0F.
+- Sent the GitHub billing page (compute $10.12 of $12.00 included).
+
 ### Pending spec edits (apply together as spec v2.1 when the first Phase 1 task is issued)
 1. §9.1: embedding is opt-in per root, resumable, pausable, with an ETA; default budget 140 and 256 d; budgets never mixed in one index.
 2. §15: name the reference machines (Mac M4 16 GB; Windows Ryzen 7 5700U 8 GB) and measure on both.
@@ -75,6 +80,7 @@ Decision IDs refer to spec §3.5.
 5. §3.3 / §6.5: HEIF stack: libvips stays the only engine (D10); our own pinned build with libheif + libde265 (+ libaom), no x265 (D11); HEVC decoder licence/patent note.
 6. §17.2: the Windows clean-machine test runs the installer (not the bare exe), and the VC++ runtime must be accounted for.
 7. §3.4: dependency builds that we produce ourselves live under `deps/`, are started manually, and are stored as checksum-pinned release assets.
+8. §17.1: CI cost-control rules (D12): path filters, concurrency, macOS job on `main`/manual only, heavy macOS dependency builds done locally and published as release assets.
 
 ## Known risks
 
@@ -96,10 +102,12 @@ Decision IDs refer to spec §3.5.
 16. Windows kill-on-timeout for ExifTool is validated on macOS only (the two Unix-only tests). Measured in CI (stay_open mode, 2 s): `exiftool.exe` is a single process with no child on Windows. Still no Windows test that a timeout kills it: add a Windows variant of `test_child_killed_after_timeout` with the metadata work in Phase 1. The long-path test depends on `LongPathsEnabled`, which is `0x1` on both the CI runner and the owner's laptop.
 17. HEVC patent pools: separate from the library licences; fine for personal use, get a legal check before any distribution (Phase 7). Same for the GPL libraries in item 11.
 18. Dev setup on Windows needs several environment variables (`VIPS_DIR`, `VIPS_LIB_DIR`, `EXIFTOOL_DIR`, `PKG_CONFIG_PATH`, `LIB`, `PATH`); the doc omitted them (0C fix 2). Syncing the repo through Syncthing between OSes is unsafe; use GitHub.
-19. Carry-forward list from the 0C review (none blocks Phase 0): `vips.rs` `.expect()` and `set_var` in the lazy init (Phase 1); `package-bundle.mjs` swallowed failures of `install_name_tool`/`codesign`/`ditto` (**fixed in 0D, pending CI proof**); CI pins (floating `dtolnay/rust-toolchain@stable`, Node 20 action deprecation warnings) and `--smoke-test` shipped in the production binary (Phase 7); stray `.gitkeep` in the Windows installer; GitHub-hosted licence URLs in §4.2 were not independently re-checked by the reviewer (spot-check before any distribution; 0E rewrites §4.2).
-20. **CI downloads have no retries** (found 2026-11-08): run 42464971330 (the push of the 0C merge to `main`) had `windows-x64` fail after 12 s with `curl: (22) ... 504` fetching the libvips zip from GitHub Releases; the script kept going and failed misleadingly at `Get-FileHash`. A transient upstream error, not a regression. Fix: 0D fix item 6 (retries, stop on first failure, same for the SourceForge ExifTool download). Rerun of that run pending (NEXT_STEPS step 1).
-21. **GitHub Actions minutes** (private repo): macOS runners cost 10x and Windows 2x of the free allowance; 0C used 10+ runs. Owner to check usage. Heavy builds (0E's libvips build) must be `workflow_dispatch` only.
+19. Carry-forward list from the 0C review (none blocks Phase 0): `vips.rs` `.expect()` and `set_var` in the lazy init (Phase 1); `package-bundle.mjs` swallowed failures of `install_name_tool`/`codesign`/`ditto` (**fixed in 0D; CI-proven on macOS, run 42503425432**); CI pins (floating `dtolnay/rust-toolchain@stable`, Node 20 action deprecation warnings) and `--smoke-test` shipped in the production binary (Phase 7); stray `.gitkeep` in the Windows installer; GitHub-hosted licence URLs in §4.2 were not independently re-checked by the reviewer (spot-check before any distribution; 0E rewrites §4.2).
+20. **CI downloads had no retries** (found 2026-11-08): run 42464971330 (the push of the 0C merge to `main`) had `windows-x64` fail after 12 s with `curl: (22) ... 504`; the script kept going and failed misleadingly at `Get-FileHash`. Transient: the failed job was re-run and passed (24m39s), so `main` is green. 0D added retries, `$ErrorActionPreference = 'Stop'` and exit-code checks to `ci.yml` (claimed in the report; the diff is still to be checked by the reviewer; the retry path has not been exercised).
+21. **GitHub Actions minutes** (private repo): $10.12 of $12.00 included used by 2026-11-08, resets about 1 Dec; macOS $0.062/min, Windows $0.01/min, Linux $0.006/min; a full run is about $0.32, so about 5 full runs remain. Docs-only pushes ran the whole matrix three times this week (waste). Fix: D12 / 0E Part 0. 0E's build and test runs probably exceed what is left; the owner decides how to cover it. Heavy builds are `workflow_dispatch` only.
 22. **Own libvips build recipe** (0E/0F) is new maintenance surface: we pin an upstream commit and carry a small patch; MXE builds are long (estimate 1-2 h on Linux, not measured). Mitigation: built once, stored as a release asset with a checksum; the app CI never rebuilds it.
+23. Dev staging drift (found 2026-11-08): the ExifTool staged in `src-tauri/resources/exiftool` on the owner's Mac reports 13.55, while CI and the bundle pin 13.61; the 0D round-1 claim "13.61 parses" was wrong for the local copy. Low risk; Phase 1: make the staging script fetch or check the pinned version.
+24. The `ci.yml` push trigger lists branches by name (0D added `task/0D`); until 0E Part 0 replaces it with `task/**`, a new task branch runs no CI unless someone edits the list.
 
 ## Log
 
@@ -114,3 +122,5 @@ Decision IDs refer to spec §3.5.
 - 2026-11-08 — TASK-0C round 3 reviewed (reports/REVIEW-0C.md): FIX (6 small items). I opened the libvips Windows zip: no `manifest.txt`, no `licenses/`; the docs' §4.2 versions were invented. Verified the fork diffstat against upstream (exact). Owner's laptop installer test passed twice (after the stale-artifact failure). Owner's Mac `vips -l` lists `heifload`. TASK-0D drafted. Syncthing issue solved by the owner.
 - 2026-11-08 (later) — TASK-0C round 3 re-checked at `20fb0ee`: all six items done with real CI output (dylib table script 67 = 67; SVG control on both OSes; Windows exiftool single process; 38/38 DLLs clean; real diffstats; macOS zip size mystery explained). **0C ACCEPTED.** Owner decoded a real iPhone HEIC on the Mac with Homebrew libvips. TASK-0D finalised; merge and docs-sync steps given.
 - 2026-11-08 (evening) — 0C squash-merged to `main` (`7f4c31b`, tag `accepted/0C`). TASK-0D ran and stopped on its stop condition: investigation report on `task/0D`. Reviewed (reports/REVIEW-0D.md): **FIX** (no raw macOS evidence, circumstantial Windows evidence, an unexplained "real HEIC" claim, two overclaimed acceptance rows, one unproven code change). Verified upstream: `build-win64-mxe --with-hevc` builds libde265 and x265 together; prebuilt zips contain neither. Decisions D10 (libvips only, no ImageIO seam) and D11 (own pinned build, Windows first). The `main` CI run 42464971330 had a transient 504 in the Windows download step (risk 20). TASK-0E written; 0F proposed. NEXT_STEPS and LEARNING (lesson 4) updated.
+
+- 2026-11-08 (late) — TASK-0D round 2 reviewed (reports/REVIEW-0D.md): seven fix items done with raw evidence; ACCEPT after the owner pastes the `ci.yml` diff. CI green on `88aa1f4` and `7e1282c`; the rerun of 42464971330 passed (the 504 was a flake). New facts: the Mac's staged ExifTool is 13.55, not 13.61; a `sips`-made HEIC keeps orientation and camera tags. Owner: Phase 1 waits for 0E and 0F. Owner sent the billing page: $10.12 of $12.00 included used, about 5 full runs left. D12 (CI cost control) added; TASK-0E gets Part 0. NEXT_STEPS updated.
