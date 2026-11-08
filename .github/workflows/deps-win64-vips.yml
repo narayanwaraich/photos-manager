@@ -36,6 +36,7 @@ jobs:
       - name: Apply patches
         run: |
           cd upstream-build
+          rm -f build/plugins/hevc-deps/patches/x265-*.patch
           for p in ../deps/win64-vips/patches/*.patch; do
             echo "Applying patch: $p"
             patch -p1 < "$p"
