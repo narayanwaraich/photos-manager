@@ -20,6 +20,18 @@ function runCmd(cmd) {
   }
 }
 
+function runRequiredCmd(cmd) {
+  try {
+    return execSync(cmd, { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  } catch (err) {
+    console.error(`❌ Required command failed: ${cmd}`);
+    if (err.stderr) {
+      console.error(err.stderr.toString().trim());
+    }
+    process.exit(1);
+  }
+}
+
 if (isMac) {
   // 1. Locate macOS .app bundle
   const bundleSearchDirs = [
@@ -138,11 +150,14 @@ if (isMac) {
     console.log(`Bundled ${visited.size} dynamic libraries into Contents/Frameworks/`);
 
     // 4. Update rpath and install names using install_name_tool
-    runCmd(`install_name_tool -add_rpath "@executable_path/../Frameworks" "${exePath}"`);
+    const exeLoadCommands = runCmd(`otool -l "${exePath}"`) || "";
+    if (!exeLoadCommands.includes("@executable_path/../Frameworks")) {
+      runRequiredCmd(`install_name_tool -add_rpath "@executable_path/../Frameworks" "${exePath}"`);
+    }
 
     function fixLinkages(filePath, isLib, libFilename) {
       if (isLib) {
-        runCmd(`install_name_tool -id "@rpath/${libFilename}" "${filePath}"`);
+        runRequiredCmd(`install_name_tool -id "@rpath/${libFilename}" "${filePath}"`);
       }
       const out = runCmd(`otool -L "${filePath}"`) || "";
       const lines = out.split("\n").slice(1);
@@ -156,7 +171,7 @@ if (isMac) {
             dep.includes("Cellar")
           ) {
             const base = path.basename(dep);
-            runCmd(`install_name_tool -change "${dep}" "@rpath/${base}" "${filePath}"`);
+            runRequiredCmd(`install_name_tool -change "${dep}" "@rpath/${base}" "${filePath}"`);
           }
         }
       }
@@ -174,7 +189,7 @@ if (isMac) {
     }
 
     // 5. Re-sign the application bundle ad-hoc to satisfy macOS code integrity
-    runCmd(`codesign --force --deep -s - "${appBundlePath}"`);
+    runRequiredCmd(`codesign --force --deep -s - "${appBundlePath}"`);
     console.log("✓ Relocatable @rpath patching and ad-hoc codesign complete for macOS bundle.");
 
     // 6. Verify zero Homebrew or /usr/local references in main binary and all bundled dylibs
@@ -205,13 +220,9 @@ if (isMac) {
     // 7. Produce a relocatable zip archive of photos-manager.app
     const macosBundleDir = path.dirname(appBundlePath);
     const zipPath = path.join(macosBundleDir, "photos-manager-macos-arm64.zip");
-    try {
-      if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
-      runCmd(`ditto -c -k --keepParent "${appBundlePath}" "${zipPath}"`);
-      console.log(`✓ Created portable macOS zip package: ${zipPath}`);
-    } catch (err) {
-      console.warn("⚠️ Warning creating zip:", err.message);
-    }
+    if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+    runRequiredCmd(`ditto -c -k --keepParent "${appBundlePath}" "${zipPath}"`);
+    console.log(`✓ Created portable macOS zip package: ${zipPath}`);
   }
 } else if (isWindows) {
   // On Windows, ensure all libvips DLLs are present in target/release adjacent to photos-manager.exe
