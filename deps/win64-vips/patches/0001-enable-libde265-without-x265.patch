@@ -1,0 +1,164 @@
+diff --git a/build.sh b/build.sh
+index b10ea53..dd6650b 100755
+--- a/build.sh
++++ b/build.sh
+@@ -95,7 +95,7 @@ fi
+ { [[ ${pkgs[*]} =~ "nip4" ]] || [[ ${pkgs[*]} =~ "vipsdisp" ]]; } && build_gtk=true || build_gtk=false
+ [[ ${pkgs[*]} =~ "vips-all" ]] && build_all_variant=true || build_all_variant=$build_gtk
+ [[ ${pkgs[*]} =~ "vips-web" ]] && build_web_variant=true || build_web_variant=false
+-[ "$with_hevc" = true ] && contains_gpl_libs=true || contains_gpl_libs=$build_all_variant
++contains_gpl_libs=$build_all_variant
+ 
+ if [ ${#mxe_targets[@]} -eq 0 ]; then
+   if [ "$contains_gpl_libs" = true ]; then
+diff --git a/build/libheif.mk b/build/libheif.mk
+index 62e39d8..72100b4 100644
+--- a/build/libheif.mk
++++ b/build/libheif.mk
+@@ -16,9 +16,9 @@ define $(PKG)_BUILD
+         -DENABLE_PLUGIN_LOADING=0 \
+         -DBUILD_TESTING=0 \
+         -DWITH_EXAMPLES=0 \
++        -DWITH_X265=0 \
+         $(if $(IS_HEVC),, \
+-            -DWITH_LIBDE265=0 \
+-            -DWITH_X265=0) \
++            -DWITH_LIBDE265=0) \
+         $(if $(and $(IS_JPEGLI),$(BUILD_STATIC)), -DCMAKE_CXX_FLAGS='$(CXXFLAGS) -DHAVE_JPEG_WRITE_ICC_PROFILE') \
+         '$(SOURCE_DIR)'
+     $(MAKE) -C '$(BUILD_DIR)' -j '$(JOBS)'
+diff --git a/build/plugins/hevc-deps/overrides.mk b/build/plugins/hevc-deps/overrides.mk
+index acade8b..8c3c800 100644
+--- a/build/plugins/hevc-deps/overrides.mk
++++ b/build/plugins/hevc-deps/overrides.mk
+@@ -2,80 +2,6 @@ $(PLUGIN_HEADER)
+ 
+ IS_HEVC := $(true)
+ 
+-## Update dependencies
+-
+-# upstream version is 4.1
+-# cannot use GH_CONF:
+-# x265_GH_CONF  := Multicorewareinc/x265/releases
+-x265_VERSION  := 4.3
+-x265_CHECKSUM := 83c53e4c8bbb8f1e33ed59e10a7d621d1d7801ca853910c3eb41f038b8ffb121
+-x265_PATCHES  := $(realpath $(sort $(wildcard $(dir $(lastword $(MAKEFILE_LIST)))/patches/x265-[0-9]*.patch)))
+-x265_SUBDIR   := x265_$(x265_VERSION)
+-x265_FILE     := x265_$(x265_VERSION).tar.gz
+-x265_URL      := https://github.com/Multicorewareinc/x265/releases/download/$(x265_VERSION)/$(x265_FILE)
+-
+ ## Override sub-dependencies
+ 
+-libheif_DEPS := $(libheif_DEPS) libde265 x265
+-
+-## Override build scripts
+-
+-# disable CLI
+-# build with `-DCMAKE_BUILD_TYPE=MinSizeRel`
+-# enable assembly and build with `-DCROSS_COMPILE_ARM64=ON` on aarch64
+-define x265_BUILD
+-    cd '$(BUILD_DIR)' && mkdir -p 10bit 12bit
+-
+-    # 12 bit
+-    cd '$(BUILD_DIR)/12bit' && $(TARGET)-cmake '$(SOURCE_DIR)/source' \
+-        -DCMAKE_BUILD_TYPE=MinSizeRel \
+-        -DHIGH_BIT_DEPTH=ON \
+-        -DEXPORT_C_API=OFF \
+-        -DENABLE_SHARED=OFF \
+-        -DENABLE_ASSEMBLY=$(if $(call seq,64,$(BITS)),ON,OFF) \
+-        -DENABLE_CLI=OFF \
+-        -DENABLE_HDR10_PLUS=ON \
+-        -DMAIN12=ON \
+-        $(if $(call seq,aarch64,$(PROCESSOR)), -DCROSS_COMPILE_ARM64=ON)
+-
+-    $(MAKE) -C '$(BUILD_DIR)/12bit' -j '$(JOBS)'
+-    cp '$(BUILD_DIR)/12bit/libx265.a' '$(BUILD_DIR)/libx265_main12.a'
+-
+-    # 10 bit
+-    cd '$(BUILD_DIR)/10bit' && $(TARGET)-cmake '$(SOURCE_DIR)/source' \
+-        -DCMAKE_BUILD_TYPE=MinSizeRel \
+-        -DHIGH_BIT_DEPTH=ON \
+-        -DEXPORT_C_API=OFF \
+-        -DENABLE_SHARED=OFF \
+-        -DENABLE_ASSEMBLY=$(if $(call seq,64,$(BITS)),ON,OFF) \
+-        -DENABLE_CLI=OFF \
+-        -DENABLE_HDR10_PLUS=ON \
+-        $(if $(call seq,aarch64,$(PROCESSOR)), -DCROSS_COMPILE_ARM64=ON)
+-
+-    $(MAKE) -C '$(BUILD_DIR)/10bit' -j '$(JOBS)'
+-    cp '$(BUILD_DIR)/10bit/libx265.a' '$(BUILD_DIR)/libx265_main10.a'
+-
+-    # 8bit
+-    cd '$(BUILD_DIR)' && $(TARGET)-cmake '$(SOURCE_DIR)/source' \
+-        -DCMAKE_BUILD_TYPE=MinSizeRel \
+-        -DHIGH_BIT_DEPTH=OFF \
+-        -DEXPORT_C_API=ON \
+-        -DENABLE_SHARED=$(CMAKE_SHARED_BOOL) \
+-        -DENABLE_ASSEMBLY=$(if $(call seq,64,$(BITS)),ON,OFF) \
+-        -DENABLE_CLI=OFF \
+-        -DENABLE_HDR10_PLUS=ON \
+-        -DEXTRA_LIB='x265_main10.a;x265_main12.a' \
+-        -DEXTRA_LINK_FLAGS=-L'$(BUILD_DIR)' \
+-        -DLINKED_10BIT=ON \
+-        -DLINKED_12BIT=ON \
+-        $(if $(call seq,aarch64,$(PROCESSOR)), -DCROSS_COMPILE_ARM64=ON)
+-
+-    $(MAKE) -C '$(BUILD_DIR)' -j '$(JOBS)' $(subst -,/,$(INSTALL_STRIP_LIB))
+-
+-    $(if $(BUILD_SHARED), \
+-        rm -f '$(PREFIX)/$(TARGET)/lib/libx265.a' \
+-    $(else), \
+-        $(INSTALL) '$(BUILD_DIR)/libx265_main12.a' '$(PREFIX)/$(TARGET)/lib/libx265_main12.a'; \
+-        $(INSTALL) '$(BUILD_DIR)/libx265_main10.a' '$(PREFIX)/$(TARGET)/lib/libx265_main10.a'; \
+-        $(SED) -i 's|-lx265|-lx265 -lx265_main10 -lx265_main12|' '$(PREFIX)/$(TARGET)/lib/pkgconfig/x265.pc')
+-endef
++libheif_DEPS := $(libheif_DEPS) libde265
+diff --git a/build/plugins/hevc-deps/patches/x265-4-fixes-crlf.patch b/build/plugins/hevc-deps/patches/x265-4-fixes-crlf.patch
+deleted file mode 100644
+index 8f00b72..0000000
+--- a/build/plugins/hevc-deps/patches/x265-4-fixes-crlf.patch
++++ /dev/null
+@@ -1,31 +0,0 @@
+-This file is part of MXE. See LICENSE.md for licensing information.
+-
+-Contains ad hoc patches for cross building.
+-
+-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+-From: Kleis Auke Wolthuizen <github@kleisauke.nl>
+-Date: Sun, 27 Sep 2020 14:00:00 +0200
+-Subject: [PATCH 1/1] win32: ensure data symbols are correctly annotated
+-
+-Without this, the linker may treat data symbols as functions and
+-generate import thunks for them, which can cause crashes.
+-
+-Upstream-Status: Backport [https://github.com/Multicorewareinc/x265/commit/ccdf5b2b0323fb413c04a4ce3459c8fa75bf91ae]
+-
+-diff --git a/source/x265.def.in b/source/x265.def.in
+-index 1111111..2222222 100644
+---- a/source/x265.def.in
+-+++ b/source/x265.def.in
+-@@ -9,9 +9,9 @@ x265_picture_init
+- x265_picture_alloc
+- x265_picture_free
+- x265_param_apply_profile
+--x265_max_bit_depth
+--x265_version_str
+--x265_build_info_str
+-+x265_max_bit_depth DATA
+-+x265_version_str DATA
+-+x265_build_info_str DATA
+- x265_encoder_headers
+- x265_encoder_parameters
+- x265_encoder_reconfig
+diff --git a/build/plugins/web-deps/vips-web.mk b/build/plugins/web-deps/vips-web.mk
+index d99478a..b422361 100644
+--- a/build/plugins/web-deps/vips-web.mk
++++ b/build/plugins/web-deps/vips-web.mk
+@@ -31,6 +31,7 @@ define $(PKG)_PRE_CONFIGURE
+      printf '  "glib": "$(glib_VERSION)",\n'; \
+      printf '  "harfbuzz": "$(harfbuzz_VERSION)",\n'; \
+      printf '  "heif": "$(libheif_VERSION)",\n'; \
++     $(if $(IS_HEVC),printf '  "libde265": "$(libde265_VERSION)"$(comma)\n';) \
+      printf '  "highway": "$(highway_VERSION)",\n'; \
+      printf '  "imagequant": "$(libimagequant_VERSION)",\n'; \
+      $(if $(IS_JPEGLI), \

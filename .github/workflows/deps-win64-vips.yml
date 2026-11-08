@@ -1,0 +1,223 @@
+name: Build & Test Windows x64 libvips (HEVC Decode)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-zip:
+    name: Build Windows x64 libvips (Linux container)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Clone upstream build-win64-mxe at pinned commit
+        run: |
+          git clone https://github.com/libvips/build-win64-mxe.git upstream-build
+          cd upstream-build
+          git checkout 09cfccf20b91b441fbe97fa7a7ed8a597e55e830
+          ACTUAL_SHA=$(git rev-parse HEAD)
+          echo "Checked out upstream commit: $ACTUAL_SHA"
+          if [ "$ACTUAL_SHA" != "09cfccf20b91b441fbe97fa7a7ed8a597e55e830" ]; then
+            echo "❌ Upstream commit mismatch: expected 09cfccf20b91b441fbe97fa7a7ed8a597e55e830, got $ACTUAL_SHA"
+            exit 1
+          fi
+
+      - name: Apply patches
+        run: |
+          cd upstream-build
+          for p in ../deps/win64-vips/patches/*.patch; do
+            echo "Applying patch: $p"
+            patch -p1 < "$p"
+          done
+          git status
+          git diff
+
+      - name: Build Windows x64 vips-web with HEVC decode
+        run: |
+          cd upstream-build
+          ./build.sh --with-hevc -t x86_64-w64-mingw32.shared vips-web
+
+      - name: Audit artifact and check licensing
+        run: |
+          cd upstream-build
+          ZIP_FILE=$(find packaging -name "vips-dev-x64-web-*.zip" | head -n 1)
+          if [ -z "$ZIP_FILE" ]; then
+            echo "❌ Build artifact not found in packaging/"
+            exit 1
+          fi
+          echo "Found build artifact: $ZIP_FILE"
+          sha256sum "$ZIP_FILE"
+          unzip -l "$ZIP_FILE"
+
+          mkdir -p /tmp/vips-audit
+          unzip -q "$ZIP_FILE" -d /tmp/vips-audit
+          VIPS_ROOT=$(find /tmp/vips-audit -mindepth 1 -maxdepth 1 -type d | head -n 1)
+          echo "Extracted VIPS root: $VIPS_ROOT"
+
+          echo "=== AUDIT CHECKS ==="
+          # 1. Any x265 DLL or string in bin/
+          if ls "$VIPS_ROOT/bin"/*x265* 1> /dev/null 2>&1; then
+            echo "❌ AUDIT FAILURE: x265 DLL found in bin/"
+            exit 1
+          fi
+          if grep -ri "x265" "$VIPS_ROOT/bin" 1> /dev/null 2>&1; then
+            echo "❌ AUDIT FAILURE: string 'x265' found in bin/"
+            exit 1
+          fi
+          echo "✓ Audit pass: No x265 DLL or symbol in bin/"
+
+          # 2. libde265 DLL present
+          if ! ls "$VIPS_ROOT/bin"/libde265*.dll 1> /dev/null 2>&1; then
+            echo "❌ AUDIT FAILURE: No libde265 DLL found in bin/"
+            exit 1
+          fi
+          echo "✓ Audit pass: libde265 DLL found in bin/ ($(ls "$VIPS_ROOT/bin"/libde265*.dll))"
+
+          # 3. versions.json contains libde265
+          if ! grep -q "libde265" "$VIPS_ROOT/versions.json"; then
+            echo "❌ AUDIT FAILURE: versions.json lacks libde265"
+            exit 1
+          fi
+          echo "✓ Audit pass: versions.json contains libde265"
+          cat "$VIPS_ROOT/versions.json"
+
+          # 4. Any fftw, imagemagick or poppler component appears
+          if grep -E -q "fftw|imagemagick|poppler" "$VIPS_ROOT/versions.json"; then
+            echo "❌ AUDIT FAILURE: disallowed component in versions.json (web variant must not have fftw/imagemagick/poppler)"
+            exit 1
+          fi
+          if ls "$VIPS_ROOT/bin"/*fftw* "$VIPS_ROOT/bin"/*magick* "$VIPS_ROOT/bin"/*poppler* 1> /dev/null 2>&1; then
+            echo "❌ AUDIT FAILURE: disallowed library in bin/"
+            exit 1
+          fi
+          echo "✓ Audit pass: No fftw, imagemagick or poppler components"
+
+          # Move artifact for staging
+          cp "$ZIP_FILE" "$GITHUB_WORKSPACE/vips-dev-x64-web-hevc.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vips-dev-x64-web-hevc
+          path: vips-dev-x64-web-hevc.zip
+          if-no-files-found: error
+
+  test-windows:
+    name: Test HEIC decode & SVG control on Windows
+    needs: build-zip
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download built libvips artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vips-dev-x64-web-hevc
+          path: C:\vips-art
+
+      - name: Verify libvips CLI, HEIC decode and SVG blocking
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = (Get-ChildItem -Path "C:\vips-art\*.zip").FullName | Select-Object -First 1
+          echo "Testing artifact: $zip"
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
+          echo "SHA256: $hash"
+
+          $extractDir = "C:\vips"
+          New-Item -ItemType Directory -Path $extractDir -Force
+          tar.exe -xf $zip -C $extractDir --strip-components=1
+          $vipsBin = "$extractDir\bin"
+          $vipsExe = "$vipsBin\vips.exe"
+          $vipsThumb = "$vipsBin\vipsthumbnail.exe"
+
+          # Reduce PATH to system basics + zip bin
+          $origPath = $env:PATH
+          $env:PATH = "C:\Windows\System32;C:\Windows;$vipsBin"
+
+          echo "=== 1. Check vips.exe -l lists heifload ==="
+          $loaders = & $vipsExe -l
+          Write-Host $loaders
+          if ($loaders -notmatch "heifload") {
+            throw "vips.exe -l does NOT list heifload!"
+          }
+          echo "✓ Success: vips.exe lists heifload"
+
+          echo "=== 2. Decode HEIC fixture to PNG and check dimensions ==="
+          $heicFixture = "tests\fixtures\generated\image_orientation_6.heic"
+          $outPng = "$env:RUNNER_TEMP\heic_test.png"
+          # Orientation 6 source 640x480 -> thumbnail upright 240x320
+          & $vipsThumb $heicFixture -s 320 -o $outPng
+          if ($LASTEXITCODE -ne 0) {
+            throw "vipsthumbnail failed to decode $heicFixture with exit code $LASTEXITCODE"
+          }
+          if (-not (Test-Path $outPng)) {
+            throw "Output PNG was not created"
+          }
+          # Verify dimensions with vipsheader
+          $header = & "$vipsBin\vipsheader.exe" $outPng
+          Write-Host "Output thumbnail header: $header"
+          if ($header -notmatch "240x320") {
+            throw "Thumbnail dimensions mismatch: expected 240x320, got $header"
+          }
+          echo "✓ Success: HEIC decoded to upright 240x320 thumbnail!"
+
+          echo "=== 3. SVG untrusted loader block control ==="
+          $svgFixture = "tests\fixtures\generated\fixture_blocked.svg"
+          # Unblocked loads it
+          & $vipsExe copy $svgFixture "$env:RUNNER_TEMP\svg_allowed.png"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Control failure: vips.exe failed to copy SVG when unblocked"
+          }
+          echo "✓ Success: SVG loaded when unblocked"
+
+          # Blocked with VIPS_BLOCK_UNTRUSTED=1
+          $env:VIPS_BLOCK_UNTRUSTED = "1"
+          $svgBlockOut = & $vipsExe copy $svgFixture "$env:RUNNER_TEMP\svg_blocked.png" 2>&1 | Out-String
+          $svgBlockExit = $LASTEXITCODE
+          $env:VIPS_BLOCK_UNTRUSTED = $null
+          Write-Host $svgBlockOut
+          if ($svgBlockExit -eq 0) {
+            throw "Control failure: vips.exe loaded SVG despite VIPS_BLOCK_UNTRUSTED=1"
+          }
+          if ($svgBlockOut -notmatch "not a known file format") {
+            throw "Expected error containing 'not a known file format'"
+          }
+          echo "✓ Success: SVG blocked under VIPS_BLOCK_UNTRUSTED=1 with code $svgBlockExit"
+
+          $env:PATH = $origPath
+
+  publish:
+    name: Publish release asset
+    needs: [build-zip, test-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download built libvips artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vips-dev-x64-web-hevc
+          path: ./dist
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ZIP_FILE=$(find dist -name "vips-dev-x64-web-*.zip" | head -n 1)
+          SHA=$(sha256sum "$ZIP_FILE" | awk '{print $1}')
+          echo "Publishing release deps-win64-vips-8.18.6-hevc1 with $ZIP_FILE (SHA: $SHA)..."
+          gh release create deps-win64-vips-8.18.6-hevc1 "$ZIP_FILE" \
+            --title "deps-win64-vips-8.18.6-hevc1" \
+            --notes "Pinned Windows x64 libvips 8.18.6 (web variant) with libheif 1.23.2, libde265 1.1.1 (LGPL HEVC decode), libaom (AVIF decode), and zero GPL libraries (no x265). SHA-256: $SHA" \
+            || gh release upload deps-win64-vips-8.18.6-hevc1 "$ZIP_FILE" --clobber

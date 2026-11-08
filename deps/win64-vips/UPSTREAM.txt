@@ -1,0 +1,7 @@
+Repository: https://github.com/libvips/build-win64-mxe
+Tag: v8.18.6
+Commit: 09cfccf20b91b441fbe97fa7a7ed8a597e55e830
+Variant: web
+Architecture: x86_64-w64-mingw32.shared (x64)
+Packages: vips-web
+Flags: --with-hevc -t x86_64-w64-mingw32.shared
