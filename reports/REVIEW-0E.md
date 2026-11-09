@@ -1,4 +1,4 @@
-# Review of TASK-0E (round 1: stopped at the build failure)
+# Review of TASK-0E (round 1: stopped at the build failure; round 2 appended at the end)
 
 Date: 2026-11-09 · Branch reviewed: `task/0E` at `9cd87c9` (last code commit `3478455`)
 
@@ -45,4 +45,67 @@ Review feedback for TASK-0E (stopped at the build failure; the stop was correct)
 6. Version reconciliation. Your report says libheif 1.19.8, libde265 1.1.1, aom 3.12.1 for the recipe at the tag, but the stock zip we use ships libheif 1.23.2. Paste the stock zip's `versions.json` and the recipe's versions side by side. If the recipe's libheif is older than the stock zip's, say so and tell me which libheif the pinned image + recipe will really build; I decide whether that is acceptable.
 7. The temporary push trigger in deps-win64-vips.yml stays only until the build, audit and test have run once; the last commit of this task removes it (workflow_dispatch only), with `[skip ci]`.
 Then: `pnpm verify`, put `git rev-parse --short HEAD` of the last code commit in the report header, and stop.
+```
+
+
+---
+
+# Round 2 (2026-11-09, afternoon): the build works; the audit check is wrong
+
+Branch reviewed: `task/0E` at `b3a88d6` (last code commit `3eadd9e`). Run 42576054985.
+
+## Verdict: FIX (small). Not accepted yet, but this is the last round of the build itself.
+
+## What I looked at
+REPORT-0E.md (with the new "Fixes round 1" section), `git log`, `gh run list` for both workflows, `pnpm verify` (18 tests green), the audit log tail from the failed run (zip listing, SHA-256, `AUDIT FAILURE: string 'x265' found in bin/`), screenshots of the Actions list. Not seen: the real build log beyond the agent's excerpts, `deps-win64-vips.yml` itself (only the audit and test blocks pasted in the report), `ci.yml` itself (name list only).
+
+## What is good (this is real progress)
+1. **The digest pin worked.** Image `sha256:07d164c...` (upstream `master`, built 2026-06-05, LLVM 22.1.7) built cairo 1.18.4 and pango 1.58.2 with no `-Werror` failure, and the library versions now equal the stock zip's `versions.json` (the agent pasted both). That is the evidence D14 asked for. The reasoning for the choice is sound: the `rc`/`sha-2d0adc4` images come from the `llvm-23` branch (`:latest` is only tagged on `master`), and the other `master` image is dated after the tag.
+2. **The build itself is green**: all libraries compiled and linked, a 31 MB zip with `libde265.dll` and no `*x265*.dll`. First time in this task.
+3. **The audit "failure" was diagnosed correctly, and the agent proved it** by running the same `strings` test on upstream's stock zip, which contains no HEVC code: the string `x265` appears in `libvips-42.dll` there too. It is the name of an enum value (`VipsForeignHeifEncoder`, nick `x265`) that libvips registers whether or not an x265 library exists. That is a false positive, not a licence problem. The agent also stopped after two runs as told.
+4. D13 is applied (release job removed, `permissions: contents: read`, artifact with 14 days). `ci.yml`: the agent showed before/after step names, and every 0C and 0D step is still there; the macOS job runs again on every push (all three jobs green, run 42572543602). `actionlint` clean.
+5. The 1.19.8 / 3.12.1 version claims are corrected (they were typos; the recipe builds libheif 1.23.2, aom 3.14.1, same as stock).
+
+## Decision on the options table
+**Option A, made stricter, plus Option C** (one more build run; the zip from run 42576054985 cannot be reused because it only existed on the runner and was never uploaded). Option B (patching libvips source) is rejected: we would carry a source patch to silence a harmless string, and the string is also in the stock build.
+
+Why "stricter": narrowing the check to `libheif.dll` and `libde265.dll` would stop checking `libvips-42.dll` altogether, and that DLL is where a *real* x265 link would show up too (libvips calls libheif, but a future recipe change could pull an encoder in elsewhere). The enum nick `x265` is allowed; real linkage has other strings (`libx265`, `x265_encoder_open`, `x265_param`).
+
+## Findings
+
+### 1. Audit rewritten as a script, tested on known good and known bad input
+Move the audit out of YAML into `deps/win64-vips/audit-zip.sh <zip>` so it can be run on the Mac. Rules: (a) no file whose name contains `x265` anywhere in the zip; (b) in every DLL except `libvips-42.dll` and `libvips-cpp-42.dll`, `strings -a` finds no `x265` (case-insensitive); (c) in all DLLs including those two, no `libx265`, `x265_encoder`, `x265_param`; (d) `libde265.dll` exists and `libheif.dll` contains the string `libde265` (so the decoder is really linked); (e) `versions.json` names `libde265`; (f) no fftw, imagemagick, poppler. The agent must run it locally on the stock zip (expect: a, b, c, f pass; d, e fail with clear messages) and on a copy of the stock zip into which a fake `libx265.dll` has been added (expect: a fails) and one where a string `x265_encoder_open` has been appended to a copy of `libheif.dll` (expect: c fails). This proves the script is neither blind nor trigger-happy. `shellcheck` clean.
+
+### 2. The Windows test job has never run; check its expectations on the Mac first
+Two things I could see by reading it: (a) the expected sizes `240x320` and `640x480` assume that libvips/libheif do **not** rotate this particular `sips`-made HEIC when decoding but do when making the thumbnail. A HEIC can carry the rotation as an `irot` box or as an EXIF tag, and which one `sips` wrote is unknown, so these numbers may be wrong for a reason that has nothing to do with Windows. Find the truth on the Mac in one minute (`vipsheader`, `vips copy`, `vipsthumbnail` with Homebrew vips on both fixtures) and set the expected values from that, saying in the report which rotation mechanism the fixture uses. (b) The SVG control reads `tests\fixtures\generated\fixture_blocked.svg`. In `ci.yml` the fixtures are generated by a script ("Generate synthetic test fixtures"); the new `test-windows` job only checks out the repo. If that file is not tracked, the job fails at the control for a silly reason. Show `git ls-files tests/fixtures/generated` and generate or commit the file as needed.
+
+### 3. The report is a stack of layers; rewrite it as one coherent document
+Sections 1, 3, 4, 5, 6, 7, 8, 9, 10 still describe the old state next to the new "Fixes round 1" section: the summary says the macOS job is gated, the file list says the workflow publishes the release, the dependency table still says libheif 1.19.8 and aom 3.12.1, the first cost tally still has the wrong run ids (42513076162, and 42514416704, which is a deps run), "Decisions" still lists the cairo pin, section 9 is the obsolete first table, section 10 proposes work that is now different. Rewrite sections 1 to 10 to describe the **final** state; put the history in a short "Run log" table (run id from `gh run list`, commit, what failed or passed). Two more wrong statements: the download retries are described as a PowerShell loop with try/catch and 3 retries, but the 0D implementation is `curl.exe --retry 5 --retry-all-errors` plus a `$LASTEXITCODE` check; and the "unused patch" explanation should say plainly that the CRLF-deletion hunk was dropped and the `rm -f` line added to the workflow.
+
+### 4. Is the cairo pin still in the patch?
+The report says the patch pins `cairo_VERSION := 1.18.4` (sections 3, 4, 6), but the full patch diff pasted in 5(d) contains no cairo hunk. Probably the pin was removed once the base image was pinned (the image's own cairo is 1.18.4). Paste `grep -n cairo deps/win64-vips/patches/*.patch` and say which it is; fix every sentence that disagrees.
+
+### 5. Minor
+`deps-win64-vips.yml` itself must be pushed through `actionlint` again after the changes; paste the result. Do not touch `git config` (the owner changes the commit address himself today).
+
+## Run budget
+At most **two** more runs of `deps-win64-vips.yml`. If the first is fully green (build, audit, Windows test, artifact), do not use the second. If `test-windows` fails, read the log, fix, and use the second run; if that fails too, stop and report with logs. Docs-only commits carry `[skip ci]`.
+
+## Fix prompt for the 0E agent
+```
+Review round 2 for TASK-0E. Re-read reports/REVIEW-0E.md, section "Round 2" (it is in the repo after the owner's docs sync; if the file ends at round 1, tell the owner). Good news first: the base-image pin worked, the build is green, and your diagnosis of the audit failure was correct and well proved. My decision: Option A, made stricter, plus Option C. Do not start Part B. Do not change git config.
+
+1. Audit as a script. Create deps/win64-vips/audit-zip.sh <zip> and call it from deps-win64-vips.yml instead of the inline block. Rules: (a) no file whose name contains x265 anywhere in the zip; (b) in every DLL EXCEPT libvips-42.dll and libvips-cpp-42.dll, `strings -a` finds no "x265" (case-insensitive); (c) in ALL DLLs including those two, none of: libx265, x265_encoder, x265_param (the enum nick "x265" alone in libvips-42.dll is allowed; add a comment saying why, with the evidence from the stock zip); (d) bin/libde265.dll exists and libheif.dll contains the string "libde265"; (e) versions.json names libde265; (f) no fftw, imagemagick, poppler (files or versions.json). Print one PASS/FAIL line per rule. Run shellcheck on it. Then prove it on the Mac: run it on the stock zip (expect a, b, c, f pass; d, e fail), on a copy of the stock zip with a fake bin/libx265.dll added (expect a fail), and on a copy where "x265_encoder_open" is appended to a copy of libheif.dll (expect c fail). Paste the three outputs.
+
+2. Windows test job: check its expectations before spending a run. On the Mac with Homebrew vips run, for BOTH heic fixtures: `vipsheader`, `vips copy x.heic /tmp/x.png && vipsheader /tmp/x.png`, `vipsthumbnail x.heic -s 320 -o /tmp/t.png && vipsheader /tmp/t.png`, and `exiftool -Orientation -s3`, and look for an irot/imir box (`exiftool -a -G1 -s` and say what you find). Paste the outputs. Set the expected sizes in the job from what is observed, and state in the report which mechanism the fixture uses (HEIF rotation box or EXIF tag). Also show `git ls-files tests/fixtures/generated`: the SVG control needs fixture_blocked.svg in a fresh checkout. If it is only generated by a script in ci.yml, generate it in the job (python plus Pillow, same step as ci.yml) or commit it.
+
+3. Report: rewrite sections 1 to 10 of reports/REPORT-0E.md so they describe the FINAL state only (summary, acceptance table, files changed from `git diff --stat main...HEAD`, dependency table with libheif 1.23.2 / aom 3.14.1 / libde265 1.1.1, decisions, deviations, risks, questions). Put the history in a short "Run log" table built from raw `gh run list` output (run id, commit, result, one line). Delete the obsolete first decision table and "Proposed next task". Fix these statements: download retries are `curl.exe --retry 5 --retry-all-errors` plus a $LASTEXITCODE check (not a try/catch loop of 3); the CRLF hunk was dropped and `rm -f` added to the workflow; cost tally ids come from raw output only.
+
+4. Cairo: the report says the patch pins cairo_VERSION := 1.18.4, but the diff you pasted has no cairo hunk. Paste `grep -n cairo deps/win64-vips/patches/*.patch` and say whether the pin is gone (and why that is fine: the pinned image already has 1.18.4) or still there. Make every sentence agree.
+
+5. Run actionlint on both workflows again and paste the result.
+
+Run budget: at most TWO more runs of deps-win64-vips.yml. If the first is completely green (build, audit, Windows test, artifact upload), do not use the second. If test-windows fails, read the log, fix, use the second; if that fails too, stop and report with the logs. Docs-only commits carry [skip ci].
+
+When the run is green: paste the run id, the SHA-256 printed by the audit step and the one printed by the Windows test job (they must match), the audit output, the test output (all 3 sections), and the `versions.json` of the new zip. In the LAST commit remove the temporary push trigger from deps-win64-vips.yml (workflow_dispatch only), with [skip ci]. Then run pnpm verify, put `git rev-parse --short HEAD` in the report header, and STOP at Checkpoint 1 (the owner moves the zip to the private repo). Do not start Part B until the owner says "Checkpoint 1 done".
 ```
