@@ -5,6 +5,6 @@ Variant: web
 Architecture: x86_64-w64-mingw32.shared (x64)
 Packages: vips-web
 Flags: --with-hevc -t x86_64-w64-mingw32.shared
-Base-Image: ghcr.io/libvips/build-win64-mxe@sha256:bd2a4127ea94eaf3e1cdc991c0640dd1f48d51c1c218fced67f0fc80070c09c6
-Base-Image-Created: 2026-08-13T14:06:43Z
-Base-Image-Tags: sha-2d0adc4, rc
+Base-Image: ghcr.io/libvips/build-win64-mxe@sha256:07d164cd05770a6f6236b22c489be7d634fc1227b59a35cf32bd41963e163b74
+Base-Image-Created: 2026-06-05T12:07:21Z
+Base-Image-Tags: sha-f15a87a

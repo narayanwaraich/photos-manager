@@ -16,7 +16,7 @@ index b10ea53..4e6c336 100755
  fi
  
 -image="ghcr.io/libvips/build-win64-mxe:latest"
-+image="ghcr.io/libvips/build-win64-mxe@sha256:bd2a4127ea94eaf3e1cdc991c0640dd1f48d51c1c218fced67f0fc80070c09c6"
++image="ghcr.io/libvips/build-win64-mxe@sha256:07d164cd05770a6f6236b22c489be7d634fc1227b59a35cf32bd41963e163b74"
  
  if [ "$with_prebuilt" = false ]; then
    image="libvips-build-win-mxe-base"
@@ -140,7 +140,7 @@ index f43bec7..b1ad7ad 100644
 +++ b/container/Dockerfile
 @@ -1,4 +1,4 @@
 -ARG BASE_IMAGE=ghcr.io/libvips/build-win64-mxe:latest
-+ARG BASE_IMAGE=ghcr.io/libvips/build-win64-mxe@sha256:bd2a4127ea94eaf3e1cdc991c0640dd1f48d51c1c218fced67f0fc80070c09c6
++ARG BASE_IMAGE=ghcr.io/libvips/build-win64-mxe@sha256:07d164cd05770a6f6236b22c489be7d634fc1227b59a35cf32bd41963e163b74
  FROM $BASE_IMAGE
  
  # Copy the contents of this repository to the container
