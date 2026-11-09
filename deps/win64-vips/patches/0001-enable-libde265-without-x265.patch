@@ -27,6 +27,24 @@ index 62e39d8..72100b4 100644
          $(if $(and $(IS_JPEGLI),$(BUILD_STATIC)), -DCMAKE_CXX_FLAGS='$(CXXFLAGS) -DHAVE_JPEG_WRITE_ICC_PROFILE') \
          '$(SOURCE_DIR)'
      $(MAKE) -C '$(BUILD_DIR)' -j '$(JOBS)'
+diff --git a/build/overrides.mk b/build/overrides.mk
+index 050bb2e..53ba2ab 100644
+--- a/build/overrides.mk
++++ b/build/overrides.mk
+@@ -180,6 +180,13 @@ adwaita-icon-theme_SUBDIR   := adwaita-icon-theme-$(adwaita-icon-theme_VERSION)
+ adwaita-icon-theme_FILE     := adwaita-icon-theme-$(adwaita-icon-theme_VERSION).tar.xz
+ adwaita-icon-theme_URL      := https://download.gnome.org/sources/adwaita-icon-theme/$(firstword $(subst ., ,$(adwaita-icon-theme_VERSION)))/$(adwaita-icon-theme_FILE)
+ 
++# upstream version is 1.18.6
++cairo_VERSION  := 1.18.4
++cairo_CHECKSUM := 445ed8208a6e4823de1226a74ca319d3600e83f6369f99b14265006599c32ccb
++cairo_SUBDIR   := cairo-$(cairo_VERSION)
++cairo_FILE     := cairo-$(cairo_VERSION).tar.xz
++cairo_URL      := https://cairographics.org/releases/$(cairo_FILE)
++
+ ## Patches that we override with our own
+ 
+ cairo_PATCHES := $(realpath $(sort $(wildcard $(dir $(lastword $(MAKEFILE_LIST)))/patches/cairo-[0-9]*.patch)))
 diff --git a/build/plugins/hevc-deps/overrides.mk b/build/plugins/hevc-deps/overrides.mk
 index acade8b..8c3c800 100644
 --- a/build/plugins/hevc-deps/overrides.mk
