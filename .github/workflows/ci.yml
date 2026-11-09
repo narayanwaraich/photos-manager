@@ -78,19 +78,57 @@ jobs:
 
       - name: Install Windows prerequisites
         shell: pwsh
+        env:
+          DEPS_TOKEN: ${{ secrets.DEPS_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
-          # 1. Download and checksum minimal libvips web distribution
+          # 1. Download and checksum libvips distribution (custom HEVC release or stock fallback)
           New-Item -ItemType Directory -Path deps\vips -Force
-          $vipsUrl = "https://github.com/libvips/build-win64-mxe/releases/download/v8.18.6/vips-dev-x64-web-8.18.6.zip"
-          curl.exe -fL --retry 5 --retry-all-errors --retry-delay 15 --connect-timeout 30 -o vips.zip $vipsUrl
-          if ($LASTEXITCODE -ne 0) {
-            throw "download failed after retries: $vipsUrl"
+          $depsToken = $env:DEPS_TOKEN
+          $vipsDownloaded = $false
+
+          if ($depsToken) {
+            echo "DEPS_TOKEN present; attempting to download custom HEVC libvips release from narayanwaraich/photos-manager-deps..."
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+              try {
+                $env:GH_TOKEN = $depsToken
+                gh release download win64-vips-8.18.6-hevc1 --repo narayanwaraich/photos-manager-deps --pattern '*.zip' --dir .
+                $downloadedZip = (Get-ChildItem -Path "vips-dev-x64-web-*.zip" -File).FullName | Select-Object -First 1
+                if ($downloadedZip) {
+                  Move-Item $downloadedZip "vips.zip" -Force
+                  $vipsDownloaded = $true
+                  break
+                }
+              } catch {
+                echo "gh release download attempt $attempt failed: $_"
+                Start-Sleep -Seconds 15
+              }
+            }
           }
-          $vipsHash = (Get-FileHash vips.zip -Algorithm SHA256).Hash
-          if ($vipsHash -ne "10086F2CCC8E2A861831FACABAB75FA1B80B4BD03F0A8447623EC581002AA4B2") {
-            throw "Checksum mismatch for vips.zip: expected 10086F2CCC8E2A861831FACABAB75FA1B80B4BD03F0A8447623EC581002AA4B2, got $vipsHash"
+
+          if ($vipsDownloaded) {
+            $expectedHash = "72591A6BDF775618BC154E83990C86919ECB18F6E9D72FADE5BAEF9B4F343991"
+            $vipsHash = (Get-FileHash vips.zip -Algorithm SHA256).Hash
+            if ($vipsHash -ne $expectedHash) {
+              throw "Checksum mismatch for custom vips.zip: expected $expectedHash, got $vipsHash"
+            }
+            echo "✓ Verified custom HEVC libvips hash: $vipsHash"
+            Add-Content -Path $env:GITHUB_ENV -Value "REQUIRE_HEIC=1" -Encoding utf8
+          } else {
+            echo "Falling back to stock upstream libvips (no HEVC decode)..."
+            $vipsUrl = "https://github.com/libvips/build-win64-mxe/releases/download/v8.18.6/vips-dev-x64-web-8.18.6.zip"
+            curl.exe -fL --retry 5 --retry-all-errors --retry-delay 15 --connect-timeout 30 -o vips.zip $vipsUrl
+            if ($LASTEXITCODE -ne 0) {
+              throw "download failed after retries: $vipsUrl"
+            }
+            $expectedHash = "10086F2CCC8E2A861831FACABAB75FA1B80B4BD03F0A8447623EC581002AA4B2"
+            $vipsHash = (Get-FileHash vips.zip -Algorithm SHA256).Hash
+            if ($vipsHash -ne $expectedHash) {
+              throw "Checksum mismatch for stock vips.zip: expected $expectedHash, got $vipsHash"
+            }
+            echo "✓ Verified stock libvips hash: $vipsHash"
           }
+
           tar.exe -xf vips.zip -C deps\vips --strip-components=1
 
           # Ensure link libraries match rustc cargo:rustc-link-lib requests (both with and without lib prefix)
@@ -288,6 +326,14 @@ jobs:
             exit $exitCode
           }
 
+          $smoke = Get-Content smoke-windows-x64.json | ConvertFrom-Json
+          echo "Smoke test heic_decode_verified: $($smoke.heic_decode_verified)"
+          echo "Smoke test heic_note: $($smoke.heic_note)"
+          if ($env:REQUIRE_HEIC -eq "1" -and -not $smoke.heic_decode_verified) {
+            echo "❌ REQUIRE_HEIC=1 was set, but heic_decode_verified is false!"
+            exit 1
+          }
+
       - name: Upload smoke test report
         uses: actions/upload-artifact@v4
         with:
@@ -456,6 +502,9 @@ jobs:
             echo "❌ Clean-environment smoke test failed with code $SMOKE_EXIT"
             exit $SMOKE_EXIT
           fi
+
+          # 8. Verify macOS reports heic_decode_verified == false with expected note (TASK-0E Part B)
+          python3 -c "import json; d = json.load(open('smoke-macos-arm64.json')); assert d.get('heic_decode_verified') is False, 'Expected false'; assert d.get('heic_note') == 'not packaged yet (TASK-0F)', d.get('heic_note'); print('✓ Verified macOS smoke output: heic_decode_verified == false')"
 
       - name: Upload smoke test report
         uses: actions/upload-artifact@v4

@@ -58,7 +58,8 @@ All external archives downloaded during CI and packaging are pinned with exact u
 
 | Package / Archive | OS | Version | Exact Download URL | Verified SHA-256 |
 |---|---|---|---|---|
-| `vips-dev-x64-web-8.18.6.zip` | Windows x64 | 8.18.6 | `https://github.com/libvips/build-win64-mxe/releases/download/v8.18.6/vips-dev-x64-web-8.18.6.zip` | `10086f2ccc8e2a861831facabab75fa1b80b4bd03f0a8447623ec581002aa4b2` |
+| `vips-dev-x64-web-8.18.6-hevc.zip` | Windows x64 | 8.18.6-hevc1 | `https://github.com/narayanwaraich/photos-manager-deps/releases/download/win64-vips-8.18.6-hevc1/vips-dev-x64-web-8.18.6-hevc.zip` (private repo, token-authenticated) | `72591a6bdf775618bc154e83990c86919ecb18f6e9d72fade5baef9b4f343991` |
+| `vips-dev-x64-web-8.18.6.zip` (stock fallback) | Windows x64 | 8.18.6 | `https://github.com/libvips/build-win64-mxe/releases/download/v8.18.6/vips-dev-x64-web-8.18.6.zip` | `10086f2ccc8e2a861831facabab75fa1b80b4bd03f0a8447623ec581002aa4b2` |
 | `exiftool-13.61_64.zip` | Windows x64 | 13.61 | `https://downloads.sourceforge.net/project/exiftool/exiftool-13.61_64.zip` | `ab75b37515385a753aa60a58f68ffffe1ff81e43b319df9540978fb19e0580e5` |
 | `Image-ExifTool-13.61.tar.gz` | macOS arm64 | 13.61 | `https://downloads.sourceforge.net/project/exiftool/Image-ExifTool-13.61.tar.gz` | `df7f42c14b4f58a60bec39feae0ee9593000ee27e44920d2b0a21c6627de0baa` |
 
@@ -66,13 +67,13 @@ All external archives downloaded during CI and packaging are pinned with exact u
 
 ---
 
-### 4.2 Windows `vips-dev-x64-web-8.18.6` Component & License Audit
+### 4.2 Windows Custom `vips-dev-x64-web-8.18.6-hevc` Component & License Audit
 
-The official Windows minimal precompiled package (`vips-dev-x64-web-8.18.6.zip`) provides a clean-machine runtime without GPL contamination:
-- **Build System:** MXE cross-compilation environment (`https://mxe.cc`).
-- **Archive Structure:** Contains a single root directory `vips-dev-8.18/` with `bin/` (38 DLLs and 4 EXEs: `vips.exe`, `vipsedit.exe`, `vipsheader.exe`, `vipsthumbnail.exe`), `include/`, `lib/`, `share/`, `etc/`, `ChangeLog`, `LICENSE` (LGPL-2.1 text), `README.md`, and `versions.json`.
+The custom Windows precompiled package (`vips-dev-x64-web-8.18.6-hevc.zip`, release `win64-vips-8.18.6-hevc1` in private repository `narayanwaraich/photos-manager-deps`, SHA-256 `72591a6bdf775618bc154e83990c86919ecb18f6e9d72fade5baef9b4f343991`) provides a clean-machine runtime with LGPL HEVC decoding and zero GPL contamination:
+- **Build System:** Pinned MXE cross-compilation container (`ghcr.io/libvips/build-win64-mxe@sha256:07d164cd05770a6f6236b22c489be7d634fc1227b59a35cf32bd41963e163b74`, Decision D14).
+- **Archive Structure:** Contains a single root directory `vips-dev-8.18/` with `bin/` (39 DLLs and 4 EXEs: `vips.exe`, `vipsedit.exe`, `vipsheader.exe`, `vipsthumbnail.exe`), `include/`, `lib/`, `share/`, `etc/`, `ChangeLog`, `LICENSE` (LGPL-2.1 text), `README.md`, and `versions.json`.
 - **Archive License Policy:** The archive ships **no per-component license files** and no `licenses/` directory; only the root LGPL-2.1 `LICENSE` is bundled. Per-component licenses cited below are verified directly from upstream package repositories.
-- **Component Inventory (`versions.json`):** Exactly 28 upstream components are documented in `versions.json`. All 38 DLLs in `bin/` are accounted for by these 28 components plus the MXE LLVM toolchain runtime libraries:
+- **Component Inventory (`versions.json`):** Exactly 29 upstream components are documented in `versions.json`. All 39 DLLs in `bin/` are accounted for by these 29 components plus the MXE LLVM toolchain runtime libraries:
 
 | Component | Version (`versions.json`) | Bundled DLL(s) in `bin/` | Upstream License & Citation URL | Distribution Status |
 |---|---|---|---|---|
@@ -92,6 +93,7 @@ The official Windows minimal precompiled package (`vips-dev-x64-web-8.18.6.zip`)
 | `highway` | `1.4.0` | `libhwy.dll` | [Apache-2.0 OR BSD-3-Clause](https://github.com/google/highway/blob/1.4.0/LICENSE) | Permissive |
 | `imagequant` | `2.4.1` | `libimagequant.dll` | [BSD-2-Clause](https://github.com/ImageOptim/libimagequant/blob/2.4.1/COPYRIGHT) | Permissive (Original C v2.4.1 fork) |
 | `lcms` | `2.19.1` | `liblcms2-2.dll` | [MIT](https://github.com/mm2/Little-CMS/blob/lcms2.19.1/LICENSE) | Permissive |
+| `libde265` | `1.1.1` | `libde265.dll` | [LGPL-3.0-or-later](https://github.com/strukturag/libde265/blob/v1.1.1/COPYING) | LGPL (Permitted via dynamic linking) |
 | `mozjpeg` | `0826579` | `libjpeg-62.dll` | [BSD-3-Clause](https://github.com/mozilla/mozjpeg/blob/0826579/LICENSE.md) | Permissive |
 | `pango` | `1.58.2` | `libpango-1.0-0.dll`, `libpangocairo-1.0-0.dll`, `libpangoft2-1.0-0.dll` | [LGPL-2.1-or-later](https://gitlab.gnome.org/GNOME/pango/-/blob/1.58.2/COPYING) | LGPL (Permitted via dynamic linking) |
 | `pixman` | `0.46.4` | `libpixman-1-0.dll` | [MIT](https://gitlab.freedesktop.org/pixman/pixman/-/blob/pixman-0.46.4/COPYING) | Permissive |
@@ -106,11 +108,17 @@ The official Windows minimal precompiled package (`vips-dev-x64-web-8.18.6.zip`)
 | `zlib-ng` | `2.3.3` | `libz1.dll` | [Zlib](https://github.com/zlib-ng/zlib-ng/blob/2.3.3/LICENSE.md) | Permissive |
 | *(MXE Toolchain)* | N/A | `libc++.dll`, `libunwind.dll` | [Apache-2.0 with LLVM Exception](https://llvm.org/LICENSE.txt) | Permissive |
 
+- **License Breakdown:**
+  - **LGPL libraries (permitted via dynamic linking):** `cairo` (1.18.4, LGPL-2.1-only or MPL-1.1), `exif` (0.6.26, LGPL-2.1-or-later), `fribidi` (1.0.16, LGPL-2.1-or-later), `glib` (2.89.4, LGPL-2.1-or-later), `heif` (1.23.2, LGPL-3.0-or-later), `libde265` (1.1.1, LGPL-3.0-or-later), `pango` (1.58.2, LGPL-2.1-or-later), `proxy-libintl` (0.5, LGPL-2.1-or-later), `rsvg` (2.62.91, LGPL-2.1-or-later), `vips` (8.18.6, LGPL-2.1-or-later).
+  - **Permissive open-source libraries:** `aom` (BSD-2-Clause), `archive` (BSD-2-Clause), `cgif` (MIT), `expat` (MIT), `ffi` (MIT), `fontconfig` (MIT-like), `freetype` (FTL), `harfbuzz` (MIT), `highway` (Apache-2.0 or BSD-3-Clause), `imagequant` (BSD-2-Clause), `lcms` (MIT), `mozjpeg` (BSD-3-Clause), `pixman` (MIT), `png` (libpng-2.0), `tiff` (libtiff BSD-like), `uhdr` (Apache-2.0), `webp` (BSD-3-Clause), `xml2` (MIT), `zlib-ng` (Zlib), LLVM toolchain `libc++`/`libunwind` (Apache-2.0 with LLVM Exception).
+  - **Zero GPL libraries:** The GPL-licensed `x265` encoder was stripped out via patch `0001-enable-libde265-without-x265.patch`. Disallowed heavy/GPL components (`fftw`, `imagemagick`, `poppler`) are omitted entirely from the web distribution.
+
 - **Key Facts Observed in Archive:**
-  - `bin/` contains **no** `libde265.dll`, `x265.dll`, or `dav1d.dll`.
-  - `libheif.dll` contains HEVC container metadata structures (`ImageItem_HEVC`, `Decoder_HEVC`) but **no HEVC decoder** (`strings libheif.dll | grep -ci de265` yields `0`).
-  - `heifload` in this prebuilt Windows libvips package therefore decodes **AVIF/AV1 only, NOT HEIC/HEVC**. Full HEIC/HEVC decoding is **not verified on either OS**.
-  - `librsvg-2-2.dll` **is** present in the archive, which makes runtime blocking strictly mandatory.
+  - `bin/` contains `libde265.dll` (linked dynamically into `libheif.dll`).
+  - `libheif.dll` references `libde265` (`strings libheif.dll` confirms `libde265`).
+  - `bin/` contains **no** `*x265*.dll` files and no linkage symbols (`libx265`, `x265_encoder_*`, `x265_param_*`).
+  - `heifload` in this package decodes BOTH AVIF/AV1 (via `libaom`) AND HEIC/HEVC (via `libde265`). Full HEIC/HEVC decoding is verified on Windows.
+  - `librsvg-2-2.dll` **is** present in the archive, which makes runtime blocking strictly mandatory (`VIPS_BLOCK_UNTRUSTED=1` blocks it).
   - `libimagequant` is version 2.4.1 (the BSD-2-Clause C library, not the GPL-3.0 Rust rewrite).
   - ImageMagick (`magickload`) is omitted entirely from the web build.
 
