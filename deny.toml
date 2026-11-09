@@ -7,6 +7,11 @@ all-features = false
 no-default-features = false
 
 [advisories]
+ignore = [
+    # libsqlite3-sys 0.30.1 bundled by sqlx-sqlite 0.8.6 (CVE-2026-119375).
+    # Application accesses internal database only, not untrusted external SQLite DBs with crafted WALs.
+    "RUSTSEC-2026-0459",
+]
 unmaintained = "all"
 unsound = "workspace"
 yanked = "warn"

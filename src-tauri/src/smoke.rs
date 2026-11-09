@@ -421,20 +421,21 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
     };
 
     // 5. Test HEIC Decode & Metadata Verification (TASK-0E Part B)
+    let require_heic = std::env::var("REQUIRE_HEIC")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
     let heif_supported = processor.is_loader_supported("heifload");
 
     let (heic_decode_verified, heic_note) = if os == "macos" {
         (false, "not packaged yet (TASK-0F)".to_string())
+    } else if !require_heic {
+        (false, "no deps token (fork)".to_string())
     } else if !heif_supported {
-        let has_deps_token = std::env::var("DEPS_TOKEN")
-            .map(|t| !t.trim().is_empty())
-            .unwrap_or(false);
-        let note = if !has_deps_token {
-            "no deps token (fork)".to_string()
-        } else {
-            "heifload loader not available in libvips".to_string()
-        };
-        (false, note)
+        errors.push("REQUIRE_HEIC is set, but heifload is not supported by libvips".to_string());
+        (
+            false,
+            "heifload loader not available in libvips".to_string(),
+        )
     } else {
         let heic_fixture_opt = find_fixture("image_orientation_6.heic");
         match heic_fixture_opt {
@@ -562,11 +563,6 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
             }
         }
     };
-
-    // Check REQUIRE_HEIC environment variable
-    let require_heic = std::env::var("REQUIRE_HEIC")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
 
     if require_heic && !heic_decode_verified {
         errors.push(format!(

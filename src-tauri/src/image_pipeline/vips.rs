@@ -111,8 +111,21 @@ impl ImageProcessor for VipsImageProcessor {
             ..Default::default()
         };
 
-        ops::webpsave_with_opts(&thumb, output_str, &webp_opts)
-            .map_err(|e| ImageProcessorError::Processing(format!("WebP save failed: {:?}", e)))?;
+        ops::webpsave_with_opts(&thumb, output_str, &webp_opts).map_err(|e| {
+            let detail = unsafe {
+                let err_ptr = bindings::vips_error_buffer();
+                if !err_ptr.is_null() {
+                    let s = std::ffi::CStr::from_ptr(err_ptr)
+                        .to_string_lossy()
+                        .to_string();
+                    bindings::vips_error_clear();
+                    s
+                } else {
+                    format!("{:?}", e)
+                }
+            };
+            ImageProcessorError::Processing(format!("WebP save failed: {}", detail))
+        })?;
 
         Ok(ThumbnailResult { width, height })
     }
