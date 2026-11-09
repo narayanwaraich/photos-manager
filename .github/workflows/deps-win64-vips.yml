@@ -111,7 +111,7 @@ jobs:
           $env:PATH = "C:\Windows\System32;C:\Windows;$vipsBin"
 
           echo "=== 1. Check vips.exe -l lists heifload ==="
-          $loaders = & $vipsExe -l
+          $loaders = (& $vipsExe -l | Out-String)
           Write-Host $loaders
           if ($loaders -notmatch "heifload") {
             throw "vips.exe -l does NOT list heifload!"
@@ -130,7 +130,7 @@ jobs:
             throw "Output PNG was not created"
           }
           # Verify dimensions with vipsheader
-          $header = & "$vipsBin\vipsheader.exe" $outPng
+          $header = (& "$vipsBin\vipsheader.exe" $outPng | Out-String)
           Write-Host "Output thumbnail header: $header"
           if ($header -notmatch "240x320") {
             throw "Thumbnail dimensions mismatch: expected 240x320, got $header"
@@ -141,7 +141,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "vips copy failed to decode $heicFixture with exit code $LASTEXITCODE"
           }
-          $headerCopy = & "$vipsBin\vipsheader.exe" $outCopyPng
+          $headerCopy = (& "$vipsBin\vipsheader.exe" $outCopyPng | Out-String)
           Write-Host "Output vips copy header: $headerCopy"
           # sips encoded an irot box (Rotate 90 CW), so heifload applies the rotation on load (480x640)
           if ($headerCopy -notmatch "480x640") {
@@ -156,7 +156,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "vips copy failed to decode $p3Fixture with exit code $LASTEXITCODE"
           }
-          $headerP3 = & "$vipsBin\vipsheader.exe" $outP3Copy
+          $headerP3 = (& "$vipsBin\vipsheader.exe" $outP3Copy | Out-String)
           Write-Host "Output P3 copy header: $headerP3"
           if ($headerP3 -notmatch "640x480") {
             throw "P3 copy dimensions mismatch: expected 640x480, got $headerP3"
@@ -167,7 +167,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "vipsthumbnail failed to decode $p3Fixture with exit code $LASTEXITCODE"
           }
-          $headerP3Thumb = & "$vipsBin\vipsheader.exe" $outP3Thumb
+          $headerP3Thumb = (& "$vipsBin\vipsheader.exe" $outP3Thumb | Out-String)
           Write-Host "Output P3 thumb header: $headerP3Thumb"
           if ($headerP3Thumb -notmatch "320x240") {
             throw "P3 thumb dimensions mismatch: expected 320x240, got $headerP3Thumb"
