@@ -2,12 +2,6 @@ name: Build & Test Windows x64 libvips (HEVC Decode)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - 'task/0E'
-    paths:
-      - '.github/workflows/deps-win64-vips.yml'
-      - 'deps/win64-vips/**'
 
 permissions:
   contents: read
@@ -198,3 +192,4 @@ jobs:
           echo "✓ Success: SVG blocked under VIPS_BLOCK_UNTRUSTED=1 with code $svgBlockExit"
 
           $env:PATH = $origPath
+          $global:LASTEXITCODE = 0
