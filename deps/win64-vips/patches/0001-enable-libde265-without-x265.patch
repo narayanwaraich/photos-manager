@@ -1,5 +1,5 @@
 diff --git a/build.sh b/build.sh
-index b10ea53..dd6650b 100755
+index b10ea53..4e6c336 100755
 --- a/build.sh
 +++ b/build.sh
 @@ -95,7 +95,7 @@ fi
@@ -11,6 +11,15 @@ index b10ea53..dd6650b 100755
  
  if [ ${#mxe_targets[@]} -eq 0 ]; then
    if [ "$contains_gpl_libs" = true ]; then
+@@ -159,7 +159,7 @@ else
+   exit 1
+ fi
+ 
+-image="ghcr.io/libvips/build-win64-mxe:latest"
++image="ghcr.io/libvips/build-win64-mxe@sha256:bd2a4127ea94eaf3e1cdc991c0640dd1f48d51c1c218fced67f0fc80070c09c6"
+ 
+ if [ "$with_prebuilt" = false ]; then
+   image="libvips-build-win-mxe-base"
 diff --git a/build/libheif.mk b/build/libheif.mk
 index 62e39d8..72100b4 100644
 --- a/build/libheif.mk
@@ -27,24 +36,6 @@ index 62e39d8..72100b4 100644
          $(if $(and $(IS_JPEGLI),$(BUILD_STATIC)), -DCMAKE_CXX_FLAGS='$(CXXFLAGS) -DHAVE_JPEG_WRITE_ICC_PROFILE') \
          '$(SOURCE_DIR)'
      $(MAKE) -C '$(BUILD_DIR)' -j '$(JOBS)'
-diff --git a/build/overrides.mk b/build/overrides.mk
-index 050bb2e..53ba2ab 100644
---- a/build/overrides.mk
-+++ b/build/overrides.mk
-@@ -180,6 +180,13 @@ adwaita-icon-theme_SUBDIR   := adwaita-icon-theme-$(adwaita-icon-theme_VERSION)
- adwaita-icon-theme_FILE     := adwaita-icon-theme-$(adwaita-icon-theme_VERSION).tar.xz
- adwaita-icon-theme_URL      := https://download.gnome.org/sources/adwaita-icon-theme/$(firstword $(subst ., ,$(adwaita-icon-theme_VERSION)))/$(adwaita-icon-theme_FILE)
- 
-+# upstream version is 1.18.6
-+cairo_VERSION  := 1.18.4
-+cairo_CHECKSUM := 445ed8208a6e4823de1226a74ca319d3600e83f6369f99b14265006599c32ccb
-+cairo_SUBDIR   := cairo-$(cairo_VERSION)
-+cairo_FILE     := cairo-$(cairo_VERSION).tar.xz
-+cairo_URL      := https://cairographics.org/releases/$(cairo_FILE)
-+
- ## Patches that we override with our own
- 
- cairo_PATCHES := $(realpath $(sort $(wildcard $(dir $(lastword $(MAKEFILE_LIST)))/patches/cairo-[0-9]*.patch)))
 diff --git a/build/plugins/hevc-deps/overrides.mk b/build/plugins/hevc-deps/overrides.mk
 index acade8b..8c3c800 100644
 --- a/build/plugins/hevc-deps/overrides.mk
@@ -143,3 +134,13 @@ index d99478a..b422361 100644
       printf '  "highway": "$(highway_VERSION)",\n'; \
       printf '  "imagequant": "$(libimagequant_VERSION)",\n'; \
       $(if $(IS_JPEGLI), \
+diff --git a/container/Dockerfile b/container/Dockerfile
+index f43bec7..b1ad7ad 100644
+--- a/container/Dockerfile
++++ b/container/Dockerfile
+@@ -1,4 +1,4 @@
+-ARG BASE_IMAGE=ghcr.io/libvips/build-win64-mxe:latest
++ARG BASE_IMAGE=ghcr.io/libvips/build-win64-mxe@sha256:bd2a4127ea94eaf3e1cdc991c0640dd1f48d51c1c218fced67f0fc80070c09c6
+ FROM $BASE_IMAGE
+ 
+ # Copy the contents of this repository to the container
