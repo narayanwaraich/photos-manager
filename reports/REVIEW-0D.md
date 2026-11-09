@@ -101,3 +101,13 @@ What the budget does not cover: 0E itself. A Linux MXE build is cheap per minute
 ## Owner decisions in this round
 - Phase 1 waits for 0E and 0F (owner, 2026-11-08).
 - Still open: how to cover the Actions budget (above).
+
+## Round 2 addendum: `ci.yml` diff read, 0D ACCEPTED
+The owner pasted `git diff main...task/0D -- .github/workflows/ci.yml`. It matches the report: `task/0D` added to the push branches; `--retry 5 --retry-all-errors --retry-delay 15 --connect-timeout 30` on the macOS ExifTool download and on both Windows downloads; `$ErrorActionPreference = 'Stop'` at the top of the Windows step; `$LASTEXITCODE` checked after each `curl.exe` with a `download failed after retries: <url>` error; the pinned SHA-256 checks are untouched context lines. The retry path itself has never been exercised (no outage since). **Verdict: ACCEPT.**
+
+## Owner decision: the repository becomes public (for free Actions)
+Fine, with consequences I wrote down as D13 (STATUS):
+1. Before the switch: gitleaks over the whole history, check that only synthetic fixtures are tracked, check the commit e-mail address, skim the docs for personal details (commands in NEXT_STEPS).
+2. Public Actions artifacts can be downloaded by any signed-in GitHub user. The macOS bundle contains GPL libraries and the Windows installer will contain libde265 after 0E; publishing those as releases would be distribution before the legal check. So: artifacts only (short retention), and the HEVC-capable libvips zip goes to a private repo `photos-manager-deps`, not into this repo's releases. TASK-0E has a Checkpoint 1 for this.
+3. The macOS-only-on-main idea (D12) is dropped: public runner minutes are free. Path filters, `concurrency`, `task/**` and `[skip ci]` stay as hygiene.
+4. No licence file for now (the default is all rights reserved: people can read, not reuse). Decide in Phase 7.
