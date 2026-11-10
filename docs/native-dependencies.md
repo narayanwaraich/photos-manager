@@ -69,7 +69,7 @@ All external archives downloaded during CI and packaging are pinned with exact u
 
 ### 4.2 Windows Custom `vips-dev-x64-web-8.18.6-hevc` Component & License Audit
 
-The custom Windows precompiled package (`vips-dev-x64-web-8.18.6-hevc.zip`, release `win64-vips-8.18.6-hevc1` in private repository `narayanwaraich/photos-manager-deps`, SHA-256 `72591a6bdf775618bc154e83990c86919ecb18f6e9d72fade5baef9b4f343991`) provides a clean-machine runtime with LGPL HEVC decoding and zero GPL contamination:
+The custom Windows precompiled package (`vips-dev-x64-web-8.18.6-hevc.zip`, release `win64-vips-8.18.6-hevc1` in private repository `narayanwaraich/photos-manager-deps`, SHA-256 `72591a6bdf775618bc154e83990c86919ecb18f6e9d72fade5baef9b4f343991`) provides a clean-machine runtime with LGPL HEVC decoding and no GPL component identified in this list (not a legal opinion; see risk 17 in docs/STATUS.md):
 - **Build System:** Pinned MXE cross-compilation container (`ghcr.io/libvips/build-win64-mxe@sha256:07d164cd05770a6f6236b22c489be7d634fc1227b59a35cf32bd41963e163b74`, Decision D14).
 - **Archive Structure:** Contains a single root directory `vips-dev-8.18/` with `bin/` (39 DLLs and 4 EXEs: `vips.exe`, `vipsedit.exe`, `vipsheader.exe`, `vipsthumbnail.exe`), `include/`, `lib/`, `share/`, `etc/`, `ChangeLog`, `LICENSE` (LGPL-2.1 text), `README.md`, and `versions.json`.
 - **Archive License Policy:** The archive ships **no per-component license files** and no `licenses/` directory; only the root LGPL-2.1 `LICENSE` is bundled. Per-component licenses cited below are verified directly from upstream package repositories.
@@ -111,7 +111,7 @@ The custom Windows precompiled package (`vips-dev-x64-web-8.18.6-hevc.zip`, rele
 - **License Breakdown:**
   - **LGPL libraries (permitted via dynamic linking):** `cairo` (1.18.4, LGPL-2.1-only or MPL-1.1), `exif` (0.6.26, LGPL-2.1-or-later), `fribidi` (1.0.16, LGPL-2.1-or-later), `glib` (2.89.4, LGPL-2.1-or-later), `heif` (1.23.2, LGPL-3.0-or-later), `libde265` (1.1.1, LGPL-3.0-or-later), `pango` (1.58.2, LGPL-2.1-or-later), `proxy-libintl` (0.5, LGPL-2.1-or-later), `rsvg` (2.62.91, LGPL-2.1-or-later), `vips` (8.18.6, LGPL-2.1-or-later).
   - **Permissive open-source libraries:** `aom` (BSD-2-Clause), `archive` (BSD-2-Clause), `cgif` (MIT), `expat` (MIT), `ffi` (MIT), `fontconfig` (MIT-like), `freetype` (FTL), `harfbuzz` (MIT), `highway` (Apache-2.0 or BSD-3-Clause), `imagequant` (BSD-2-Clause), `lcms` (MIT), `mozjpeg` (BSD-3-Clause), `pixman` (MIT), `png` (libpng-2.0), `tiff` (libtiff BSD-like), `uhdr` (Apache-2.0), `webp` (BSD-3-Clause), `xml2` (MIT), `zlib-ng` (Zlib), LLVM toolchain `libc++`/`libunwind` (Apache-2.0 with LLVM Exception).
-  - **Zero GPL libraries:** The GPL-licensed `x265` encoder was stripped out via patch `0001-enable-libde265-without-x265.patch`. Disallowed heavy/GPL components (`fftw`, `imagemagick`, `poppler`) are omitted entirely from the web distribution.
+  - **No GPL components identified:** The GPL-licensed `x265` encoder was stripped out via patch `0001-enable-libde265-without-x265.patch`. Disallowed heavy/GPL components (`fftw`, `imagemagick`, `poppler`) are omitted entirely from the web distribution; no GPL component identified in this list (not a legal opinion; see risk 17 in docs/STATUS.md).
 
 - **Key Facts Observed in Archive:**
   - `bin/` contains `libde265.dll` (linked dynamically into `libheif.dll`).

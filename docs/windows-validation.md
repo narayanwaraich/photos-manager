@@ -164,11 +164,11 @@ Get-Content "C:\pm-test\smoke-laptop.json"
 ### Step 3.5: Owner Step — Real iPhone HEIC File Validation
 Test decoding a real iPhone HEIC file from personal photos:
 > [!IMPORTANT]
-> **Privacy Invariant:** Decode one of your own iPhone HEIC files (a working copy, not the original). **Do not commit personal photos to git.**
+> **Privacy Invariant:** Decode one of your own iPhone HEIC files (work on a copy, not the original). **Do not commit personal photos to git.**
 
 ```powershell
-# 1. Place a test iPhone HEIC file at a temporary path:
-$myHeic = "C:\temp\my_iphone_photo.heic"
+# 1. Place a test iPhone HEIC file at a temporary path (work on a copy, not the original):
+$myHeic = "C:\temp\my_iphone_photo_copy.heic"
 
 # 2. Test CLI decode using the bundled vipsthumbnail from the installed application:
 $outWebp = "C:\temp\my_iphone_thumb.webp"
@@ -179,8 +179,8 @@ if ($LASTEXITCODE -eq 0 -and (Test-Path $outWebp)) {
     echo "❌ Failed to decode iPhone HEIC file."
 }
 
-# 3. Clean up the personal test image and output thumbnail:
-Remove-Item -Force $outWebp, $myHeic -ErrorAction SilentlyContinue
+# 3. Clean up only the generated output thumbnail (preserve input photo copy):
+Remove-Item -Force $outWebp -ErrorAction SilentlyContinue
 ```
 
 ### Step 3.6: Clean Up / Uninstall
