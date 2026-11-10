@@ -1,6 +1,6 @@
 # REPORT-0E: Windows x64 libvips with HEVC Decode (libde265, no x265)
 
-**Branch:** `task/0E` · **Commit:** `8da15f9` · **Date:** 2026-11-10  
+**Branch:** `task/0E` · **Commit:** `9e3cc61` · **Date:** 2026-11-10  
 **OS actually tested:** macOS 27.0 arm64 (primary dev machine, fixture generation & local verification); Linux (Ubuntu 24.04 GHA runner for container build); Windows Server 2022 (GHA runner for app CI and test-windows job) · **Not tested:** Physical Windows 11 hardware
 
 ---
@@ -14,11 +14,11 @@ This task builds, audits, packages, and verifies a custom Windows x64 `libvips` 
 2. **Upstream Container Image Pinned (Decision D14):** Upstream's `Dockerfile` was pinned to immutable digest `ghcr.io/libvips/build-win64-mxe@sha256:07d164cd05770a6f6236b22c489be7d634fc1227b59a35cf32bd41963e163b74` (Candidate 3: newest image on `master` created at or before tag `v8.18.6` commit date, built with LLVM 22.1.7). This eliminated dependency version drift (providing Cairo 1.18.4 and Pango 1.58.2 identically to the stock upstream zip) without adding ad-hoc compiler flags.
 3. **Public Repository Licence Safety (Decision D13) & Checkpoint 1:** The "Publish release asset" job was deleted from `.github/workflows/deps-win64-vips.yml`, permissions set to `contents: read`, and the built package (`SHA-256: 72591a6bdf775618bc154e83990c86919ecb18f6e9d72fade5baef9b4f343991`) was uploaded as Actions artifact `vips-win64-hevc`. Nothing containing `libde265` is published as a release of `narayanwaraich/photos-manager`. **Important artifact provenance note:** the artifact was built and audited by run `42601051369` whose Windows test job (`129115429801`) was red (failed due to PowerShell preserving `$LASTEXITCODE = 1` from the deliberately failing SVG-block command). At Checkpoint 1 (`2026-11-09T13:19:39Z`), after the owner's `gh release create` failed because the new private repo `narayanwaraich/photos-manager-deps` was empty, the agent initialized `narayanwaraich/photos-manager-deps` with a `README.md` commit and created release `win64-vips-8.18.6-hevc1` using the authenticated `narayanwaraich` `gh` session.
 4. **Standalone Audit Script (`deps/win64-vips/audit-zip.sh`):** Implemented strict rules (a)-(f) per Option A + C. The script was verified with `shellcheck` (0 warnings) and tested on macOS across stock and adversarial fixtures. It allows the harmless enum nick `"x265"` in `libvips-42.dll` (proven present in stock upstream builds) while strictly forbidding any `*x265*` filenames, linkage symbols (`libx265`, `x265_encoder`, `x265_param`), or non-exempt strings across all DLLs.
-5. **App CI Integration (Part B):** In `ci.yml`, the Windows job downloads `vips-dev-x64-web-8.18.6-hevc.zip` from release `win64-vips-8.18.6-hevc1` using `GH_TOKEN: ${{ secrets.DEPS_TOKEN }}` and verifies the pinned SHA-256 (`72591a6bdf775618bc154e83990c86919ecb18f6e9d72fade5baef9b4f343991`). If `DEPS_TOKEN` is absent (fork PRs), it falls back cleanly to stock upstream libvips with its pinned hash and reports `heic_decode_verified: false` with note `"no deps token (fork)"` without failing.
+5. **App CI Integration (Part B, Fail Closed):** In `ci.yml`, `"Install Windows prerequisites"` checks `IS_FORK_PR` (`${{ github.event.pull_request.head.repo.fork == true }}`, passed via `env:`). On fork PRs only, it falls back to stock upstream libvips with `REQUIRE_HEIC` unset (`heic_decode_verified: false`, note `"no deps token (fork)"`). On every other run, `DEPS_TOKEN` must be present, `gh release download` retries up to 3 times checking `$LASTEXITCODE` with `Start-Sleep -Seconds 15` between attempts, and any missing token, download failure, or checksum mismatch throws to fail the job (`REQUIRE_HEIC=1` is set on success, and `72591a6bdf775618bc154e83990c86919ecb18f6e9d72fade5baef9b4f343991` is verified).
 6. **Smoke Test HEIC Decode & Pixel Sampling:** `src-tauri/src/smoke.rs` decodes synthetic fixture `image_orientation_6.heic` into an upright `240x320` WebP thumbnail, samples the center pixel at `(120, 160)` and verifies it against the JPEG thumbnail within stated tolerance (`tol = 15.0`, observed diff `0.0`), and extracts ExifTool metadata (`orientation: Some(6)`, `camera_make: Some("PhotoCorp")`).
-7. **Clean Environment Execution & `deps-win64-vips.yml` Fix Status:** In app CI runs `42635598100` and `42748606529`, the Windows x64 clean-environment smoke test executed inside `C:\smoke-extracted` with PATH restricted to system essentials and passed with `heic_decode_verified: true` and 0 errors, while macOS reported `heic_decode_verified: false` with `heic_note: "not packaged yet (TASK-0F)"`. Separately, the fix for `deps-win64-vips.yml` (`872ae48`, resetting `$global:LASTEXITCODE = 0` and removing the temporary push trigger) has **NOT** been run because `deps-win64-vips.yml` is `workflow_dispatch` only and cannot be dispatched from branch `task/0E`; that is accepted and it will be dispatched once from `main` after merge.
+7. **Clean Environment Execution & `deps-win64-vips.yml` Fix Status:** In app CI runs `42635598100`, `42748606529`, and `42786344196`, the Windows x64 clean-environment smoke test executed inside `C:\smoke-extracted` with PATH restricted to system essentials and passed with `heic_decode_verified: true` and 0 errors, while macOS reported `heic_decode_verified: false` with `heic_note: "not packaged yet (TASK-0F)"`. Separately, the fix for `deps-win64-vips.yml` (`872ae48`, resetting `$global:LASTEXITCODE = 0` and removing the temporary push trigger) has **NOT** been run because `deps-win64-vips.yml` is `workflow_dispatch` only and cannot be dispatched from branch `task/0E`; that is accepted and it will be dispatched once from `main` after merge.
 8. **Cargo Deny Policy:** Investigated advisory `RUSTSEC-2026-0459` (CVE-2026-119375 on `libsqlite3-sys 0.30.1` via `sqlx-sqlite 0.8.6`). Verified via dry run that no semver-compatible patch update exists (`>= 0.39.0` required). Configured a documented ignore `{ id = "RUSTSEC-2026-0459", reason = "..." }` with date (`2026-11-09`) and re-check note in `deny.toml` because our catalogue DB is strictly opened in local app data where untrusted parties cannot write `-wal` files.
-9. **Final Status:** App CI (`ci.yml`) run `42748606529` ran all three jobs green (`windows-x64` in 4m30s, `macos-arm64` in 4m6s, `Security & License check` in 42s). As noted in item 3, the `deps-win64-vips.yml` artifact was built and audited by run `42601051369`, whose standalone `test-windows` job (`129115429801`) was red (`exit code 1` from `$LASTEXITCODE`) before `872ae48`. All 29 components of the Windows package have no GPL component identified in the list (not a legal opinion; see risk 17 in `docs/STATUS.md`).
+9. **Final Status:** App CI (`ci.yml`) run `42786344196` on Round 4 commit `9e3cc61` ran all three jobs green (`windows-x64` in 5m58s, `macos-arm64` in 3m37s, `Security & License check` in 51s). As noted in item 3, the `deps-win64-vips.yml` artifact was built and audited by run `42601051369`, whose standalone `test-windows` job (`129115429801`) was red (`exit code 1` from `$LASTEXITCODE`) before `872ae48`. All 29 components of the Windows package have no GPL component identified in the list (not a legal opinion; see risk 17 in `docs/STATUS.md`).
 
 ---
 
@@ -41,8 +41,9 @@ This task builds, audits, packages, and verifies a custom Windows x64 `libvips` 
 
 Output of `git diff --stat main...HEAD`:
 ```
- .github/workflows/ci.yml                           | 389 ++++++----
+ .github/workflows/ci.yml                           | 413 ++++++----
  .github/workflows/deps-win64-vips.yml              | 195 +++++
+ AGENTS.md                                          |   1 +
  deny.toml                                          |   3 +
  deps/win64-vips/README.md                          |  44 ++
  deps/win64-vips/UPSTREAM.txt                       |  10 +
@@ -50,20 +51,21 @@ Output of `git diff --stat main...HEAD`:
  .../0001-enable-libde265-without-x265.patch        | 146 ++++
  docs/native-dependencies.md                        |  28 +-
  docs/test-fixtures.md                              |  13 +-
- docs/windows-validation.md                         |  47 +-
- reports/REPORT-0E.md                               | 340 +++++++++
+ docs/windows-validation.md                         |  49 +-
+ reports/REPORT-0E.md                               | 830 +++++++++++++++++++++
  scripts/prepare-bundle.mjs                         |   8 +-
- src-tauri/src/image_pipeline/vips.rs               |  17 +-
+ src-tauri/src/image_pipeline/vips.rs               |  24 +-
  src-tauri/src/smoke.rs                             | 159 +++-
  tests/fixtures/generated/image_display_p3.heic     | Bin 0 -> 2346 bytes
  tests/fixtures/generated/image_orientation_6.heic  | Bin 0 -> 2218 bytes
- 16 files changed, 1393 insertions(+), 154 deletions(-)
+ 17 files changed, 1915 insertions(+), 156 deletions(-)
 ```
-*(Note: `git diff --stat main...HEAD` above was captured at commit `8da15f9` immediately prior to committing these Round 3 updates to `reports/REPORT-0E.md`.)*
+*(Note: `git diff --stat main...HEAD` above was captured at commit `9e3cc61` prior to committing these Round 4 updates to `reports/REPORT-0E.md`.)*
 
 ### Purpose of changed files:
-- `.github/workflows/ci.yml`: Decoupled `windows-x64` and `macos-arm64` jobs, added concurrency group `ci-${{ github.ref }}` with `cancel-in-progress: true`, added path filtering for docs and dependency recipes, set artifact retention to 3 days for bundles/installers, updated Windows dependency download to pull `vips-dev-x64-web-8.18.6-hevc.zip` from private repo with fallback, and added smoke test HEIC assertions.
+- `.github/workflows/ci.yml`: Decoupled `windows-x64` and `macos-arm64` jobs, added concurrency group `ci-${{ github.ref }}` with `cancel-in-progress: true`, added path filtering for docs and dependency recipes, set artifact retention to 3 days for bundles/installers, made Windows custom HEVC dependency download fail closed for non-fork runs (stock fallback only for fork PRs via `IS_FORK_PR`), and added smoke test HEIC assertions.
 - `.github/workflows/deps-win64-vips.yml`: Isolated GitHub Actions workflow that clones upstream `build-win64-mxe` at pinned commit `09cfccf`, applies our patch, builds `vips-web` with `--with-hevc` inside the pinned container, audits binary contents with `audit-zip.sh`, tests HEIC decode and SVG blocking on a clean Windows runner, and uploads artifact `vips-win64-hevc` (`workflow_dispatch` only).
+- `AGENTS.md`: Added safety rule forbidding creation, modification, or deletion of GitHub secrets/tokens/repositories/releases/settings and prohibiting reading/reusing `gh auth token` (7,438 chars, under 12,000 limit).
 - `deny.toml`: Ignored `RUSTSEC-2026-0459` (CVE-2026-119375 on `libsqlite3-sys 0.30.1` via `sqlx-sqlite 0.8.6`) with documented `id`, `reason`, date (`2026-11-09`), and re-check note.
 - `deps/win64-vips/README.md`: Instructions for reproducing the build locally and in CI.
 - `deps/win64-vips/UPSTREAM.txt`: Records upstream commit SHA (`09cfccf20b91b441fbe97fa7a7ed8a597e55e830`), pinned base container digest (`sha256:07d164cd05770a6f6236b22c489be7d634fc1227b59a35cf32bd41963e163b74`), and build target.
@@ -71,9 +73,9 @@ Output of `git diff --stat main...HEAD`:
 - `deps/win64-vips/patches/0001-enable-libde265-without-x265.patch`: Minimal patch removing `x265` build definitions, configuring `libheif` with `-DWITH_X265=0`, pinning base image by digest, and adding `libde265` to `versions.json`.
 - `docs/native-dependencies.md`: Added release `win64-vips-8.18.6-hevc1` to §4.1, updated §4.2 with full 29-component table (including `libde265` 1.1.1), explicit LGPL listing, and statement that no GPL component is identified in this list (not a legal opinion; see risk 17 in `docs/STATUS.md`).
 - `docs/test-fixtures.md`: Documents the synthetic HEIC fixtures (`image_orientation_6.heic` and `image_display_p3.heic`).
-- `docs/windows-validation.md`: Documented private release download, checksum verification, and added Step 3.5 for owner real-iPhone HEIC validation (working on a copy, deleting only `$outWebp`).
+- `docs/windows-validation.md`: Documented private release download, checksum verification, updated Step 3.1 to reference `"the branch you are testing"`, and added Step 3.5 for owner real-iPhone HEIC validation (working on a copy, deleting only `$outWebp`).
 - `scripts/prepare-bundle.mjs`: Stages the synthetic HEIC fixtures into `src-tauri/resources/fixtures/` during packaging.
-- `src-tauri/src/image_pipeline/vips.rs`: Improved libvips error capturing in `webpsave_with_opts` to query `vips_error_buffer()` on failure.
+- `src-tauri/src/image_pipeline/vips.rs`: Improved libvips error capturing in `webpsave_with_opts` to query `vips_error_buffer()` on failure, with an accurate `// SAFETY:` comment on the new `unsafe` block.
 - `src-tauri/src/smoke.rs`: Added `heic_decode_verified` and `heic_note` fields to `SmokeResult`, implemented HEIC decoding, pixel comparison via `libvips::ops::getpoint`, ExifTool metadata validation, and `REQUIRE_HEIC` handling.
 - `tests/fixtures/generated/image_orientation_6.heic`: Synthetic 640x480 HEVC image with HEIF rotation box (`irot`) and EXIF Orientation 6 (Rotate 90 CW).
 - `tests/fixtures/generated/image_display_p3.heic`: Synthetic 640x480 HEVC image with Display P3 ICC profile.
@@ -207,11 +209,19 @@ Output of `git diff --stat main...HEAD`:
 [
   {
     "conclusion": "success",
+    "createdAt": "2026-11-10T08:54:47Z",
+    "databaseId": 42786344196,
+    "displayTitle": "fix(ci,docs,vips): fail closed on DEPS_TOKEN download, document SAFET…",
+    "headSha": "9e3cc61e30c78a6dc5cbfd7898dcd898a8c637ee",
+    "updatedAt": "2026-11-10T09:00:49Z"
+  },
+  {
+    "conclusion": "success",
     "createdAt": "2026-11-10T03:18:46Z",
     "databaseId": 42748606529,
     "displayTitle": "fix(policy): add documented ignore with reason and date for RUSTSEC-2…",
     "headSha": "8da15f9e5cd77b96ccb72b72715c873f117242a4",
-    "updatedAt": "2026-11-10T03:23:20Z"
+    "updatedAt": "2026-11-10T08:07:48Z"
   },
   {
     "conclusion": "success",
@@ -266,7 +276,7 @@ Output of `git diff --stat main...HEAD`:
 
 ### Rebuilt Run Log Table (Strictly Derived from Raw JSON Above)
 
-| Run ID | Workflow | Commit | Conclusion | Duration (`updatedAt - createdAt`) | One-line summary |
+| Run ID | Workflow | Commit | Conclusion | Duration (`updatedAt - createdAt` or rerun) | One-line summary |
 |---|---|---|---|---|---|
 | `42510934771` | `ci.yml` | `d4d2738` | `success` | `11m04s` | Part 0 CI matrix optimization (`18:37:30Z` to `18:48:34Z`) |
 | `42513073477` | `ci.yml` | `be7382a` | `success` | `6m27s` | App CI green alongside initial `deps-win64-vips` setup (`19:03:33Z` to `19:10:00Z`) |
@@ -281,7 +291,9 @@ Output of `git diff --stat main...HEAD`:
 | `42601051369` | `deps-win64-vips.yml` | `d460d76` | `failure` | `22m18s` | Build/audit succeeded (`129105320239`), `test-windows` printed ✓ Success then exited 1 on SVG `$LASTEXITCODE` (`10:27:51Z` to `10:50:09Z`) |
 | `42631246794` | `ci.yml` | `7489369` | `failure` | `7m20s` | Part B attempt 1: `DEPS_TOKEN` returned HTTP 403 and `cargo deny` hit `RUSTSEC-2026-0459` (`14:05:21Z` to `14:12:41Z`) |
 | `42635598100` | `ci.yml` | `eaf89fe` | `success` | `6m57s` | Part B: `windows-x64`, `macos-arm64`, `cargo-deny` all green (`14:31:57Z` to `14:38:54Z`) |
-| `42748606529` | `ci.yml` | `8da15f9` | `success` | `4m34s` | Round 3 final CI: `windows-x64` (4m30s), `macos-arm64` (4m6s), `cargo-deny` (42s) green (`03:18:46Z` to `03:23:20Z`) |
+| `42748606529` | `ci.yml` | `8da15f9` | `success` | `4m34s` initial / `6m32s` rerun | Round 3 final CI (`03:18:46Z–03:23:20Z`), re-run by owner at `08:01:16Z–08:07:48Z` |
+| `42781991284` | `ci.yml` (`task/0E-negtest`, deleted) | `3884f5c` | `failure` | `1m20s` (win) / `12m16s` (mac) | Negative test: missing tag failed closed at `Install Windows prerequisites` (`08:21:24Z`) |
+| `42786344196` | `ci.yml` | `9e3cc61` | `success` | `6m02s` | Round 4 final CI: `windows-x64` (5m58s), `macos-arm64` (3m37s), `cargo-deny` (51s) green (`08:54:47Z–09:00:49Z`) |
 
 ### One-Line Explanations of Mismatches in Previous Table
 - **`42510934771` commit reported `0523ec3` vs actual `d4d2738`:** `0523ec3` was typed/hallucinated from memory rather than read from `gh run list`; the actual `headSha` is `d4d2738`.
@@ -637,6 +649,7 @@ windows-x64	Install Windows prerequisites	2026-11-09T14:06:55.5733811Z ✓ Verif
 windows-x64	UNKNOWN STEP	2026-11-09T14:33:24.2564044Z DEPS_TOKEN present; attempting to download custom HEVC libvips release from narayanwaraich/photos-manager-deps...
 windows-x64	UNKNOWN STEP	2026-11-09T14:33:28.9670604Z ✓ Verified custom HEVC libvips hash: 72591A6BDF775618BC154E83990C86919ECB18F6E9D72FADE5BAEF9B4F343991
 ```
+5. **Round 4 secret replacement & fail-closed download behavior:** On `2026-11-10`, the owner replaced `DEPS_TOKEN` with a minimal read-only token scoped to `narayanwaraich/photos-manager-deps` and will revoke the prior login token (`CI run with it: the owner will do that`; subsequently both the owner's rerun of `42748606529` and Round 4 run `42786344196` succeeded against `narayanwaraich/photos-manager-deps`). Notice also that in Round 3's script (`42631246794`–`42748606529`), a failing native `gh release download` did not throw and fell back silently to stock libvips. In Round 4 (commit `9e3cc61`), `.github/workflows/ci.yml` checks `IS_FORK_PR` (`${{ github.event.pull_request.head.repo.fork == true }}`, passed as an env variable): only fork PRs fall back to stock libvips with `REQUIRE_HEIC` unset; every non-fork run requires `DEPS_TOKEN`, checks `$LASTEXITCODE` across 3 attempts with `Start-Sleep -Seconds 15` between them, fails closed with `throw` on any download or SHA-256 mismatch, and exports `REQUIRE_HEIC=1`.
 
 ---
 
@@ -691,11 +704,27 @@ ignore = [
 ]
 ```
 
-### 10.4 Local Verification (`pnpm verify`)
+### 10.4 Local Verification (`pnpm verify` and `actionlint`)
+
+`actionlint -verbose .github/workflows/ci.yml .github/workflows/deps-win64-vips.yml`:
+```
+verbose: Linting 2 files
+verbose: Linting .github/workflows/deps-win64-vips.yml
+verbose: Using project at /Users/narayanwaraich/Desktop/Projects/photos-manager
+verbose: Linting .github/workflows/ci.yml
+verbose: Using project at /Users/narayanwaraich/Desktop/Projects/photos-manager
+verbose: Found 0 parse errors in 0 ms for .github/workflows/deps-win64-vips.yml
+verbose: Found 0 parse errors in 0 ms for .github/workflows/ci.yml
+verbose: Rule "pyflakes" was disabled: exec: "pyflakes": executable file not found in $PATH
+verbose: Rule "pyflakes" was disabled: exec: "pyflakes": executable file not found in $PATH
+verbose: Found total 0 errors in 104 ms for .github/workflows/deps-win64-vips.yml
+verbose: Found total 0 errors in 117 ms for .github/workflows/ci.yml
+verbose: Found 0 errors in 2 files
+```
 
 ```
 Photos Manager — pnpm verify verification run
-Date: 2026-11-10T03:31:47.960Z
+Date: 2026-11-10T08:17:33.010Z
 Log output file: /Users/narayanwaraich/Desktop/Projects/photos-manager/reports/logs/verify-2026-11-10.txt
 
 ======================================================
@@ -713,7 +742,8 @@ COMMAND: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 CWD: /Users/narayanwaraich/Desktop/Projects/photos-manager
 ======================================================
 
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.62s
+    Checking photos-manager v0.1.0 (/Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.86s
 
 ✓ PASSED: cargo clippy
 
@@ -732,11 +762,11 @@ test filesystem::tests::test_macos_nfc_vs_nfd_normalization_probe ... ok
 test metadata::tests::test_exiftool_missing_file ... ok
 test database::tests::test_init_pool_and_app_settings_migration ... ok
 test metadata::tests::test_exiftool_rejects_non_absolute_path ... ok
-test metadata::tests::test_exiftool_malformed_output ... ok
+test metadata::tests::test_exiftool_success ... ok
 test metadata::tests::test_exiftool_non_ascii_filename ... ok
+test metadata::tests::test_exiftool_malformed_output ... ok
 test metadata::tests::test_exiftool_long_path ... ok
 test metadata::tests::test_exiftool_timeout ... ok
-test metadata::tests::test_exiftool_success ... ok
 test image_pipeline::vips::tests::test_vips_supported_loaders_reports_real_codecs ... ok
 test image_pipeline::vips::tests::test_vips_missing_file_error ... ok
 test image_pipeline::vips::tests::test_vips_blocks_svgload ... ok
@@ -756,7 +786,8 @@ running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+   Compiling photos-manager v0.1.0 (/Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.72s
      Running unittests src/lib.rs (src-tauri/target/debug/deps/photos_manager_lib-1cc4cdd59e5db195)
      Running unittests src/main.rs (src-tauri/target/debug/deps/photos_manager-9307dd686c9317e1)
    Doc-tests photos_manager_lib
@@ -806,7 +837,7 @@ dist/assets/index-DuaNDsJK.js  221.20 kB │ gzip: 69.39 kB
 STEP: AGENTS.md length check (< 12,000 characters)
 ======================================================
 
-AGENTS.md character count: 7213
+AGENTS.md character count: 7438
 ✓ PASSED: AGENTS.md character count is under 12,000
 
 ======================================================
@@ -814,14 +845,141 @@ ALL VERIFICATION CHECKS PASSED SUCCESSFULLY!
 ======================================================
 ```
 
+### 10.5 Round 4 (Fail-Closed Negative Test, Safety Comment, Boundary Rule, & Final CI)
+
+1. **Boundary Rule (`AGENTS.md`):** Added the required sentence forbidding creating, changing, or deleting GitHub secrets, tokens, repositories, releases, or settings and forbidding reading or reusing `gh auth token` under `## Safety invariants`. `AGENTS.md` length is `7,438` characters (`< 12,000`).
+2. **Throwaway Negative Test on `task/0E-negtest` (Run `42781991284`, commit `3884f5c`):**
+   - Created `task/0E-negtest` from `9e3cc61` and changed ONLY `$releaseTag` to `"win64-vips-nonexistent-negtest"`.
+   - **`gh run view 42781991284` (raw):**
+```
+X task/0E-negtest CI & Packaging Matrix · 42781991284
+Triggered via push about 19 minutes ago
+
+JOBS
+X windows-x64 in 1m20s (ID 129713971359)
+  ✓ Set up job
+  ✓ Checkout code
+  ✓ Setup Node.js 22
+  ✓ Setup pnpm
+  ✓ Setup Rust toolchain
+  ✓ Cache Rust dependencies
+  ✓ Setup Python
+  ✓ Install Python Pillow
+  X Install Windows prerequisites
+  - Install frontend dependencies
+  - Generate synthetic test fixtures
+  - Run verification suite (pnpm verify)
+  - Stage bundled resources
+  - Build Tauri application (unsigned)
+  - Post-build bundle packaging & library relocation
+  - Clean-environment smoke test (Windows x64)
+  - Upload smoke test report
+  - Upload verification logs
+  - Upload Windows installer package (.exe)
+  - Post Setup Python
+  - Post Cache Rust dependencies
+  ✓ Post Setup pnpm
+  - Post Setup Node.js 22
+  ✓ Post Checkout code
+  ✓ Complete job
+✓ macos-arm64 in 12m16s (ID 129713971665)
+✓ Security & License check (cargo deny) in 43s (ID 129713971699)
+
+ANNOTATIONS
+! Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-node@v4, actions/setup-python@v5, pnpm/action-setup@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+windows-x64: .github#2
+
+X Process completed with exit code 1.
+windows-x64: .github#141
+
+! Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-node@v4, actions/setup-python@v5, actions/upload-artifact@v4, pnpm/action-setup@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+macos-arm64: .github#2
+
+- Due to capacity constraints, jobs targeting macOS arm64 runners may experience longer queue times.
+macos-arm64: .github#1
+
+! Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+Security & License check (cargo deny): .github#2
+
+- "The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748"
+Security & License check (cargo deny): .github#1
+
+
+ARTIFACTS
+verify-logs-macos-arm64
+smoke-report-macos-arm64
+photos-manager-macos-arm64
+
+To see what failed, try: gh run view 42781991284 --log-failed
+View this run on GitHub: https://github.com/narayanwaraich/photos-manager/actions/runs/42781991284
+```
+   - **Failed step log lines (`--job 129713971359 --log-failed`, execution lines after `##[endgroup]` with ANSI color escapes stripped for readability):**
+```
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:10.0765738Z   DEPS_TOKEN: ***
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:10.0765853Z   IS_FORK_PR: false
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:10.0765964Z ##[endgroup]
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:10.3220036Z 
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:10.3225410Z     Directory: D:\a\photos-manager\photos-manager\deps
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:10.3225654Z 
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:10.3226898Z Mode                 LastWriteTime         Length Name
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:10.3227616Z ----                 -------------         ------ ----
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:10.3324890Z d----          11/10/2026  8:22 AM                vips
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:10.3526814Z Downloading custom HEVC libvips release 'win64-vips-nonexistent-negtest' from 'narayanwaraich/photos-manager-deps'...
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:14.2989127Z release not found
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:14.3082940Z Attempt 1 of 3 failed: gh release download failed with exit code 1
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:29.8205189Z release not found
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:29.8270333Z Attempt 2 of 3 failed: gh release download failed with exit code 1
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:45.1660500Z release not found
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:45.1722704Z Attempt 3 of 3 failed: gh release download failed with exit code 1
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:45.2910430Z Exception: D:\a\_temp\2d43a09e-b5ee-48d0-9ee4-8557bad3acf7.ps1:59
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:45.2910952Z Line |
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:45.2911358Z   59 |      throw "Failed to download custom HEVC libvips release '$releaseTa …
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:45.2912039Z      |      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:45.2912556Z      | Failed to download custom HEVC libvips release 'win64-vips-nonexistent-negtest' from
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:45.2913605Z      | 'narayanwaraich/photos-manager-deps' after 3 attempts (gh release download failed with exit code 1). Check
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:45.2914672Z      | whether DEPS_TOKEN is expired/invalid, lacks Contents read permission on 'narayanwaraich/photos-manager-deps',
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:45.2915815Z      | or release tag 'win64-vips-nonexistent-negtest' is missing.
+windows-x64	Install Windows prerequisites	2026-11-10T08:22:45.3096241Z ##[error]Process completed with exit code 1.
+```
+   - **Throwaway branch cleanup:**
+```
+To github.com:narayanwaraich/photos-manager.git
+ - [deleted]         task/0E-negtest
+Deleted branch task/0E-negtest (was 3884f5c).
+
+$ git ls-remote --heads origin "task/0E*"
+9e3cc61e30c78a6dc5cbfd7898dcd898a8c637ee	refs/heads/task/0E
+```
+
+3. **Real Push CI Verification on `task/0E` (Run `42786344196`, commit `9e3cc61`):**
+   - **`gh run list --branch task/0E --limit 3 | cat` (raw):**
+```
+completed	success	fix(ci,docs,vips): fail closed on DEPS_TOKEN download, document SAFET…	CI & Packaging Matrix	task/0E	push	42786344196	6m2s	2026-11-10T08:54:47Z
+completed	success	fix(policy): add documented ignore with reason and date for RUSTSEC-2…	CI & Packaging Matrix	task/0E	push	42748606529	6m32s	2026-11-10T08:01:16Z
+completed	success	fix(ci): ignore RUSTSEC-2026-0459 in cargo deny and improve libvips e…	CI & Packaging Matrix	task/0E	push	42635598100	6m57s	2026-11-09T14:31:57Z
+```
+   - **Windows job `129728392352` download + verification lines (raw):**
+```
+windows-x64	Install Windows prerequisites	2026-11-10T08:56:06.3195097Z   IS_FORK_PR: false
+windows-x64	Install Windows prerequisites	2026-11-10T08:56:06.7491737Z Downloading custom HEVC libvips release 'win64-vips-8.18.6-hevc1' from 'narayanwaraich/photos-manager-deps'...
+windows-x64	Install Windows prerequisites	2026-11-10T08:56:11.0402524Z ✓ Verified custom HEVC libvips hash: 72591A6BDF775618BC154E83990C86919ECB18F6E9D72FADE5BAEF9B4F343991
+windows-x64	Clean-environment smoke test (Windows x64)	2026-11-10T09:00:41.5234099Z Smoke test heic_decode_verified: True
+windows-x64	Clean-environment smoke test (Windows x64)	2026-11-10T09:00:41.5243256Z Smoke test heic_note: HEVC decode and upright 240x320 thumbnail verified
+```
+
+4. **`vips.rs` `// SAFETY:` Comment & Factual Buffer Correction:**
+   Added a `// SAFETY:` comment on the new `unsafe` block inside `webpsave_with_opts` error mapping (`src-tauri/src/image_pipeline/vips.rs:115-121`) with no other change to `generate_thumbnail`. Verification against upstream `libvips/iofuncs/error.c` showed that `vips_error_buffer()` returns a pointer to libvips's statically allocated **process-wide** buffer (`vips_error_text[10240]`, updated under `vips__global_lock`), **not** thread-local storage as stated in Round 3 Concept #2. The `// SAFETY:` comment and Concept #2 below both state this accurately.
+
+5. **`docs/windows-validation.md` Step 3.1:** Updated line 107 from `"branch task/0C"` to `"the branch you are testing"`.
+
 ---
 
 ## 11. Concepts used (for the owner, a React developer learning Rust and Git)
 
 1. **Lazy Execution / Demand-Driven Image Pipelines**: In libvips, functions like `thumbnail_with_opts` construct a computation graph without decoding pixel bytes immediately; pixel evaluation occurs only when a sink operation like `webpsave_with_opts` pulls data, meaning decode errors bubble up during the save step.  
-   *Example:* [vips.rs](file:///Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri/src/image_pipeline/vips.rs#L114-L128)
-2. **C-FFI Error Buffers and Thread Safety (`vips_error_buffer()`)**: When interacting with native C libraries through Rust FFI, failures in C operations populate a thread-local error string buffer that Rust wrappers must extract via raw pointers before clearing.  
-   *Example:* [vips.rs](file:///Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri/src/image_pipeline/vips.rs#L116-L124)
+   *Example:* [vips.rs](file:///Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri/src/image_pipeline/vips.rs#L114-L135)
+2. **C-FFI Error Buffers and Global Static State (`vips_error_buffer()`)**: In `libvips`, failed C operations append text to a single statically allocated process-wide C string buffer (`vips_error_text` in `error.c`, updated under `vips__global_lock` rather than thread-local storage), which our Rust FFI wrapper null-checks before `CStr::from_ptr` and clears via `vips_error_clear()` under single-threaded assumptions so stale messages do not leak across calls.  
+   *Example:* [vips.rs](file:///Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri/src/image_pipeline/vips.rs#L115-L132)
 3. **PowerShell `$LASTEXITCODE` Propagation**: In GitHub Actions `pwsh` steps, running a native command that intentionally exits non-zero (such as our SVG-blocking negative check) leaves `$LASTEXITCODE` set to `1`, failing the job unless explicitly cleared via `$global:LASTEXITCODE = 0`.  
    *Example:* [deps-win64-vips.yml](file:///Users/narayanwaraich/Desktop/Projects/photos-manager/.github/workflows/deps-win64-vips.yml#L188-L194)
 4. **Rust Security Advisory Exceptions (`deny.toml [advisories]`)**: When an audited indirect dependency has no compatible patch release, declaring an object `{ id, reason }` in `deny.toml` documents the technical condition, date, and upgrade target while keeping CI security gates active.  
