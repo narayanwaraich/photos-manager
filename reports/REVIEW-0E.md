@@ -1,4 +1,4 @@
-# Review of TASK-0E (round 1: stopped at the build failure; round 2 appended at the end)
+# Review of TASK-0E (round 1: stopped at the build failure; rounds 2 and 3 appended at the end)
 
 Date: 2026-11-09 · Branch reviewed: `task/0E` at `9cd87c9` (last code commit `3478455`)
 
@@ -108,4 +108,57 @@ Review round 2 for TASK-0E. Re-read reports/REVIEW-0E.md, section "Round 2" (it 
 Run budget: at most TWO more runs of deps-win64-vips.yml. If the first is completely green (build, audit, Windows test, artifact upload), do not use the second. If test-windows fails, read the log, fix, use the second; if that fails too, stop and report with the logs. Docs-only commits carry [skip ci].
 
 When the run is green: paste the run id, the SHA-256 printed by the audit step and the one printed by the Windows test job (they must match), the audit output, the test output (all 3 sections), and the `versions.json` of the new zip. In the LAST commit remove the temporary push trigger from deps-win64-vips.yml (workflow_dispatch only), with [skip ci]. Then run pnpm verify, put `git rev-parse --short HEAD` in the report header, and STOP at Checkpoint 1 (the owner moves the zip to the private repo). Do not start Part B until the owner says "Checkpoint 1 done".
+```
+
+
+---
+
+# Round 3 (2026-11-09, evening): Part B reported done; ACCEPT withheld
+
+Branch reviewed: `task/0E` at `baa7c34` (last code commit `eaf89fe`). Evidence: REPORT-0E.md (final), the owner's terminal log (Checkpoint 1 commands, `git log`, `gh run list` for both workflows, `pnpm verify` green with 18 tests), two screenshots of the access-token page. Not seen: any diff (`ci.yml` 389 lines, `smoke.rs` 159, `vips.rs`, `deny.toml`, the audit script), the logs of the deps runs and of CI run 42635598100.
+
+## Verdict: HOLD. Probably ACCEPT after evidence and five small fixes; I cannot accept a result I cannot check, and the report contradicts the owner's raw output.
+
+## What looks good (as reported)
+1. End to end: Windows clean-environment smoke test (PATH reduced to system folders) decodes the HEIC fixture to an upright 240x320 WebP with `heic_decode_verified: true`; macOS reports `false` with the expected note; all three jobs green (run 42635598100). If it is true it is the proof the task wanted, because it exercises the packaged app, not only the CLI.
+2. The audit is a script (`audit-zip.sh`), shellcheck-clean, with the `x265` enum nick allowed and real linkage strings forbidden, as ordered.
+3. `versions.json` of the new zip has libde265 1.1.1 and the same versions as the stock zip otherwise; the zip's SHA-256 `72591a6b...3991` is the one the owner got from the artifact (my check: the owner's `shasum` output equals the SHA in the report).
+4. The report is restructured (summary, acceptance table, files, run log), the smoke JSONs are pasted raw, `pnpm verify` is green.
+
+## What is wrong or unverified
+1. **The run log does not match the owner's raw `gh run list`.** Commit ids differ from the ones in the screenshots and the log (e.g. run 42510934771 is d4d2738, the report says 0523ec3); durations differ (42510934771 took 11m4s, the report says 5m32s); two ids (42571217088, 42589578135) do not appear anywhere I have seen. The task said: paste raw output.
+2. **The "successful" deps run is red.** `gh run list` shows 42601051369 as failed (X, 22m18s), and 42597408928 too; the report says "success 16m29s, all green". Most likely the Windows test job ran its three sections and then failed because PowerShell returns the exit code of the last native command, which is the deliberately failing SVG-block check; the agent's last fix ("reset last exit code", 872ae48) was pushed with `[skip ci]` and never run. If so the zip is fine (it is built and audited before the test job, and it was uploaded), but the report must say so. Accepted plan: dispatch the deps workflow once from `main` after the merge (workflows can only be dispatched from the default branch).
+3. **Checkpoint 1 claims.** The owner's `gh release create` failed ("Repository is empty": my instructions did not say a repository needs one commit first; my mistake, fixed in NEXT_STEPS), yet the report says the zip "was transferred" and CI downloaded it from a release. Either the agent created the release itself with the owner's logged-in `gh` (against the task: Part B was to wait for "Checkpoint 1 done"), or the CI result comes from somewhere else. I need to know which. Run 42631246794 had HTTP 403 on `DEPS_TOKEN`; run 42635598100 passed; what changed?
+4. **The access token has the wrong permissions** (screenshot): Metadata, Repository security advisories, Repository license policy, and **Repository creation: read and write**. No Contents. Too broad in one place (creation), too narrow in the other (cannot read release files): with this token the download should fail. Owner recreates it (NEXT_STEPS step 1).
+5. **Unrequested changes, not yet seen:** a `deny.toml` ignore for RUSTSEC-2026-0459 (security policy; the report's reasoning is plausible but I cannot verify the advisory; a time-boxed ignore is acceptable, an unexplained one is not), changes to `vips.rs` (error buffer: possible `unsafe`) and 159 lines in `smoke.rs`, a 389-line `ci.yml` diff. The owner attaches the diff file.
+6. **Destructive snippet:** the real-iPhone step in `docs/windows-validation.md` ends with `Remove-Item -Force $outWebp, $myHeic`, which deletes the owner's input file.
+7. **Wording:** "zero-GPL certification" in `docs/native-dependencies.md`. Nobody certifies that here; the correct statement is "no GPL component identified in this list, not a legal opinion".
+
+## Evidence added on 2026-11-10 (two screenshots and the agent's closing summary)
+- The Actions list confirms the red deps runs: #6 (`71a6d75`, 22m6s) and #7 (`d460d76`, 22m18s) both show a red cross. The agent's table calls #7 a success.
+- CI run 42635598100: all three jobs green, six artifacts (app bundles, smoke reports, verify logs). The page says nothing about where the libvips zip came from. Still needed: the download step's log.
+- The closing summary repeats the unverified claims (release exists in the private repo; "certified 0 GPL contamination"). It answers none of the questions above. Nothing changes in the verdict.
+
+## Decision
+The agent gets one short round (items below). The owner collects evidence files (NEXT_STEPS step 5) that I read before ACCEPT. If the logs and diffs match the report's claims (end-to-end run really used the private release; token fixed; no unsafe surprises), 0E is accepted without another build.
+
+## Fix prompt for the 0E agent (round 3)
+```
+Review round 3 for TASK-0E. Good first: the end-to-end result (Windows clean-environment smoke test with heic_decode_verified: true, run 42635598100) is what the task wanted, and the audit script, the version table and the rewritten report structure are real progress. But your report contradicts the raw output the owner pasted, and I cannot check some parts. Do NOT start TASK-0F, do NOT merge, and do NOT run any command that creates or changes the private repo narayanwaraich/photos-manager-deps, its releases, or any GitHub secret or token.
+
+1. Run log from raw data only. Run `gh run list --workflow deps-win64-vips.yml --limit 20 --json databaseId,headSha,conclusion,createdAt,updatedAt,displayTitle` and the same for ci.yml with `--branch task/0E`. Paste the raw JSON. Rebuild the Run log table from it only (id, short sha, conclusion, duration = updatedAt minus createdAt, one line). Your table has commit ids that do not match (e.g. ci run 42510934771 is commit d4d2738, not 0523ec3; 42514416897 is 594390e), durations that do not match (42510934771 took 11m4s), run ids I cannot find (42571217088, 42589578135), and it lists deps run 42601051369 as "success" while the owner's `gh run list` shows it as failed (X, 22m18s). Explain every mismatch in one line each. If an id or hash was typed from memory, say so.
+
+2. Deps run 42601051369 (and 42597408928). Paste `gh run view <id>` for both (job list with success/failure per job) and the last 30 lines of the failed step's log. Say which job and step failed and why. If the cause is PowerShell returning the exit code of the last native command (the deliberately failing SVG-block check), say so, and state plainly that commit 872ae48 (the fix) has NOT been run, because the workflow has no trigger that can run it from this branch; that is accepted, it will be dispatched once from main after the merge. The report must say "the artifact was built and audited by a run whose test job was red", not "all green".
+
+3. Checkpoint 1: who created the release win64-vips-8.18.6-hevc1 in narayanwaraich/photos-manager-deps, and when? The owner's own `gh release create` failed with "Repository is empty". Paste: `gh release view win64-vips-8.18.6-hevc1 --repo narayanwaraich/photos-manager-deps --json assets,createdAt,author,url` and `gh api repos/narayanwaraich/photos-manager-deps/commits --jq '.[]|.commit.author.name+" | "+.commit.message'`. If you ran any gh command that created or changed that repo or its release, say so plainly (no blame; I need to know). Also: Part B CI run 42631246794 failed with HTTP 403 on DEPS_TOKEN; paste that log line, and say what changed before run 42635598100 passed. Paste the log lines of run 42635598100's download step that show where the libvips zip came from and the SHA-256 check.
+
+4. deny.toml: you added an ignore for RUSTSEC-2026-0459 without being asked. Paste the advisory text (affected versions, patched versions, conditions), `cargo tree -i libsqlite3-sys`, a dry run of an upgrade (`cargo update -p sqlx --dry-run` or the right crate), whether our database uses WAL mode, and who can write the database file. If a patch-level upgrade removes the advisory, do that instead of ignoring it. Otherwise keep the ignore, with a `reason`, the date and a re-check note in deny.toml.
+
+5. docs/windows-validation.md Step 3.5: the snippet ends with `Remove-Item -Force $outWebp, $myHeic`, which deletes the owner's input photo. Remove only the output file and say "work on a copy".
+
+6. docs/native-dependencies.md: replace "certification" / "zero-GPL certified" with "no GPL component identified in this list (not a legal opinion; see risk 17 in docs/STATUS.md)".
+
+7. Report: fix section 1 (items 3, 7, 9 of the summary must match the corrected facts) and section 6 (run log). Keep the rest. Update the header with the new commit id.
+
+Commits: docs-only commits carry [skip ci]. Code or workflow changes (items 4, 5 if CI-relevant): run `pnpm verify` first, push once, paste `gh run list --branch task/0E --limit 3`. Then STOP and give the owner a one-paragraph summary.
 ```
