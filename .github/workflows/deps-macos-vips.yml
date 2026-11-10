@@ -1,0 +1,226 @@
+name: Build & Test macOS arm64 libvips (HEVC Decode)
+
+on:
+  workflow_dispatch:
+  # Temporary scoped push trigger to execute & verify on task/0F before workflow exists on main.
+  # Removed cleanly via [skip ci] commit once verified so only workflow_dispatch remains.
+  push:
+    branches:
+      - 'task/0F'
+    paths:
+      - '.github/workflows/deps-macos-vips.yml'
+      - 'deps/macos-vips/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build-audit:
+    name: Build & audit macOS arm64 libvips (HEVC decode)
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Record runner OS & Xcode environment
+        run: |
+          echo "RUNNER_OS=$RUNNER_OS RUNNER_ARCH=$RUNNER_ARCH"
+          echo "ImageOS=${ImageOS:-unset} ImageVersion=${ImageVersion:-unset}"
+          sw_vers
+          uname -a
+          xcodebuild -version || xcode-select -p
+
+      - name: Install build tools and allowlisted leaf dependencies
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install \
+            cmake meson ninja pkgconf \
+            glib gettext pcre2 libffi jpeg-turbo libpng webp libtiff little-cms2 libexif highway zstd xz
+          echo "=== Installed Homebrew leaf versions ==="
+          brew list --versions \
+            cmake meson ninja pkgconf \
+            glib gettext pcre2 libffi jpeg-turbo libpng webp libtiff little-cms2 libexif highway zstd xz
+
+      - name: Build relocatable libvips macOS arm64 archive
+        run: |
+          chmod +x deps/macos-vips/build.sh deps/macos-vips/audit-dylibs.sh
+          VIPS_OUT_DIR="$GITHUB_WORKSPACE" ./deps/macos-vips/build.sh
+
+      - name: Audit built zip archive
+        run: |
+          ZIP_FILE="$GITHUB_WORKSPACE/vips-macos-arm64-8.18.6-hevc.zip"
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ERROR: Built archive not found at $ZIP_FILE"
+            exit 1
+          fi
+          ./deps/macos-vips/audit-dylibs.sh "$ZIP_FILE"
+          mkdir -p /tmp/inspect-meta
+          unzip -p "$ZIP_FILE" "vips-macos-arm64-8.18.6-hevc/versions.json" | tee /tmp/inspect-meta/versions.json
+          unzip -p "$ZIP_FILE" "vips-macos-arm64-8.18.6-hevc/LICENSES.md" | cat
+          echo "=== Archive SHA-256 and listing ==="
+          ls -la "$ZIP_FILE"
+          shasum -a 256 "$ZIP_FILE"
+
+      - name: Upload staging archive for clean-runner verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: vips-macos-arm64-hevc-staging
+          path: vips-macos-arm64-8.18.6-hevc.zip
+          retention-days: 1
+          if-no-files-found: error
+
+  test-clean-macos:
+    name: Clean-runner test with Homebrew hidden (macos-15)
+    needs: build-audit
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download staging libvips archive
+        uses: actions/download-artifact@v4
+        with:
+          name: vips-macos-arm64-hevc-staging
+          path: /tmp/vips-staging
+
+      - name: Verify archive on clean runner with Homebrew hidden and stripped PATH
+        run: |
+          set -euo pipefail
+          ZIP_FILE="/tmp/vips-staging/vips-macos-arm64-8.18.6-hevc.zip"
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ERROR: Staging archive missing at $ZIP_FILE"
+            exit 1
+          fi
+          ls -la "$ZIP_FILE"
+          shasum -a 256 "$ZIP_FILE"
+
+          UNPACK_DIR="/tmp/vips-clean-test"
+          rm -rf "$UNPACK_DIR"
+          mkdir -p "$UNPACK_DIR"
+          unzip -q "$ZIP_FILE" -d "$UNPACK_DIR"
+          VIPS_PREFIX="$(find "$UNPACK_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+          VIPS_BIN="$VIPS_PREFIX/bin"
+          echo "Extracted prefix: $VIPS_PREFIX"
+          ls -la "$VIPS_PREFIX/lib"
+
+          # Verify zero Homebrew or local paths in unpacked dylibs and CLI binaries
+          echo "=== Verifying otool -L across unpacked lib/* and bin/* ==="
+          for f in "$VIPS_PREFIX"/lib/*.dylib "$VIPS_BIN"/*; do
+            if [ -L "$f" ] || [ ! -f "$f" ]; then
+              continue
+            fi
+            LEAKS=$(otool -L "$f" | grep -E "/opt/homebrew|/usr/local|/Cellar|/var/|/tmp/" || true)
+            if [ -n "$LEAKS" ]; then
+              echo "FAIL: Non-relocated path in $(basename "$f"): $LEAKS"
+              exit 1
+            fi
+          done
+          echo "PASS: Zero non-system absolute paths in unpacked binaries/dylibs"
+
+          # Physically hide Homebrew so accidental /opt/homebrew linkage cannot silently pass
+          restore_brew() {
+            if [ -d /opt/homebrew.off ] && [ ! -e /opt/homebrew ]; then
+              sudo mv /opt/homebrew.off /opt/homebrew
+            fi
+          }
+          trap restore_brew EXIT
+          sudo mv /opt/homebrew /opt/homebrew.off
+
+          CLEAN_PATH="/usr/bin:/bin:/usr/sbin:/sbin:$VIPS_BIN"
+          echo "=== 1. Check vips -l lists heifload with stripped PATH and hidden Homebrew ==="
+          LOADERS_OUT="$(env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vips" -l)"
+          echo "$LOADERS_OUT" | grep -E "heifload|jpegload|pngload|webpload|tiffload|gifload|svgload|magickload" || true
+          if ! echo "$LOADERS_OUT" | grep -q "heifload"; then
+            echo "ERROR: vips -l does NOT list heifload!"
+            exit 1
+          fi
+          if echo "$LOADERS_OUT" | grep -qE "svgload|magickload"; then
+            echo "ERROR: Unexpected untrusted loader (svgload/magickload) listed!"
+            exit 1
+          fi
+          echo "✓ Success: vips -l lists heifload (and omits svgload/magickload)"
+
+          echo "=== 2. Decode orientation-6 HEIC fixture to PNG and verify upright dimensions ==="
+          HEIC_FIXTURE="tests/fixtures/generated/image_orientation_6.heic"
+          env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vipsthumbnail" "$HEIC_FIXTURE" -s 320 -o /tmp/heic_thumb.png
+          THUMB_HDR="$(env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vipsheader" /tmp/heic_thumb.png)"
+          echo "Thumbnail header: $THUMB_HDR"
+          if ! echo "$THUMB_HDR" | grep -q "240x320"; then
+            echo "ERROR: Expected 240x320 upright thumbnail, got: $THUMB_HDR"
+            exit 1
+          fi
+
+          env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vips" copy "$HEIC_FIXTURE" /tmp/heic_copy.png
+          COPY_HDR="$(env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vipsheader" /tmp/heic_copy.png)"
+          echo "Copy header: $COPY_HDR"
+          if ! echo "$COPY_HDR" | grep -q "480x640"; then
+            echo "ERROR: Expected 480x640 upright copy, got: $COPY_HDR"
+            exit 1
+          fi
+          echo "✓ Success: Orientation-6 HEIC decoded upright (240x320 thumb, 480x640 copy)"
+
+          echo "=== 3. Decode Display P3 HEIC fixture to PNG and verify dimensions ==="
+          P3_FIXTURE="tests/fixtures/generated/image_display_p3.heic"
+          env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vips" copy "$P3_FIXTURE" /tmp/p3_copy.png
+          P3_COPY_HDR="$(env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vipsheader" /tmp/p3_copy.png)"
+          echo "P3 copy header: $P3_COPY_HDR"
+          if ! echo "$P3_COPY_HDR" | grep -q "640x480"; then
+            echo "ERROR: Expected 640x480 P3 copy, got: $P3_COPY_HDR"
+            exit 1
+          fi
+
+          env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vipsthumbnail" "$P3_FIXTURE" -s 320 -o /tmp/p3_thumb.png
+          P3_THUMB_HDR="$(env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vipsheader" /tmp/p3_thumb.png)"
+          echo "P3 thumb header: $P3_THUMB_HDR"
+          if ! echo "$P3_THUMB_HDR" | grep -q "320x240"; then
+            echo "ERROR: Expected 320x240 P3 thumb, got: $P3_THUMB_HDR"
+            exit 1
+          fi
+          echo "✓ Success: Display P3 HEIC decoded (640x480 copy, 320x240 thumb)"
+
+          echo "=== 4. SVG control check (-Drsvg=disabled: both unblocked and VIPS_BLOCK_UNTRUSTED=1 must fail) ==="
+          SVG_FIXTURE="tests/fixtures/generated/fixture_blocked.svg"
+
+          set +e
+          SVG_UNBLOCKED_OUT="$(env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vips" copy "$SVG_FIXTURE" /tmp/svg_unblocked.png 2>&1)"
+          SVG_UNBLOCKED_EXIT=$?
+          set -e
+          echo "Unblocked SVG exit=$SVG_UNBLOCKED_EXIT output: $SVG_UNBLOCKED_OUT"
+          if [ "$SVG_UNBLOCKED_EXIT" -eq 0 ] || [ -f /tmp/svg_unblocked.png ]; then
+            echo "ERROR: SVG unexpectedly decoded without librsvg!"
+            exit 1
+          fi
+          if ! echo "$SVG_UNBLOCKED_OUT" | grep -q "not a known file format"; then
+            echo "ERROR: Expected 'not a known file format' on unblocked SVG"
+            exit 1
+          fi
+
+          set +e
+          SVG_BLOCKED_OUT="$(env -i PATH="$CLEAN_PATH" VIPS_BLOCK_UNTRUSTED=1 "$VIPS_BIN/vips" copy "$SVG_FIXTURE" /tmp/svg_blocked.png 2>&1)"
+          SVG_BLOCKED_EXIT=$?
+          set -e
+          echo "Blocked SVG exit=$SVG_BLOCKED_EXIT output: $SVG_BLOCKED_OUT"
+          if [ "$SVG_BLOCKED_EXIT" -eq 0 ] || [ -f /tmp/svg_blocked.png ]; then
+            echo "ERROR: SVG unexpectedly decoded under VIPS_BLOCK_UNTRUSTED=1!"
+            exit 1
+          fi
+          if ! echo "$SVG_BLOCKED_OUT" | grep -q "not a known file format"; then
+            echo "ERROR: Expected 'not a known file format' on blocked SVG"
+            exit 1
+          fi
+          echo "✓ Success: SVG load rejected cleanly both unblocked and under VIPS_BLOCK_UNTRUSTED=1 (no svgload built)"
+
+          restore_brew
+          trap - EXIT
+          echo "=== Final verified artifact details ==="
+          ls -la "$ZIP_FILE"
+          shasum -a 256 "$ZIP_FILE"
+
+      - name: Upload verified libvips artifact (14-day retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: vips-macos-arm64-hevc
+          path: /tmp/vips-staging/vips-macos-arm64-8.18.6-hevc.zip
+          retention-days: 14
+          if-no-files-found: error
