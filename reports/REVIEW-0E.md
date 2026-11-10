@@ -1,4 +1,4 @@
-# Review of TASK-0E (round 1: stopped at the build failure; rounds 2 and 3 appended at the end)
+# Review of TASK-0E (round 1: stopped at the build failure; rounds 2 to 4 appended at the end)
 
 Date: 2026-11-09 · Branch reviewed: `task/0E` at `9cd87c9` (last code commit `3478455`)
 
@@ -161,4 +161,50 @@ Review round 3 for TASK-0E. Good first: the end-to-end result (Windows clean-env
 7. Report: fix section 1 (items 3, 7, 9 of the summary must match the corrected facts) and section 6 (run log). Keep the rest. Update the header with the new commit id.
 
 Commits: docs-only commits carry [skip ci]. Code or workflow changes (items 4, 5 if CI-relevant): run `pnpm verify` first, push once, paste `gh run list --branch task/0E --limit 3`. Then STOP and give the owner a one-paragraph summary.
+```
+
+
+---
+
+# Round 4 (2026-11-10, midday): evidence reviewed; ACCEPT after a tiny final round
+
+Evidence read by me: the owner's `release-view`, the deps repo's commit list, `gh run view` of deps runs 42597408928 and 42601051369, the Windows test job log (613 lines), the CI log of run 42635598100 (3695 lines, searched for the download step), the 1417-line diff (`ci.yml`, deps workflow, audit script, `vips.rs`, `smoke.rs`, docs, `deny.toml`), the updated report and `deny.toml`. Owner's terminal log: secret re-set, release listed and downloaded with the right SHA-256, docs synced, commits now carry the no-reply address.
+
+## Verdict: FIX (tiny). 0E is accepted when round 4 is pushed and the two CI checks in NEXT_STEPS pass.
+
+## Confirmed
+1. **The release is real**: created 2026-11-09 13:19 UTC by the owner's account (in fact the agent, through his login, after he wrote "Checkpoint 1 done"; the report says so openly). The repo's only commit is the "Initial commit" with a README. Asset SHA-256 equals the artifact's `72591a6b...3991`; the owner re-downloaded and re-checked it.
+2. **End to end works**: the CI log of run 42635598100 shows `DEPS_TOKEN present`, `Verified custom HEVC libvips hash: 72591A6B...`, and the smoke JSON `heic_decode_verified: true`.
+3. **The deps test job really passed its sections** (log, 2026-11-09 10:50 UTC): `heifload` listed; HEIC fixture to an upright 240x320 thumbnail and a 480x640 copy; Display P3 fixture 640x480 and 320x240; SVG loads unblocked and is blocked under `VIPS_BLOCK_UNTRUSTED=1`. Then `##[error]Process completed with exit code 1`: the leaked exit code of the last (deliberately failing) command. My guess in round 3 was right. The earlier run (42597408928) failed matching the `vips.exe -l` output, which is why the agent changed the match. The fix `872ae48` has not run; one dispatch from `main` after the merge will show it.
+3b. **HEIC orientation fact, new**: the Windows run shows `heifload` already applies the HEIF `irot` rotation (copy 480x640) and `vipsthumbnail` does not rotate a second time. Phase 1 must not apply EXIF orientation again for HEIC without checking.
+4. **The report is now honest**: run log from raw JSON, every earlier mismatch explained in one line (the agent says plainly the ids were made up from memory), the Checkpoint 1 story told, the advisory evidence pasted. `pnpm verify` green; CI run 42748606529 green (4m34s).
+5. **`deny.toml` ignore accepted**: advisory text, `cargo tree` and dry runs pasted; no compatible upgrade; local app-data database only; the ignore has a reason, a date and a re-check note.
+6. **Audit script read**: rules (a) to (f) as ordered; the `x265` enum-nick exemption carries its evidence in a comment.
+
+## Findings
+1. **The agent used the owner's own login token as the CI secret.** Report section 10.2, step 4: after the 403 (first token had no Contents permission, as I said), "the agent updated the secret via `gh auth token | gh secret set DEPS_TOKEN`". That token has the `repo` scope: access to all the owner's repositories. It sat in an encrypted secret of a public repo, handed to one workflow step, for about 13 hours, until the owner replaced it. I rate the actual exposure low (secrets are masked in logs, only the owner can push workflows, fork PRs get no secrets), but it is the kind of shortcut that must never repeat. Actions: the owner revokes and re-issues the `gh` login (NEXT_STEPS step 1); D17 and an AGENTS.md sentence (fix prompt item 0). The agent reported it honestly, which I value; the rule is not about blame.
+2. **The download step fails open.** Seen in the CI log: if `DEPS_TOKEN` is present but the download fails, it prints "Falling back to stock upstream libvips", does not set `REQUIRE_HEIC`, and the run ends green with `heic_decode_verified: false`. Run 42631246794 shows it: five failures within two seconds (a failing native `gh` does not throw in PowerShell, so the retry loop never waits), then the stock fallback. When the owner's new token expires (2027-02-07) or breaks, CI would stay green and quietly stop testing HEIC. Fix: fail closed except for fork PRs, check the exit code, real retries, prove it with a throwaway branch (fix prompt item 1).
+3. **`unsafe` without a SAFETY comment** in `vips.rs` (reads and clears the libvips error buffer on a failed WebP save). The code looks right (null check, thread-local buffer, cleared after reading); it needs the comment, nothing more. Note that it changes production code outside the task's brief, small and useful, accepted.
+4. Minor: `windows-validation.md` Step 3.1 still names `task/0C`. `paths-ignore: docs/**` means an edit to the dylib table in `docs/native-dependencies.md` is not validated until the next code push (risk 36, Phase 7).
+
+## Fix prompt for the 0E agent (round 4)
+```
+Review round 4 for TASK-0E (final and small). Thank you for the honest explanations in sections 6 and 10 of the report: the corrected run log, the account of Checkpoint 1 and the advisory evidence are what I asked for. I read the logs and the diff myself. What is confirmed: the release exists and its SHA-256 matches; run 42635598100 downloaded it and decoded HEIC on Windows; the deps test job passed every section and then exited 1 on the leaked $LASTEXITCODE; the deny.toml ignore is accepted. Do NOT start TASK-0F and do NOT merge.
+
+0. Boundary (no discussion). In round 3 you ran `gh auth token | gh secret set DEPS_TOKEN`. That copied the owner's personal GitHub login token (scope: repo, all his repositories) into a CI secret of a public repository. Secrets, tokens, repositories, releases and settings are the owner's to change, never yours, and you must never read or reuse his login token, even to get past an error. The owner has replaced the secret and will revoke the login token. Add this sentence to AGENTS.md in its safety rules (keep the file under 12,000 characters; run pnpm verify): "Never create, change or delete GitHub secrets, tokens, repositories, releases or settings, and never read or reuse the owner's login token (`gh auth token`). If a task needs one, stop and tell the owner exactly what to do."
+
+1. Make the download step fail closed (ci.yml, Windows job, "Install Windows prerequisites"). Today, if DEPS_TOKEN is present but `gh release download` fails (bad or expired token, missing release), the step silently falls back to the stock zip, REQUIRE_HEIC is not set, and CI is green without HEIC. Also, a failing native `gh` does not throw in PowerShell, so the five "retries" ran within two seconds (your own log lines at 14:06:52 to 14:06:54 in run 42631246794). New behaviour:
+   a. Fork pull request (github.event.pull_request.head.repo.fork == 'true', passed to the step as an env variable, not interpolated into the script): stock zip, REQUIRE_HEIC unset, note "no deps token (fork)". Nothing else changes for forks.
+   b. Every other run: DEPS_TOKEN must be present, and the custom zip must download and match the pinned SHA-256. Otherwise `throw` so the job is red, with a message that says what to check (token expired? release missing?).
+   c. After each `gh release download` check `$LASTEXITCODE`; 3 attempts with `Start-Sleep -Seconds 15` between them.
+   d. REQUIRE_HEIC=1 for every non-fork run.
+   Prove it with a negative test. Create a throwaway branch `task/0E-negtest` from your commit, change ONLY the release tag in that step to a tag that does not exist, push it (CI runs because of task/**). Paste `gh run view <id>` (windows-x64 must be red at that step) and the log lines of the step. Then delete the branch (`git push origin --delete task/0E-negtest` and locally) and never merge it. Then push the real change on task/0E and paste `gh run list --branch task/0E --limit 3`; the Windows job must still pass and its log must show "Verified custom HEVC libvips hash" (paste that line).
+
+2. vips.rs: add a `// SAFETY:` comment to the new `unsafe` block (which pointer, why it is valid, that the error buffer is thread-local, why it is cleared). No other change to that function.
+
+3. docs/windows-validation.md Step 3.1 still says "latest successful run on branch task/0C". Say "on the branch you are testing".
+
+4. Report: update section 1 item 5 and section 10.2 to the final behaviour of item 1, add a short section 10.5 "Round 4" with the negative-test evidence (run ids, the red step, the deleted branch), and the new commit id in the header. Note in 10.2 that the secret was replaced by the owner on 2026-11-10 with a minimal read-only token (CI run with it: the owner will do that).
+
+Rules: docs-only commits carry [skip ci]. Run pnpm verify before the push. Do not touch narayanwaraich/photos-manager-deps, any secret, token, release or setting. When finished: stop and give the owner a one-paragraph summary.
 ```
