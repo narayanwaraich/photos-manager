@@ -111,8 +111,28 @@ impl ImageProcessor for VipsImageProcessor {
             ..Default::default()
         };
 
-        ops::webpsave_with_opts(&thumb, output_str, &webp_opts)
-            .map_err(|e| ImageProcessorError::Processing(format!("WebP save failed: {:?}", e)))?;
+        ops::webpsave_with_opts(&thumb, output_str, &webp_opts).map_err(|e| {
+            // SAFETY: `err_ptr` returned by `bindings::vips_error_buffer()` points to libvips's
+            // internal static NUL-terminated buffer (`vips_error_text` in libvips `error.c`, never
+            // freed), checked non-null before `CStr::from_ptr(err_ptr)`. Note: in libvips that
+            // static error buffer is process-wide (updated under `vips__global_lock`, not
+            // thread-local), so reading without the lock assumes no concurrent libvips error writes;
+            // `bindings::vips_error_clear()` clears the buffer so stale error text does not leak
+            // into subsequent operations.
+            let detail = unsafe {
+                let err_ptr = bindings::vips_error_buffer();
+                if !err_ptr.is_null() {
+                    let s = std::ffi::CStr::from_ptr(err_ptr)
+                        .to_string_lossy()
+                        .to_string();
+                    bindings::vips_error_clear();
+                    s
+                } else {
+                    format!("{:?}", e)
+                }
+            };
+            ImageProcessorError::Processing(format!("WebP save failed: {}", detail))
+        })?;
 
         Ok(ThumbnailResult { width, height })
     }

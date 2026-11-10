@@ -16,7 +16,13 @@ fs.mkdirSync(tauriResourcesDir, { recursive: true });
 const fixturesTargetDir = path.join(tauriResourcesDir, "fixtures");
 fs.mkdirSync(fixturesTargetDir, { recursive: true });
 
-for (const fName of ["image_orientation_6.jpg", "image_orientation_1.jpg", "fixture_blocked.svg"]) {
+for (const fName of [
+  "image_orientation_6.jpg",
+  "image_orientation_1.jpg",
+  "fixture_blocked.svg",
+  "image_orientation_6.heic",
+  "image_display_p3.heic",
+]) {
   const srcFixture = path.join(rootDir, "tests", "fixtures", "generated", fName);
   if (fs.existsSync(srcFixture)) {
     const dstFixture = path.join(fixturesTargetDir, fName);

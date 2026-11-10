@@ -29,8 +29,26 @@ Run the following in PowerShell (Administrator where noted):
 3. **Install Visual Studio 2022 C++ Build Tools:**
    Ensure the "Desktop development with C++" workload is selected.
 
-4. **Install Development libvips & ExifTool (Dev Only):**
-   Download `vips-dev-x64-web-8.18.6.zip` from `https://github.com/libvips/build-win64-mxe/releases` and unpack to `C:\vips`.
+4. **Install Custom Development libvips & ExifTool (Dev Only):**
+   Download the custom HEVC libvips build from the private dependency repository `narayanwaraich/photos-manager-deps` (Release `win64-vips-8.18.6-hevc1`):
+   ```powershell
+   # Via GitHub CLI (authenticated with access to private deps repository):
+   gh release download win64-vips-8.18.6-hevc1 --repo narayanwaraich/photos-manager-deps --pattern '*.zip' --dir .
+   
+   # Or download vips-dev-x64-web-8.18.6-hevc.zip directly from the GitHub release page.
+
+   # Verify the pinned SHA-256 checksum:
+   $vipsHash = (Get-FileHash vips-dev-x64-web-8.18.6-hevc.zip -Algorithm SHA256).Hash
+   if ($vipsHash -ne "72591A6BDF775618BC154E83990C86919ECB18F6E9D72FADE5BAEF9B4F343991") {
+       throw "Checksum mismatch: expected 72591A6BDF775618BC154E83990C86919ECB18F6E9D72FADE5BAEF9B4F343991, got $vipsHash"
+   }
+   echo "✓ Custom libvips checksum verified."
+
+   # Unpack to C:\vips:
+   New-Item -ItemType Directory -Path "C:\vips" -Force
+   tar.exe -xf vips-dev-x64-web-8.18.6-hevc.zip -C "C:\vips" --strip-components=1
+   ```
+
    Download `exiftool-13.61_64.zip` from `https://exiftool.org/` and unpack to `C:\tools\exiftool` (ensure `exiftool.exe` and `exiftool_files\` are directly in `C:\tools\exiftool`).
 
    Configure developer environment variables:
@@ -86,7 +104,7 @@ To ensure native dependencies are truly self-contained in the built package, val
 
 ### Step 3.1: Download & Unpack CI Artifact
 1. Navigate to the GitHub repository **Actions** tab.
-2. Select the latest successful run on branch `task/0C`.
+2. Select the latest successful run on the branch you are testing.
 3. Download the `photos-manager-windows-x64` artifact.
 4. Extract the zip to a clean local directory: e.g. `C:\DownloadArtifact\`.
 5. Unblock downloaded files in PowerShell:
@@ -141,8 +159,31 @@ Get-Content "C:\pm-test\smoke-laptop.json"
 - [ ] `exiftool.is_bundled` is `true`, resolving to `C:\pm-test\resources\exiftool\exiftool.exe`.
 - [ ] `libvips.disallowed_loaders_absent` is `true` (`magickload: false`, `svgload: false`, `blocked_untrusted_svg_load_verified: true`).
 - [ ] Thumbnail generation creates `photos_manager_smoke_thumb.webp` (240x320) with non-zero size.
+- [ ] `heic_decode_verified` is `true` with `heic_note: "HEVC decode and upright 240x320 thumbnail verified"`.
 
-### Step 3.5: Clean Up / Uninstall
+### Step 3.5: Owner Step — Real iPhone HEIC File Validation
+Test decoding a real iPhone HEIC file from personal photos:
+> [!IMPORTANT]
+> **Privacy Invariant:** Decode one of your own iPhone HEIC files (work on a copy, not the original). **Do not commit personal photos to git.**
+
+```powershell
+# 1. Place a test iPhone HEIC file at a temporary path (work on a copy, not the original):
+$myHeic = "C:\temp\my_iphone_photo_copy.heic"
+
+# 2. Test CLI decode using the bundled vipsthumbnail from the installed application:
+$outWebp = "C:\temp\my_iphone_thumb.webp"
+& "C:\pm-test\bin\vipsthumbnail.exe" $myHeic -s 320 -o $outWebp
+if ($LASTEXITCODE -eq 0 -and (Test-Path $outWebp)) {
+    echo "✓ Success: Real iPhone HEIC decoded to WebP thumbnail!"
+} else {
+    echo "❌ Failed to decode iPhone HEIC file."
+}
+
+# 3. Clean up only the generated output thumbnail (preserve input photo copy):
+Remove-Item -Force $outWebp -ErrorAction SilentlyContinue
+```
+
+### Step 3.6: Clean Up / Uninstall
 ```powershell
 Start-Process -FilePath "C:\pm-test\uninstall.exe" -ArgumentList "/S" -Wait
 Remove-Item -Recurse -Force "C:\pm-test" -ErrorAction SilentlyContinue

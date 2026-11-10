@@ -7,6 +7,9 @@ all-features = false
 no-default-features = false
 
 [advisories]
+ignore = [
+    { id = "RUSTSEC-2026-0459", reason = "2026-11-09: libsqlite3-sys 0.30.1 (SQLite < 3.54.0, CVE-2026-119375) bundled by sqlx-sqlite 0.8.6 has no semver-compatible patch update. Although our catalogue uses WAL mode, only our app/local user can write to the internal database in local app data (no untrusted external DB/WAL files opened). Re-check when upgrading sqlx (target libsqlite3-sys >= 0.39.0)." },
+]
 unmaintained = "all"
 unsound = "workspace"
 yanked = "warn"

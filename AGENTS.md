@@ -38,6 +38,7 @@ Your training knowledge ends before today's date (the Gemini 3.8 Flash model car
 - Never auto-delete duplicates. Duplicate groups are suggestions the user reviews.
 - Cloud AI payloads need explicit per-provider consent; strip GPS and unnecessary metadata; send no paths or filenames. Never log credentials or image data.
 - API keys live in the OS credential store, one entry per provider. Never in files, SQLite, logs or the frontend.
+- Never create, change or delete GitHub secrets, tokens, repositories, releases or settings, and never read or reuse the owner's login token (`gh auth token`). If a task needs one, stop and tell the owner exactly what to do.
 
 ## AI rules
 - Providers sit behind `AiProvider`; embedding runtimes behind `EmbeddingProvider`. Product code never depends on one vendor or runtime.

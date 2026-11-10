@@ -13,6 +13,8 @@ pub struct SmokeResult {
     pub libvips: LibvipsInfo,
     pub exiftool: ExifToolInfo,
     pub thumbnail: ThumbnailInfo,
+    pub heic_decode_verified: bool,
+    pub heic_note: String,
     pub errors: Vec<String>,
 }
 
@@ -408,13 +410,166 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
 
     let exiftool_info = ExifToolInfo {
         version: exiftool_ver,
-        resolved_path: resolved_exiftool.map(|p| p.to_string_lossy().to_string()),
+        resolved_path: resolved_exiftool
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
         is_bundled,
         perl_path,
         extraction_success,
         detected_orientation,
         camera_make,
     };
+
+    // 5. Test HEIC Decode & Metadata Verification (TASK-0E Part B)
+    let require_heic = std::env::var("REQUIRE_HEIC")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let heif_supported = processor.is_loader_supported("heifload");
+
+    let (heic_decode_verified, heic_note) = if os == "macos" {
+        (false, "not packaged yet (TASK-0F)".to_string())
+    } else if !require_heic {
+        (false, "no deps token (fork)".to_string())
+    } else if !heif_supported {
+        errors.push("REQUIRE_HEIC is set, but heifload is not supported by libvips".to_string());
+        (
+            false,
+            "heifload loader not available in libvips".to_string(),
+        )
+    } else {
+        let heic_fixture_opt = find_fixture("image_orientation_6.heic");
+        match heic_fixture_opt {
+            Some(ref heic_path) if heic_path.is_file() => {
+                let temp_heic_out =
+                    std::env::temp_dir().join("photos_manager_smoke_heic_thumb.webp");
+                match processor.generate_thumbnail(heic_path, &temp_heic_out, 320) {
+                    Ok(heic_res) => {
+                        let mut heic_ok = true;
+                        if heic_res.width != 240 || heic_res.height != 320 {
+                            errors.push(format!(
+                                "HEIC thumbnail dimensions mismatch: expected 240x320, got {}x{}",
+                                heic_res.width, heic_res.height
+                            ));
+                            heic_ok = false;
+                        }
+
+                        // Sample center pixel (120, 160) and compare with JPEG original thumbnail within stated tolerance (15.0)
+                        if thumb_info.success {
+                            let jpeg_thumb_path = PathBuf::from(&thumb_info.output_path);
+                            let heic_str = temp_heic_out.to_string_lossy().to_string();
+                            let jpeg_str = jpeg_thumb_path.to_string_lossy().to_string();
+                            match (
+                                libvips::VipsImage::new_from_file(&heic_str),
+                                libvips::VipsImage::new_from_file(&jpeg_str),
+                            ) {
+                                (Ok(heic_img), Ok(jpeg_img)) => {
+                                    match (
+                                        libvips::ops::getpoint(&heic_img, 120, 160),
+                                        libvips::ops::getpoint(&jpeg_img, 120, 160),
+                                    ) {
+                                        (Ok(heic_pt), Ok(jpeg_pt)) => {
+                                            let tol = 15.0;
+                                            let channels = heic_pt.len().min(jpeg_pt.len());
+                                            for ch in 0..channels {
+                                                let diff = (heic_pt[ch] - jpeg_pt[ch]).abs();
+                                                if diff > tol {
+                                                    errors.push(format!(
+                                                        "HEIC vs JPEG pixel difference exceeded tolerance at (120, 160): channel {}, diff {}, tolerance {}",
+                                                        ch, diff, tol
+                                                    ));
+                                                    heic_ok = false;
+                                                }
+                                            }
+                                        }
+                                        (Err(e1), _) => {
+                                            errors.push(format!("Failed to sample HEIC thumbnail pixel at (120, 160): {:?}", e1));
+                                            heic_ok = false;
+                                        }
+                                        (_, Err(e2)) => {
+                                            errors.push(format!("Failed to sample JPEG thumbnail pixel at (120, 160): {:?}", e2));
+                                            heic_ok = false;
+                                        }
+                                    }
+                                }
+                                (Err(e1), _) => {
+                                    errors.push(format!("Failed to open HEIC thumbnail image for pixel comparison: {:?}", e1));
+                                    heic_ok = false;
+                                }
+                                (_, Err(e2)) => {
+                                    errors.push(format!("Failed to open JPEG thumbnail image for pixel comparison: {:?}", e2));
+                                    heic_ok = false;
+                                }
+                            }
+                        }
+
+                        // Read HEIC with bundled ExifTool (orientation, camera make)
+                        if let Some(ref exe) = resolved_exiftool {
+                            let adapter = ExifToolAdapter::with_executable(exe.clone());
+                            let rt = tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build();
+                            if let Ok(runtime) = rt {
+                                match runtime.block_on(adapter.extract_metadata(heic_path, None)) {
+                                    Ok(meta) => {
+                                        if meta.orientation != Some(6) {
+                                            errors.push(format!(
+                                                "ExifTool HEIC orientation mismatch: expected Some(6), got {:?}",
+                                                meta.orientation
+                                            ));
+                                            heic_ok = false;
+                                        }
+                                        if meta.camera_make.as_deref() != Some("PhotoCorp") {
+                                            errors.push(format!(
+                                                "ExifTool HEIC camera make mismatch: expected Some(\"PhotoCorp\"), got {:?}",
+                                                meta.camera_make
+                                            ));
+                                            heic_ok = false;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        errors.push(format!(
+                                            "ExifTool HEIC metadata extraction failed: {:?}",
+                                            e
+                                        ));
+                                        heic_ok = false;
+                                    }
+                                }
+                            }
+                        }
+
+                        let _ = std::fs::remove_file(&temp_heic_out);
+
+                        if heic_ok {
+                            (
+                                true,
+                                "HEVC decode and upright 240x320 thumbnail verified".to_string(),
+                            )
+                        } else {
+                            (false, "HEIC decode verification failed".to_string())
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(format!("HEIC thumbnail generation failed: {:?}", e));
+                        (false, format!("HEIC thumbnail generation failed: {:?}", e))
+                    }
+                }
+            }
+            _ => {
+                errors.push("CRITICAL ERROR: image_orientation_6.heic was not found in application bundle or resources".to_string());
+                (
+                    false,
+                    "image_orientation_6.heic fixture not found".to_string(),
+                )
+            }
+        }
+    };
+
+    if require_heic && !heic_decode_verified {
+        errors.push(format!(
+            "REQUIRE_HEIC is set, but heic_decode_verified is false ({})",
+            heic_note
+        ));
+    }
 
     let status = if errors.is_empty() {
         "ok".to_string()
@@ -430,6 +585,8 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
         libvips: libvips_info,
         exiftool: exiftool_info,
         thumbnail: thumb_info,
+        heic_decode_verified,
+        heic_note,
         errors,
     };
 
