@@ -208,3 +208,35 @@ Review round 4 for TASK-0E (final and small). Thank you for the honest explanati
 
 Rules: docs-only commits carry [skip ci]. Run pnpm verify before the push. Do not touch narayanwaraich/photos-manager-deps, any secret, token, release or setting. When finished: stop and give the owner a one-paragraph summary.
 ```
+
+---
+
+# Round 5 (2026-11-10, afternoon): round 4 checked; verdict ACCEPT
+
+**Inputs:** agent closing message (code `9e3cc61`, report `f2adc27`), REPORT-0E (988 lines), owner's terminal log (login re-issue, rerun, docs sync, RAW test), and the reviewer's own reading of the files at `f2adc27` in the public repo (`raw.githubusercontent.com`): `.github/workflows/ci.yml`, `AGENTS.md`, `docs/windows-validation.md`, `src-tauri/src/image_pipeline/vips.rs`.
+
+## Round-4 items
+
+| # | Item | Result | Evidence |
+|---|---|---|---|
+| 0 | AGENTS.md boundary sentence, file under 12,000 characters | **Met** | `AGENTS.md` line 41 has the sentence verbatim; 7,449 bytes (the agent says 7,438 characters; multi-byte characters explain the difference) |
+| 1 | Windows download step fails closed | **Met** | `ci.yml` lines 79-152 read: fork flag through `env:` (`IS_FORK_PR`), stock fallback only inside the fork branch; every other run throws on empty token, on 3 failed attempts (exit code checked after each, 15 s sleep), on a missing zip, or on a SHA-256 mismatch (`-ne` is case-insensitive in PowerShell, so the upper-case pin is fine); `REQUIRE_HEIC=1` written only after the hash matched; `GH_TOKEN` cleared in `finally`. On a push event `pull_request.head.repo.fork` is empty, so `== true` gives false: fails closed as intended |
+| 1b | Proof by throwaway branch | **Met** | Run 42781991284 (`task/0E-negtest`, wrong tag): `Install Windows prerequisites` red after attempts at 08:22:14, :29, :45 (15 s apart), job exit 1, later steps skipped; macOS and cargo-deny green. Branch deleted (`git ls-remote` shows only `task/0E`) |
+| 1c | Real run after the change | **Met** | Run 42786344196 green; custom hash verified `72591A6B...3991`; smoke `heic_decode_verified: True`, note "HEVC decode and upright 240x320 thumbnail verified". This run is also the proof that the owner's minimal `DEPS_TOKEN` works: fail-closed code cannot pass with a fallback |
+| 2 | `// SAFETY:` on the WebP-path `unsafe` | **Met, with two nits** | `vips.rs` 115-121. Nit 1: the comment says the buffer is "never freed" and static (the agent checked upstream `error.c` and says it is a fixed array; I did not re-check). Nit 2: it states honestly that the read assumes no concurrent libvips error writes: that matters in Phase 1 (risk 37). The older `unsafe` block at about line 87 (thumbnail path) has no comment: Phase 1 housekeeping |
+| 3 | Step 3.1 says "the branch you are testing" | **Met** | `windows-validation.md` line 107 |
+| 4 | Report updated (§1 item 5, §10.2, §10.5, header commit id) | **Met, one nit** | §10.5 is complete and honest. Nit: §10.2 item 5 contains a garbled parenthetical (`CI run with it: the owner will do that`); harmless, not worth a round |
+
+## Owner steps checked
+- `gh auth logout` / `gh auth login`: done, new `gho_` token, scopes gist, read:org, repo, workflow (normal for `gh`). HTTPS chosen and git credential helper set; the repo remote is SSH, so pushes are unaffected.
+- Rerun of 42748606529: the grep printed `✓ Verified custom HEVC libvips hash: 72591A6B...3991`. Alone this would not exclude a fallback line elsewhere in the log, which is why I rely on run 42786344196 (fail closed) as the proof.
+- Docs sync: `c469326` on `main`, merge `a11a680` on `task/0E`; all addresses are the no-reply form.
+
+## RAW sample (owner's iPhone 12 Pro, `sample.dng`, 26 MB)
+ExifTool: Make Apple, Model iPhone 12 Pro, `DNGVersion 1.6.0.0`, Compression JPEG (main and sub-images), main 4032x3024, two sub-images 2016x1512, `PreviewImage` 3,788,144 bytes; extracted `preview.jpg` is a valid 4032x3024 JPEG. Reading: D15 Tier 1 works for iPhone ProRAW with no new library: the "preview" is full resolution. Open points are recorded as risk 39 (orientation of the preview, `-m` for the large-array warning, LibRaw on ProRAW unproven).
+
+## Verdict
+**ACCEPT TASK-0E.** Remaining actions are the owner's merge steps and one dispatch of the deps workflow from `main` (proves `872ae48`). The two nits and risks 37 and 38 do not block.
+
+## What the agent did well
+The negative test was run exactly as asked and its evidence is raw. The agent kept its changes inside the allowed paths, did not touch secrets, tokens, releases or the private repo this round, and wrote a SAFETY comment that tells the truth about a limit instead of hiding it.
