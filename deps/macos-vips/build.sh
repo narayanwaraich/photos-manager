@@ -352,7 +352,7 @@ if [[ -d "${STAGE_PREFIX}/lib/vips-modules-8.18" ]]; then
 fi
 
 echo "=== 5. Harvesting closure, relocating Mach-O @rpaths, ad-hoc signing, generating versions.json & LICENSES.md ==="
-export STAGE_PREFIX DIST_ROOT BREW_PREFIX OS_VERSION XCODE_INFO DEPLOY_TARGET
+export STAGE_PREFIX DIST_ROOT BREW_PREFIX OS_VERSION XCODE_INFO DEPLOY_TARGET OUT_ZIP
 export VIPS_VER VIPS_URL VIPS_SHA256
 export LIBHEIF_VER LIBHEIF_URL LIBHEIF_SHA256
 export LIBDE265_VER LIBDE265_URL LIBDE265_SHA256
@@ -592,11 +592,23 @@ if os.path.isdir(stage_share):
 
 # Copy and make pkg-config files relocatable via ${pcfiledir}
 stage_pc = os.path.join(stage_prefix, "lib", "pkgconfig")
+raw_stage_prefix = os.environ["STAGE_PREFIX"]
+prefix_variants = sorted(
+    {
+        raw_stage_prefix,
+        os.path.normpath(raw_stage_prefix),
+        stage_prefix,
+        re.sub(r"//+", "/", raw_stage_prefix),
+    },
+    key=len,
+    reverse=True,
+)
 if os.path.isdir(stage_pc):
     for pc in sorted(os.listdir(stage_pc)):
         if pc.endswith(".pc"):
             content = open(os.path.join(stage_pc, pc), "r", encoding="utf-8").read()
-            content = content.replace(stage_prefix, "${pcfiledir}/../..")
+            for pfx in prefix_variants:
+                content = content.replace(pfx, "${pcfiledir}/../..")
             open(os.path.join(dist_pc, pc), "w", encoding="utf-8").write(content)
 
 # Build versions.json from actual tarball metadata + brew info --json=v2

@@ -104,15 +104,20 @@ jobs:
           echo "Extracted prefix: $VIPS_PREFIX"
           ls -la "$VIPS_PREFIX/lib"
 
-          # Verify zero Homebrew or local paths in unpacked dylibs and CLI binaries
+          # Verify zero Homebrew or local paths in unpacked dylibs and CLI binaries (skip line 1 file header)
           echo "=== Verifying otool -L across unpacked lib/* and bin/* ==="
           for f in "$VIPS_PREFIX"/lib/*.dylib "$VIPS_BIN"/*; do
             if [ -L "$f" ] || [ ! -f "$f" ]; then
               continue
             fi
-            LEAKS=$(otool -L "$f" | grep -E "/opt/homebrew|/usr/local|/Cellar|/var/|/tmp/" || true)
+            LEAKS=$(otool -L "$f" | tail -n +2 | grep -E "/opt/homebrew|/usr/local|/Cellar|/var/|/tmp/" || true)
             if [ -n "$LEAKS" ]; then
               echo "FAIL: Non-relocated path in $(basename "$f"): $LEAKS"
+              exit 1
+            fi
+            RP_LEAKS=$(otool -l "$f" | grep -A2 "cmd LC_RPATH" | grep -E "/opt/homebrew|/usr/local|/Cellar|/var/|/tmp/" || true)
+            if [ -n "$RP_LEAKS" ]; then
+              echo "FAIL: Non-relocated LC_RPATH in $(basename "$f"): $RP_LEAKS"
               exit 1
             fi
           done
