@@ -104,7 +104,7 @@ To ensure native dependencies are truly self-contained in the built package, val
 
 ### Step 3.1: Download & Unpack CI Artifact
 1. Navigate to the GitHub repository **Actions** tab.
-2. Select the latest successful run on branch `task/0C`.
+2. Select the latest successful run on the branch you are testing.
 3. Download the `photos-manager-windows-x64` artifact.
 4. Extract the zip to a clean local directory: e.g. `C:\DownloadArtifact\`.
 5. Unblock downloaded files in PowerShell:

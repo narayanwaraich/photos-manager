@@ -80,42 +80,14 @@ jobs:
         shell: pwsh
         env:
           DEPS_TOKEN: ${{ secrets.DEPS_TOKEN }}
+          IS_FORK_PR: ${{ github.event.pull_request.head.repo.fork == true }}
         run: |
           $ErrorActionPreference = 'Stop'
-          # 1. Download and checksum libvips distribution (custom HEVC release or stock fallback)
+          # 1. Download and checksum libvips distribution (fail closed on non-fork runs; stock fallback for fork PRs only)
           New-Item -ItemType Directory -Path deps\vips -Force
-          $depsToken = $env:DEPS_TOKEN
-          $vipsDownloaded = $false
 
-          if ($depsToken) {
-            echo "DEPS_TOKEN present; attempting to download custom HEVC libvips release from narayanwaraich/photos-manager-deps..."
-            for ($attempt = 1; $attempt -le 5; $attempt++) {
-              try {
-                $env:GH_TOKEN = $depsToken
-                gh release download win64-vips-8.18.6-hevc1 --repo narayanwaraich/photos-manager-deps --pattern '*.zip' --dir .
-                $downloadedZip = (Get-ChildItem -Path "vips-dev-x64-web-*.zip" -File).FullName | Select-Object -First 1
-                if ($downloadedZip) {
-                  Move-Item $downloadedZip "vips.zip" -Force
-                  $vipsDownloaded = $true
-                  break
-                }
-              } catch {
-                echo "gh release download attempt $attempt failed: $_"
-                Start-Sleep -Seconds 15
-              }
-            }
-          }
-
-          if ($vipsDownloaded) {
-            $expectedHash = "72591A6BDF775618BC154E83990C86919ECB18F6E9D72FADE5BAEF9B4F343991"
-            $vipsHash = (Get-FileHash vips.zip -Algorithm SHA256).Hash
-            if ($vipsHash -ne $expectedHash) {
-              throw "Checksum mismatch for custom vips.zip: expected $expectedHash, got $vipsHash"
-            }
-            echo "✓ Verified custom HEVC libvips hash: $vipsHash"
-            Add-Content -Path $env:GITHUB_ENV -Value "REQUIRE_HEIC=1" -Encoding utf8
-          } else {
-            echo "Falling back to stock upstream libvips (no HEVC decode)..."
+          if ($env:IS_FORK_PR -eq 'true') {
+            echo "Fork pull request detected; using stock upstream libvips (no HEVC decode, REQUIRE_HEIC unset)..."
             $vipsUrl = "https://github.com/libvips/build-win64-mxe/releases/download/v8.18.6/vips-dev-x64-web-8.18.6.zip"
             curl.exe -fL --retry 5 --retry-all-errors --retry-delay 15 --connect-timeout 30 -o vips.zip $vipsUrl
             if ($LASTEXITCODE -ne 0) {
@@ -127,6 +99,56 @@ jobs:
               throw "Checksum mismatch for stock vips.zip: expected $expectedHash, got $vipsHash"
             }
             echo "✓ Verified stock libvips hash: $vipsHash"
+          } else {
+            $depsToken = $env:DEPS_TOKEN
+            if ([string]::IsNullOrWhiteSpace($depsToken)) {
+              throw "DEPS_TOKEN is required for non-fork runs but was missing or empty. Check repository secret DEPS_TOKEN (is it missing, expired, or lacking Contents read access?)."
+            }
+
+            $releaseRepo = "narayanwaraich/photos-manager-deps"
+            $releaseTag = "win64-vips-8.18.6-hevc1"
+            $maxAttempts = 3
+            $vipsDownloaded = $false
+            $lastError = ""
+            $env:GH_TOKEN = $depsToken
+
+            try {
+              echo "Downloading custom HEVC libvips release '$releaseTag' from '$releaseRepo'..."
+              for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+                Remove-Item -Force "vips-dev-x64-web-*.zip", "vips.zip" -ErrorAction SilentlyContinue
+                gh release download $releaseTag --repo $releaseRepo --pattern '*.zip' --dir .
+                $dlExit = $LASTEXITCODE
+                if ($dlExit -eq 0) {
+                  $zipItem = Get-ChildItem -Path "vips-dev-x64-web-*.zip" -File | Select-Object -First 1
+                  if ($zipItem) {
+                    Move-Item $zipItem.FullName "vips.zip" -Force
+                    $vipsDownloaded = $true
+                    break
+                  }
+                  $lastError = "gh release download exited 0 but no vips-dev-x64-web-*.zip file was found"
+                } else {
+                  $lastError = "gh release download failed with exit code $dlExit"
+                }
+                echo "Attempt $attempt of $maxAttempts failed: $lastError"
+                if ($attempt -lt $maxAttempts) {
+                  Start-Sleep -Seconds 15
+                }
+              }
+            } finally {
+              $env:GH_TOKEN = $null
+            }
+
+            if (-not $vipsDownloaded) {
+              throw "Failed to download custom HEVC libvips release '$releaseTag' from '$releaseRepo' after $maxAttempts attempts ($lastError). Check whether DEPS_TOKEN is expired/invalid, lacks Contents read permission on '$releaseRepo', or release tag '$releaseTag' is missing."
+            }
+
+            $expectedHash = "72591A6BDF775618BC154E83990C86919ECB18F6E9D72FADE5BAEF9B4F343991"
+            $vipsHash = (Get-FileHash vips.zip -Algorithm SHA256).Hash
+            if ($vipsHash -ne $expectedHash) {
+              throw "Checksum mismatch for custom vips.zip: expected $expectedHash, got $vipsHash"
+            }
+            echo "✓ Verified custom HEVC libvips hash: $vipsHash"
+            Add-Content -Path $env:GITHUB_ENV -Value "REQUIRE_HEIC=1" -Encoding utf8
           }
 
           tar.exe -xf vips.zip -C deps\vips --strip-components=1

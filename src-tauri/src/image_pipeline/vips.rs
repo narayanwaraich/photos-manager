@@ -112,6 +112,13 @@ impl ImageProcessor for VipsImageProcessor {
         };
 
         ops::webpsave_with_opts(&thumb, output_str, &webp_opts).map_err(|e| {
+            // SAFETY: `err_ptr` returned by `bindings::vips_error_buffer()` points to libvips's
+            // internal static NUL-terminated buffer (`vips_error_text` in libvips `error.c`, never
+            // freed), checked non-null before `CStr::from_ptr(err_ptr)`. Note: in libvips that
+            // static error buffer is process-wide (updated under `vips__global_lock`, not
+            // thread-local), so reading without the lock assumes no concurrent libvips error writes;
+            // `bindings::vips_error_clear()` clears the buffer so stale error text does not leak
+            // into subsequent operations.
             let detail = unsafe {
                 let err_ptr = bindings::vips_error_buffer();
                 if !err_ptr.is_null() {
