@@ -2,14 +2,6 @@ name: Build & Test macOS arm64 libvips (HEVC Decode)
 
 on:
   workflow_dispatch:
-  # Temporary scoped push trigger to execute & verify on task/0F before workflow exists on main.
-  # Removed cleanly via [skip ci] commit once verified so only workflow_dispatch remains.
-  push:
-    branches:
-      - 'task/0F'
-    paths:
-      - '.github/workflows/deps-macos-vips.yml'
-      - 'deps/macos-vips/**'
 
 permissions:
   contents: read

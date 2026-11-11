@@ -32,12 +32,19 @@ libaom_license=BSD-2-Clause
 # - No fftw, imagequant, quantizr, ImageMagick, librsvg, poppler, openslide, openexr, jpeg-xl, libraw
 # - Modules disabled (-Dmodules=disabled) so heifload is compiled directly into libvips.42.dylib
 
-# Homebrew leaf formulas & build tools used (exact runtime versions recorded in versions.json & workflow logs):
-# Build tools: cmake, meson, ninja, pkgconf (pkg-config)
-# Leaf formulas: glib, gettext, pcre2, libffi, jpeg-turbo, libpng, webp, libtiff, little-cms2, libexif, highway, zstd, xz
-# macOS system SDK libraries: /usr/lib/libexpat.1.dylib, /usr/lib/libz.1.dylib, /usr/lib/libffi.dylib, /usr/lib/libiconv.2.dylib, /usr/lib/libc++.1.dylib, /usr/lib/libSystem.B.dylib
+# Exact Homebrew build tools & leaf formula versions from verified Run #3 (42945772807):
+# Build tools (not bundled): cmake=4.4.5, meson=1.12.1, ninja=1.13.2, pkgconf=3.0.10
+# Bundled leaf formulas (12 components): gettext=1.0, glib=2.90.1, highway=1.4.0, jpeg-turbo=3.2.1, libexif=0.6.26, libpng=1.6.59, libtiff=4.7.2, little-cms2=2.19.1, pcre2=10.49, webp=1.6.0, xz=5.8.4, zstd=1.5.7_1
+# Installed formula not bundled (SDK /usr/lib/libffi.dylib resolved instead): libffi=3.8.0
+# macOS system SDK libraries: /System/Library/Frameworks/*, /usr/lib/libSystem.B.dylib, /usr/lib/libc++.1.dylib, /usr/lib/libexpat.1.dylib, /usr/lib/libffi.dylib, /usr/lib/libiconv.2.dylib, /usr/lib/libobjc.A.dylib, /usr/lib/libresolv.9.dylib, /usr/lib/libz.1.dylib
 
-# CI Runner Environment (macos-14 retired 2026-11-02; built on macos-15 arm64 with MACOSX_DEPLOYMENT_TARGET=15.0):
+# CI Runner Environment (macos-14 retired 2026-11-02 per https://github.com/actions/runner-images/pull/15227):
 runner_label=macos-15
-runner_os_image=recorded at build time in versions.json and CI run logs
-xcode_version=recorded at build time in versions.json and CI run logs
+runner_image=macos-15-arm64
+runner_image_version=20261104.0514.1
+runner_os_version=15.8.2
+runner_os_build=24H232
+deployment_target=15.0
+xcode_version=Xcode 16.4 Build version 16F6
+verified_run_id=42945772807
+verified_zip_sha256=6bb24d51dedf9f69344aa187cb0f9651b7842de4c465643480f3a794481dba64
