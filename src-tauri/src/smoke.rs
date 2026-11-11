@@ -420,15 +420,13 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
         camera_make,
     };
 
-    // 5. Test HEIC Decode & Metadata Verification (TASK-0E Part B)
+    // 5. Test HEIC Decode & Metadata Verification (TASK-0E / TASK-0F)
     let require_heic = std::env::var("REQUIRE_HEIC")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     let heif_supported = processor.is_loader_supported("heifload");
 
-    let (heic_decode_verified, heic_note) = if os == "macos" {
-        (false, "not packaged yet (TASK-0F)".to_string())
-    } else if !require_heic {
+    let (heic_decode_verified, heic_note) = if !require_heic {
         (false, "no deps token (fork)".to_string())
     } else if !heif_supported {
         errors.push("REQUIRE_HEIC is set, but heifload is not supported by libvips".to_string());

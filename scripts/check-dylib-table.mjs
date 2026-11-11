@@ -32,11 +32,24 @@ if (!fs.existsSync(frameworksDir)) {
   process.exit(1);
 }
 
-// 2. Enumerate bundled .dylib files
-const onDiskDylibs = fs
+// 2. Enumerate bundled .dylib files (rejecting accidental compile-time symlinks)
+const allFrameworkDylibs = fs
   .readdirSync(frameworksDir)
   .filter((file) => file.endsWith('.dylib'))
   .sort();
+
+const symlinkDylibs = allFrameworkDylibs.filter((file) =>
+  fs.lstatSync(path.join(frameworksDir, file)).isSymbolicLink()
+);
+if (symlinkDylibs.length > 0) {
+  console.error(`ERROR: Bundled Contents/Frameworks contains ${symlinkDylibs.length} symbolic link(s):`);
+  for (const sym of symlinkDylibs) {
+    console.error(`  - ${sym}`);
+  }
+  process.exit(1);
+}
+
+const onDiskDylibs = allFrameworkDylibs;
 
 console.log(`[check-dylib-table] Bundled dylibs on disk in ${frameworksDir}: ${onDiskDylibs.length}`);
 
@@ -65,6 +78,12 @@ while ((match = rowRegex.exec(sec43Text)) !== null) {
   tableDylibs.push(match[1]);
 }
 tableDylibs.sort();
+
+const duplicatesInTable = tableDylibs.filter((d, idx) => idx > 0 && tableDylibs[idx - 1] === d);
+if (duplicatesInTable.length > 0) {
+  console.error(`ERROR: Duplicate dylib row(s) in ${docsPath} §4.3: ${duplicatesInTable.join(', ')}`);
+  process.exit(1);
+}
 
 console.log(`[check-dylib-table] Documented dylib rows in ${docsPath} §4.3: ${tableDylibs.length}`);
 

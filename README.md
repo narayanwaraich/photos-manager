@@ -13,11 +13,12 @@ A local-first, privacy-respecting cross-platform desktop photo manager built wit
   ```bash
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   ```
-- **Native Development Libraries (Local Dev Only)**:
+- **Native Development Libraries (Local Dev / Release Bundle):**
+  For quick local debug builds on Apple Silicon:
   ```bash
   brew install vips exiftool pkg-config
   ```
-  *(Note: Homebrew packages and paths such as `/opt/homebrew/lib` and `/opt/homebrew/bin/exiftool` are developer-only conveniences for local development. Clean-machine production packaging in TASK-0C bundles libvips and ExifTool inside the application distribution without relying on Homebrew or system-installed dependencies.)*
+  For production/CI builds (`VIPS_DIR` / `VIPS_LIB_DIR`), both macOS arm64 and Windows x64 use our custom checksum-pinned HEVC-decode libvips builds from `narayanwaraich/photos-manager-deps` (`deps/macos-vips/`, `deps/win64-vips/`). *(See `docs/macos-validation.md` for the macOS setup and validation checklist.)*
 - **Python 3**: with Pillow (for test fixture generation):
   ```bash
   brew install pillow
