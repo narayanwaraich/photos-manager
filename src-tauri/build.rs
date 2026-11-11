@@ -1,3 +1,4 @@
+#[cfg(target_os = "macos")]
 fn non_empty_env(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
@@ -5,6 +6,7 @@ fn non_empty_env(name: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+#[cfg(target_os = "macos")]
 fn is_env_truthy(name: &str) -> bool {
     non_empty_env(name)
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
