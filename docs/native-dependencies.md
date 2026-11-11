@@ -1,11 +1,11 @@
 # Native Dependencies & Feasibility Findings
 
-**Tasks:** TASK-0A, TASK-0B, TASK-0C · **Date:** 2026-11-06 · **Verified on:** macOS 27.0 (arm64) and Windows Server 2025 (x64 via CI)
+**Tasks:** TASK-0A, TASK-0B, TASK-0C, TASK-0E, TASK-0F · **Date:** 2026-11-11 · **Verified on:** macOS 15/27 (arm64) and Windows Server 2025 (x64 via CI)
 
 This document records the exact versions, sources, licenses, install requirements, codecs, bundling strategies, and risks for all native dependencies evaluated in Phase 0. Every dependency and model shape has been verified against official registries or documentation (rule: *verify, do not recall*).
 
 > [!NOTE]
-> **Dev-Only Homebrew Paths Gated:** Link search paths (`/opt/homebrew/lib` in `src-tauri/build.rs`) and candidate executable paths in `which_exiftool()` are strictly developer conveniences for local development. Release builds gate these paths behind `cfg(debug_assertions)` and explicit dev environment flags (`PHOTOS_DEV_HOMEBREW=1`, `PHOTOS_DEV_ALLOW_SYSTEM_EXIFTOOL=1`), requiring all release packages to resolve libvips and ExifTool hermetically from the application bundle.
+> **Dev-Only Homebrew Paths Gated:** Link search paths (`/opt/homebrew/lib` in `src-tauri/build.rs`) and candidate executable paths in `which_exiftool()` are strictly developer conveniences for local development and fork-PR fallback. Non-fork CI and release packages resolve libvips strictly from the pinned `VIPS_DIR` / `VIPS_LIB_DIR` custom archive and bundle ExifTool + libvips hermetically inside the application distribution, gating `/opt/homebrew/lib` behind `cfg(debug_assertions)` / `PHOTOS_DEV_HOMEBREW=1` / `PHOTOS_DEV_ALLOW_SYSTEM_EXIFTOOL=1`.
 
 ---
 
@@ -19,7 +19,7 @@ This document records the exact versions, sources, licenses, install requirement
 | **Tauri CLI / API** | `@tauri-apps/cli 2.12.4`, `@tauri-apps/api 2.12.4` | MIT OR Apache-2.0 | `https://www.npmjs.com/package/@tauri-apps/cli` | 2026-11-02 | Node 26.9.0, pnpm 12.8.1. |
 | **SQLx (SQLite)** | `sqlx 0.8.6` | MIT OR Apache-2.0 | `https://crates.io/crates/sqlx/0.8.6` | 2026-11-02 | Features: `sqlite`, `runtime-tokio`, `migrate`, `macros`. Bundled `libsqlite3-sys 0.30.1`. Configured with WAL, foreign keys ON, busy timeout 5000ms. |
 | **libvips Rust Binding** | `libvips 1.7.2` (patched) | MIT | `https://github.com/kuma-00/libvips-rust-bindings-for-windows.git` | 2026-11-06 | Fork commit `80097ad9387180f678b21482b8b0cfbfb436a308`. Fixes Windows LLP64 64-bit integer sizing across crates.io patch. |
-| **libvips (Native C Library)** | `8.18.6` (Windows), `8.18.7` (macOS) | LGPL-2.1-or-later | `https://github.com/libvips/libvips` | 2026-11-06 | Dynamically linked. Minimal codec configuration verified; untrusted loaders blocked at startup. |
+| **libvips (Native C Library)** | `8.18.6` (Windows x64 & macOS arm64 custom builds) | LGPL-2.1-or-later | `https://github.com/libvips/libvips` | 2026-11-11 | Custom pinned HEVC-decode-only archives (`libheif 1.23.2` + `libde265 1.1.1` + `libaom 3.14.1`, zero `x265`, zero GPL); untrusted loaders blocked/disabled. |
 | **ExifTool** | `13.61` | Perl Artistic License 1.0 OR GPL-1.0-or-later | `https://exiftool.org/` | 2026-11-06 | Official distribution on both OSes. Windows standalone zip (Strawberry Perl runtime) + macOS Perl script. |
 | **ONNX Runtime Rust Binding** | `ort = "=2.0.0-rc.15"` | MIT OR Apache-2.0 | `https://crates.io/crates/ort/2.0.0-rc.15` | 2026-11-05 | Candidate embedding runtime from TASK-0B. Pinned with exact version (`=`). |
 | **ONNX Runtime (Native C Library)** | `1.20.1` | MIT | `https://github.com/microsoft/onnxruntime` | 2026-11-05 | Bundling documented in §4.5. Not integrated in product code until Phase 4B. |
@@ -60,6 +60,7 @@ All external archives downloaded during CI and packaging are pinned with exact u
 |---|---|---|---|---|
 | `vips-dev-x64-web-8.18.6-hevc.zip` | Windows x64 | 8.18.6-hevc1 | `https://github.com/narayanwaraich/photos-manager-deps/releases/download/win64-vips-8.18.6-hevc1/vips-dev-x64-web-8.18.6-hevc.zip` (private repo, token-authenticated) | `72591a6bdf775618bc154e83990c86919ecb18f6e9d72fade5baef9b4f343991` |
 | `vips-dev-x64-web-8.18.6.zip` (stock fallback) | Windows x64 | 8.18.6 | `https://github.com/libvips/build-win64-mxe/releases/download/v8.18.6/vips-dev-x64-web-8.18.6.zip` | `10086f2ccc8e2a861831facabab75fa1b80b4bd03f0a8447623ec581002aa4b2` |
+| `vips-macos-arm64-8.18.6-hevc.zip` | macOS arm64 | 8.18.6-hevc1 | `https://github.com/narayanwaraich/photos-manager-deps/releases/download/macos-arm64-vips-8.18.6-hevc1/vips-macos-arm64-8.18.6-hevc.zip` (private repo, token-authenticated) | `6bb24d51dedf9f69344aa187cb0f9651b7842de4c465643480f3a794481dba64` |
 | `exiftool-13.61_64.zip` | Windows x64 | 13.61 | `https://downloads.sourceforge.net/project/exiftool/exiftool-13.61_64.zip` | `ab75b37515385a753aa60a58f68ffffe1ff81e43b319df9540978fb19e0580e5` |
 | `Image-ExifTool-13.61.tar.gz` | macOS arm64 | 13.61 | `https://downloads.sourceforge.net/project/exiftool/Image-ExifTool-13.61.tar.gz` | `df7f42c14b4f58a60bec39feae0ee9593000ee27e44920d2b0a21c6627de0baa` |
 
@@ -124,93 +125,45 @@ The custom Windows precompiled package (`vips-dev-x64-web-8.18.6-hevc.zip`, rele
 
 ---
 
-### 4.3 macOS Bundled Dynamic Libraries Audit & GPL Findings
+### 4.3 macOS Bundled Dynamic Libraries Audit
 
-All 67 dynamic library files bundled into `Photos Manager.app/Contents/Frameworks/` from the host environment were audited against Homebrew formula metadata (`brew info --json=v2`). The table row count matches the exact file count in `Contents/Frameworks/` (verified automatically by `scripts/check-dylib-table.mjs` in CI):
+The packaged macOS arm64 bundle consumes our custom HEVC-decode-only archive (`vips-macos-arm64-8.18.6-hevc.zip`, release `macos-arm64-vips-8.18.6-hevc1` in private repository `narayanwaraich/photos-manager-deps`, SHA-256 `6bb24d51dedf9f69344aa187cb0f9651b7842de4c465643480f3a794481dba64`, built by `.github/workflows/deps-macos-vips.yml` run `42945772807` on `macos-15-arm64` `15.8.2` `24H232` with `Xcode 16.4` `16F6`).
 
-| Library (`.dylib`) | Homebrew Formula | Formula Version | License | Copyleft Risk / Distribution Status |
+All **22** bundled dynamic library files in `photos-manager.app/Contents/Frameworks/` come strictly from that checksum-pinned archive (`versions.json`: **16 components** — 4 built from verified source tarballs + 12 allowlisted Homebrew leaf libraries — plus macOS system libraries in `/usr/lib/` and `/System/Library/Frameworks/`). There is **no GPL component identified in this list** (not a legal opinion; see risk 17 in `docs/STATUS.md`). The table row count matches the exact regular `.dylib` count in `Contents/Frameworks/` (verified automatically by `scripts/check-dylib-table.mjs` on every non-fork CI run):
+
+| Library (`.dylib`) | Component / Source (`versions.json`) | Version | License (SPDX / Upstream) | Distribution Status / Notes |
 |---|---|---|---|---|
-| `libIex-3_5.34.dylib` | `openexr` | `3.5.1` | `BSD-3-Clause` | Permissive |
-| `libIlmThread-3_5.34.dylib` | `openexr` | `3.5.1` | `BSD-3-Clause` | Permissive |
-| `libImath-3_2.30.dylib` | `imath` | `3.2.3` | `BSD-3-Clause` | Permissive |
-| `libOpenEXR-3_5.34.dylib` | `openexr` | `3.5.1` | `BSD-3-Clause` | Permissive |
-| `libOpenEXRCore-3_5.34.dylib` | `openexr` | `3.5.1` | `BSD-3-Clause` | Permissive |
-| `libX11.6.dylib` | `libx11` | `1.8.13` | `MIT` | Permissive |
-| `libXau.6.dylib` | `libxau` | `1.0.12` | `MIT` | Permissive |
-| `libXdmcp.6.dylib` | `libxdmcp` | `1.1.5` | `MIT` | Permissive |
-| `libXext.6.dylib` | `libxext` | `1.3.7` | `MIT` | Permissive |
-| `libXrender.1.dylib` | `libxrender` | `0.9.12` | `MIT` | Permissive |
-| `libaec.0.dylib` | `libaec` | `1.1.7` | `BSD-2-Clause` | Permissive |
-| `libarchive.13.dylib` | `libarchive` | `3.8.9` | `BSD-2-Clause` | Permissive |
-| `libb2.1.dylib` | `libb2` | `0.98.1` | `CC0-1.0` | Public Domain / Permissive |
-| `libbrotlicommon.1.dylib` | `brotli` | `1.2.0` | `MIT` | Permissive |
-| `libbrotlidec.1.dylib` | `brotli` | `1.2.0` | `MIT` | Permissive |
-| `libcairo-gobject.2.dylib` | `cairo` | `1.18.6` | `LGPL-2.1-only OR MPL-1.1` | LGPL (Permitted via dynamic linking) |
-| `libcairo.2.dylib` | `cairo` | `1.18.6` | `LGPL-2.1-only OR MPL-1.1` | LGPL (Permitted via dynamic linking) |
-| `libcfitsio.10.dylib` | `cfitsio` | `4.7.0` | `CFITSIO` | Permissive |
-| `libcgif.0.dylib` | `cgif` | `0.5.4` | `MIT` | Permissive |
-| `libdatrie.1.dylib` | `libdatrie` | `0.2.14` | `LGPL-2.1-or-later` | LGPL (Permitted via dynamic linking) |
-| `libdeflate.0.dylib` | `libdeflate` | `1.26` | `MIT` | Permissive |
-| `libexif.12.dylib` | `libexif` | `0.6.26` | `LGPL-2.1-or-later AND LGPL-2.0-or-later` | LGPL (Both components LGPL; permitted via dynamic linking) |
-| `libfftw3.3.dylib` | `fftw` | `3.3.11` | `GPL-2.0-or-later AND BSD-2-Clause` | **COPYLEFT RISK (GPL)** (Homebrew builds GPL FFTW) |
-| `libfontconfig.1.dylib` | `fontconfig` | `2.18.3` | `HPND-sell-variant AND Unicode-3.0 AND MIT` | Permissive |
-| `libfreetype.6.dylib` | `freetype` | `2.14.3` | `FTL` | Permissive |
-| `libfribidi.0.dylib` | `fribidi` | `1.0.17` | `GPL-2.0-or-later AND LGPL-2.1-or-later` | LGPL (`libfribidi` shared library is LGPL-2.1-or-later; GPL applies only to `fribidi` CLI utility) |
-| `libgdk_pixbuf-2.0.0.dylib` | `gdk-pixbuf` | `2.44.8` | `LGPL-2.1-or-later` | LGPL (Permitted via dynamic linking) |
-| `libgio-2.0.0.dylib` | `glib` | `2.90.0` | `LGPL-2.1-or-later` | LGPL (Permitted via dynamic linking) |
-| `libglib-2.0.0.dylib` | `glib` | `2.90.0` | `LGPL-2.1-or-later` | LGPL (Permitted via dynamic linking) |
-| `libgmodule-2.0.0.dylib` | `glib` | `2.90.0` | `LGPL-2.1-or-later` | LGPL (Permitted via dynamic linking) |
-| `libgobject-2.0.0.dylib` | `glib` | `2.90.0` | `LGPL-2.1-or-later` | LGPL (Permitted via dynamic linking) |
-| `libgraphite2.3.dylib` | `graphite2` | `1.3.15` | `MIT OR MPL-2.0 OR LGPL-2.1-or-later OR GPL-2.0-or-later` | Permissive / LGPL (Quadruple-licensed; licensee selects MIT or LGPL) |
-| `libharfbuzz.0.dylib` | `harfbuzz` | `14.5.0` | `MIT` | Permissive |
-| `libhdf5.320.dylib` | `hdf5` | `2.2.0` | `BSD-3-Clause` | Permissive |
-| `libhwy.1.dylib` | `highway` | `1.4.0` | `Apache-2.0 OR BSD-3-Clause` | Permissive |
-| `libimagequant.0.4.dylib` | `libimagequant` | `4.4.1` | `GPL-3.0-or-later AND HPND` | **COPYLEFT RISK (GPL)** (Homebrew formula builds Rust v4 under GPLv3) |
-| `libintl.8.dylib` | `gettext` | `1.0` | `GPL-3.0-or-later AND LGPL-2.1-or-later` | LGPL (Runtime `libintl` is LGPL-2.1-or-later; GPL applies to developer build tools like `msgfmt`) |
-| `libjpeg.62.dylib` | `mozjpeg` | `4.1.5` | `IJG AND Zlib AND BSD-3-Clause` | Permissive |
-| `libjpeg.8.dylib` | `jpeg-turbo` | `3.2.0` | `IJG AND Zlib AND BSD-3-Clause` | Permissive |
-| `liblcms2.2.dylib` | `little-cms2` | `2.19.1` | `MIT` | Permissive |
-| `liblz4.1.dylib` | `lz4` | `1.10.0` | `BSD-2-Clause` | Permissive |
-| `liblzma.5.dylib` | `xz` | `5.8.4` | `0BSD AND GPL-2.0-or-later` | Permissive (Runtime `liblzma` is 0BSD public domain; GPL applies to `xz` CLI tools/scripts) |
-| `libmatio.14.dylib` | `libmatio` | `1.5.30` | `BSD-2-Clause` | Permissive |
-| `libomp.dylib` | `libomp` | `23.1.2` | `Apache-2.0 with LLVM Exception` | Permissive |
-| `libopenjp2.7.dylib` | `openjpeg` | `2.5.4` | `BSD-2-Clause` | Permissive |
-| `libopenjph.0.32.dylib` | `openjph` | `0.32.0` | `BSD-2-Clause` | Permissive |
-| `libpango-1.0.0.dylib` | `pango` | `1.58.2` | `LGPL-2.0-or-later` | LGPL (Permitted via dynamic linking) |
-| `libpangocairo-1.0.0.dylib` | `pango` | `1.58.2` | `LGPL-2.0-or-later` | LGPL (Permitted via dynamic linking) |
-| `libpangoft2-1.0.0.dylib` | `pango` | `1.58.2` | `LGPL-2.0-or-later` | LGPL (Permitted via dynamic linking) |
-| `libpcre2-8.0.dylib` | `pcre2` | `10.49` | `BSD-3-Clause` | Permissive |
-| `libpixman-1.0.dylib` | `pixman` | `0.46.4` | `MIT` | Permissive |
-| `libpng16.16.dylib` | `libpng` | `1.6.58` | `libpng-2.0` | Permissive |
-| `libraw_r.25.dylib` | `libraw` | `0.22.2` | `LGPL-2.1-only OR CDDL-1.0` | LGPL (Permitted via dynamic linking) |
-| `librsvg-2.2.dylib` | `librsvg` | `2.63.2` | `LGPL-2.1-or-later` | LGPL (Permitted via dynamic linking; blocked at startup) |
-| `libsharpyuv.0.dylib` | `webp` | `1.6.0` | `BSD-3-Clause` | Permissive |
-| `libsz.2.dylib` | `libaec` | `1.1.7` | `BSD-2-Clause` | Permissive |
-| `libthai.0.dylib` | `libthai` | `0.1.30` | `LGPL-2.1-or-later` | LGPL (Permitted via dynamic linking) |
-| `libtiff.6.dylib` | `libtiff` | `4.7.2` | `libtiff` | Permissive |
-| `libuhdr.2.dylib` | `libultrahdr` | `2.0.2` | `Apache-2.0` | Permissive |
-| `libvips.42.dylib` | `vips` | `8.18.7` | `LGPL-2.1-or-later` | LGPL (Permitted via dynamic linking) |
-| `libwebp.7.dylib` | `webp` | `1.6.0` | `BSD-3-Clause` | Permissive |
-| `libwebpdemux.2.dylib` | `webp` | `1.6.0` | `BSD-3-Clause` | Permissive |
-| `libwebpmux.3.dylib` | `webp` | `1.6.0` | `BSD-3-Clause` | Permissive |
-| `libxcb-render.0.dylib` | `libxcb` | `1.17.0` | `MIT` | Permissive |
-| `libxcb-shm.0.dylib` | `libxcb` | `1.17.0` | `MIT` | Permissive |
-| `libxcb.1.dylib` | `libxcb` | `1.17.0` | `MIT` | Permissive |
-| `libzstd.1.dylib` | `zstd` | `1.5.7_1` | `(BSD-3-Clause OR GPL-2.0-only) AND BSD-2-Clause AND MIT` | Permissive (Dual-licensed; licensee selects BSD-3-Clause) |
+| `libaom.3.dylib` | `aom` (`tarball:https://storage.googleapis.com/aom-releases/libaom-3.14.1.tar.gz`) | `3.14.1` | `BSD-2-Clause` | Permissive (AV1 decoder only; encoder disabled `-DCONFIG_AV1_ENCODER=0`) |
+| `libde265.0.dylib` | `libde265` (`tarball:https://github.com/strukturag/libde265/releases/download/v1.1.1/libde265-1.1.1.tar.gz`) | `1.1.1` | `LGPL-3.0-or-later` | LGPL (Permitted via dynamic linking; HEVC decode for `libheif`) |
+| `libexif.12.dylib` | `libexif` (`homebrew:libexif`) | `0.6.26` | `LGPL-2.1-or-later AND LGPL-2.0-or-later` | LGPL (Permitted via dynamic linking) |
+| `libgio-2.0.0.dylib` | `glib` (`homebrew:glib`) | `2.90.1` | `LGPL-2.1-or-later` | LGPL (Permitted via dynamic linking) |
+| `libglib-2.0.0.dylib` | `glib` (`homebrew:glib`) | `2.90.1` | `LGPL-2.1-or-later` | LGPL (Permitted via dynamic linking) |
+| `libgmodule-2.0.0.dylib` | `glib` (`homebrew:glib`) | `2.90.1` | `LGPL-2.1-or-later` | LGPL (Permitted via dynamic linking) |
+| `libgobject-2.0.0.dylib` | `glib` (`homebrew:glib`) | `2.90.1` | `LGPL-2.1-or-later` | LGPL (Permitted via dynamic linking) |
+| `libheif.1.dylib` | `libheif` (`tarball:https://github.com/strukturag/libheif/releases/download/v1.23.2/libheif-1.23.2.tar.gz`) | `1.23.2` | `LGPL-3.0-or-later` | LGPL (Permitted via dynamic linking; `-DWITH_X265=OFF`, `-DENABLE_PLUGIN_LOADING=OFF`, links `libde265` + `libaom`) |
+| `libhwy.1.dylib` | `highway` (`homebrew:highway`) | `1.4.0` | `Apache-2.0 OR BSD-3-Clause` | Permissive |
+| `libintl.8.dylib` | `gettext` (`homebrew:gettext`) | `1.0` | `LGPL-2.1-or-later` | LGPL (Runtime `libintl` is `LGPL-2.1-or-later`; formula SPDX `GPL-3.0-or-later AND LGPL-2.1-or-later` covers unbundled CLI tools) |
+| `libjpeg.8.dylib` | `jpeg-turbo` (`homebrew:jpeg-turbo`) | `3.2.1` | `IJG AND Zlib AND BSD-3-Clause` | Permissive |
+| `liblcms2.2.dylib` | `little-cms2` (`homebrew:little-cms2`) | `2.19.1` | `MIT` | Permissive |
+| `liblzma.5.dylib` | `xz` (`homebrew:xz`) | `5.8.4` | `0BSD` | Permissive (Runtime `liblzma` is `0BSD` public domain; formula SPDX `0BSD AND GPL-2.0-or-later` covers unbundled CLI tools) |
+| `libpcre2-8.0.dylib` | `pcre2` (`homebrew:pcre2`) | `10.49` | `BSD-3-Clause` | Permissive |
+| `libpng16.16.dylib` | `libpng` (`homebrew:libpng`) | `1.6.59` | `libpng-2.0` | Permissive |
+| `libsharpyuv.0.dylib` | `webp` (`homebrew:webp`) | `1.6.0` | `BSD-3-Clause` | Permissive |
+| `libtiff.6.dylib` | `libtiff` (`homebrew:libtiff`) | `4.7.2` | `libtiff` | Permissive |
+| `libvips.42.dylib` | `vips` (`tarball:https://github.com/libvips/libvips/releases/download/v8.18.6/vips-8.18.6.tar.xz`) | `8.18.6` | `LGPL-2.1-or-later` | LGPL (Permitted via dynamic linking; `-Dmodules=disabled`, built-in `heifload`) |
+| `libwebp.7.dylib` | `webp` (`homebrew:webp`) | `1.6.0` | `BSD-3-Clause` | Permissive |
+| `libwebpdemux.2.dylib` | `webp` (`homebrew:webp`) | `1.6.0` | `BSD-3-Clause` | Permissive |
+| `libwebpmux.3.dylib` | `webp` (`homebrew:webp`) | `1.6.0` | `BSD-3-Clause` | Permissive |
+| `libzstd.1.dylib` | `zstd` (`homebrew:zstd`) | `1.5.7_1` | `BSD-3-Clause` | Permissive (Formula SPDX `(BSD-3-Clause OR GPL-2.0-only) AND BSD-2-Clause AND MIT`; licensee elects `BSD-3-Clause`) |
 
-> [!WARNING]
-> **GPL Copyleft Finding in Stock Homebrew Distribution:**
-> The package audit identified two libraries under strict GPL copyleft licenses pulled in by Homebrew's default `vips` formula:
-> 1. `libfftw3.3.dylib` (`GPL-2.0-or-later`): Fast Fourier Transform library used for image sharpening and frequency analysis.
-> 2. `libimagequant.0.4.dylib` (`GPL-3.0-or-later`): Palette quantization library for GIF and PNG8.
->
-> Distributing an application containing GPL-licensed libraries requires releasing the entire application source code under GPL terms. While acceptable during local developer testing and CI smoke testing, **these libraries cannot be distributed in production**.
->
-> **Actionable Resolution:** Before Phase 2, the project must produce its own minimal libvips build for macOS using Meson with `-Dfftw=disabled -Dimagequant=disabled -Dintrospection=disabled -Dmagick=disabled -Drsvg=disabled`, ensuring an entirely LGPL/permissive runtime identical in architecture to the Windows MXE build.
+- **License Breakdown (16 Components / 22 Dylibs):**
+  - **LGPL libraries (6 components, permitted via dynamic linking):** `gettext` (`libintl.8.dylib`, `LGPL-2.1-or-later`), `glib` (`2.90.1`, `LGPL-2.1-or-later`), `libde265` (`1.1.1`, `LGPL-3.0-or-later`), `libexif` (`0.6.26`, `LGPL-2.1-or-later AND LGPL-2.0-or-later`), `libheif` (`1.23.2`, `LGPL-3.0-or-later`), `vips` (`8.18.6`, `LGPL-2.1-or-later`).
+  - **Permissive open-source libraries (10 components):** `aom` (`BSD-2-Clause`), `highway` (`Apache-2.0 OR BSD-3-Clause`), `jpeg-turbo` (`IJG AND Zlib AND BSD-3-Clause`), `libpng` (`libpng-2.0`), `libtiff` (`libtiff`), `little-cms2` (`MIT`), `pcre2` (`BSD-3-Clause`), `webp` (`BSD-3-Clause`), `xz` (`0BSD`), `zstd` (`BSD-3-Clause` elected).
+  - **No GPL components identified:** No GPL component identified in this list (not a legal opinion; see risk 17 in `docs/STATUS.md`). `x265`, `x264`, `fftw`, `imagequant` 4.x, `magick`, `poppler`, `rsvg`, `openslide`, `openexr`, `cfitsio`, and `libarchive` are excluded at configure time and verified absent by `deps/macos-vips/audit-dylibs.sh`. Note: `libvips.42.dylib` compiles the static enum nick `"x265"` from `foreign.h` unconditionally, with zero `x265` linkage or symbols.
 
 > [!NOTE]
-> **macOS `heifload` Status & Homebrew Modular Loaders:**
-> Homebrew's libvips formula splits `libheif`, `imagemagick`, `libjxl`, `openslide`, and `poppler` into separate dynamically-loaded modules located in `/opt/homebrew/lib/vips-modules-8.18/` (e.g. `vips-heif.dylib`). Because `vips-heif.dylib` is an external runtime module and not directly linked into `libvips.42.dylib`, `package-bundle.mjs` does not copy it into `Contents/Frameworks/`. In clean-machine smoke testing with Homebrew hidden (and on end-user Macs without Homebrew), libvips loads only its built-in core loaders (`jpegload`, `pngload`, `webpload`, `tiffload`, `gifload`). Therefore, `heifload` is absent in the packaged macOS application, and HEIC/HEVC decoding is **not verified on either OS**.
+> **Resolution of Risk 11 (`heifload` & Floating Homebrew Harvest on macOS):**
+> Building libvips `8.18.6` with `-Dmodules=disabled` and isolated `PKG_CONFIG_LIBDIR` compiles `heifload` (HEIC/HEVC via `libde265` + AVIF via `libaom`) directly into `libvips.42.dylib` and eliminates the 67-dylib Homebrew runtime harvest (including GPL `fftw` and `imagequant` 4.x). Non-fork CI runs and packaged releases consume the checksum-pinned archive via `VIPS_DIR` / `VIPS_LIB_DIR` and fail closed on missing `DEPS_TOKEN` or checksum mismatch. Fork pull requests without repository secrets fall back to Homebrew with `REQUIRE_HEIC` unset (`heic_decode_verified: false`, `heic_note: "no deps token (fork)"`). HEVC codec patent licensing remains separate from copyright licenses and requires legal review before public Phase 7 distribution.
 
 ---
 
@@ -224,12 +177,10 @@ Per TASK-0C Known Issue 2 and Review Finding 3, `svgload` (librsvg) and `magickl
   3. Explicitly calls `vips_operation_block_set("svgload", 1)` and `vips_operation_block_set("magickload", 1)`.
 - **Validation Probe & Smoke JSON Clarification:**
   - `has_svgload: false` in the smoke test JSON is a static constant (`is_loader_supported` hardcodes `false` for svgload and magickload before querying libvips). It proves that application code refuses to dispatch to svgload, but **does not** prove that libvips's own internal loader was unregistered.
-  - The active probe inside the smoke test attempts to decode `tests/fixtures/generated/fixture_blocked.svg` via `libvips`. It requires that libvips returns an error ("is not a known file format"), proving that this SVG cannot be decoded at runtime.
-- **Stock CLI Control Verification (macOS & Windows CI):**
-  To distinguish "blocked by security policy" from "loader absent":
-  1. **Unblocked Control:** Running stock CLI `vips copy tests/fixtures/generated/fixture_blocked.svg <out>.png` without `VIPS_BLOCK_UNTRUSTED` succeeds (exit code 0), proving that librsvg is present and functional in the distribution.
-  2. **Blocked Control:** Running `VIPS_BLOCK_UNTRUSTED=1 vips copy tests/fixtures/generated/fixture_blocked.svg <out>.png` fails with `"VipsForeignLoad: ... is not a known file format"` (exit code 1).
-  This control experiment proves that setting the environment variable `VIPS_BLOCK_UNTRUSTED=1` alone is sufficient for libvips to block untrusted SVG loaders. The subsequent in-code calls to `vips_block_untrusted_set(1)` and `vips_operation_block_set` are **untested redundancy**.
+  - The active probe inside the smoke test attempts to decode `tests/fixtures/generated/fixture_blocked.svg` via `libvips`. It requires that libvips returns an error (`"is not a known file format"`), proving that this SVG cannot be decoded at runtime.
+- **CLI Control Verification (macOS & Windows CI):**
+  - **Windows x64 (`librsvg-2-2.dll` present) & macOS fork-PR Homebrew fallback:** Unblocked `vips copy tests/fixtures/generated/fixture_blocked.svg <out>.png` succeeds (exit code 0), while `VIPS_BLOCK_UNTRUSTED=1 vips copy ...` fails with `"VipsForeignLoad: ... is not a known file format"` (exit code 1), proving `VIPS_BLOCK_UNTRUSTED=1` actively blocks `svgload`.
+  - **macOS arm64 custom build (`-Drsvg=disabled`, `-Dmagick=disabled`):** Neither `librsvg` nor ImageMagick is compiled into `libvips.42.dylib`. Both unblocked `vips copy` and `VIPS_BLOCK_UNTRUSTED=1 vips copy` on `fixture_blocked.svg` fail with exit code 1 (`"VipsForeignLoad: ... is not a known file format"`).
 
 ---
 

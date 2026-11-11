@@ -416,13 +416,92 @@ jobs:
         run: python -m pip install pillow
 
       - name: Install macOS prerequisites
+        env:
+          DEPS_TOKEN: ${{ secrets.DEPS_TOKEN }}
+          IS_FORK_PR: ${{ github.event.pull_request.head.repo.fork == true }}
         run: |
-          brew install vips pkg-config
-          # Download and checksum official ExifTool 13.61 distribution
+          set -euo pipefail
+
+          # 1. Download and checksum custom HEVC libvips distribution (fail closed on non-fork runs; Homebrew fallback for fork PRs only)
+          if [ "${IS_FORK_PR:-false}" = "true" ]; then
+            echo "Fork pull request detected; using Homebrew libvips (no HEVC packaged guarantee, REQUIRE_HEIC unset)..."
+            brew install vips pkg-config
+            echo "PHOTOS_DEV_HOMEBREW=1" >> "$GITHUB_ENV"
+          else
+            if [ -z "${DEPS_TOKEN:-}" ]; then
+              echo "::error::DEPS_TOKEN is required for non-fork runs but was missing or empty. Check repository secret DEPS_TOKEN (is it missing, expired, or lacking Contents read access?)."
+              exit 1
+            fi
+
+            RELEASE_REPO="narayanwaraich/photos-manager-deps"
+            RELEASE_TAG="macos-arm64-vips-8.18.6-hevc1"
+            EXPECTED_SHA256="6bb24d51dedf9f69344aa187cb0f9651b7842de4c465643480f3a794481dba64"
+            MAX_ATTEMPTS=3
+            VIPS_DOWNLOADED="false"
+            LAST_ERROR=""
+
+            echo "Downloading custom HEVC libvips release '$RELEASE_TAG' from '$RELEASE_REPO'..."
+            for attempt in 1 2 3; do
+              rm -f vips-macos-arm64-*.zip vips.zip
+              set +e
+              GH_TOKEN="$DEPS_TOKEN" gh release download "$RELEASE_TAG" --repo "$RELEASE_REPO" --pattern '*.zip' --dir .
+              DL_EXIT=$?
+              set -e
+              if [ "$DL_EXIT" -eq 0 ]; then
+                ZIP_FOUND="$(find . -maxdepth 1 -type f -name 'vips-macos-arm64-*.zip' | head -n 1)"
+                if [ -n "$ZIP_FOUND" ]; then
+                  mv -f "$ZIP_FOUND" vips.zip
+                  VIPS_DOWNLOADED="true"
+                  break
+                fi
+                LAST_ERROR="gh release download exited 0 but no vips-macos-arm64-*.zip file was found"
+              else
+                LAST_ERROR="gh release download failed with exit code $DL_EXIT"
+              fi
+              echo "Attempt $attempt of $MAX_ATTEMPTS failed: $LAST_ERROR"
+              if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+                sleep 15
+              fi
+            done
+
+            if [ "$VIPS_DOWNLOADED" != "true" ]; then
+              echo "::error::Failed to download custom HEVC libvips release '$RELEASE_TAG' from '$RELEASE_REPO' after $MAX_ATTEMPTS attempts ($LAST_ERROR). Check whether DEPS_TOKEN is expired/invalid, lacks Contents read permission on '$RELEASE_REPO', or release tag '$RELEASE_TAG' is missing."
+              exit 1
+            fi
+
+            ACTUAL_SHA256="$(shasum -a 256 vips.zip | awk '{print $1}')"
+            if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+              echo "::error::Checksum mismatch for custom vips.zip: expected $EXPECTED_SHA256, got $ACTUAL_SHA256"
+              exit 1
+            fi
+            echo "✓ Verified custom HEVC libvips hash: $ACTUAL_SHA256"
+
+            rm -rf deps/_vips_extract deps/vips
+            mkdir -p deps/_vips_extract
+            unzip -q vips.zip -d deps/_vips_extract
+            INNER_DIR="$(find deps/_vips_extract -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+            if [ -z "$INNER_DIR" ]; then
+              echo "::error::Extracted vips.zip has no top-level directory"
+              exit 1
+            fi
+            mv "$INNER_DIR" deps/vips
+            rm -rf deps/_vips_extract vips.zip
+
+            {
+              echo "REQUIRE_HEIC=1"
+              echo "VIPS_DIR=$PWD/deps/vips"
+              echo "VIPS_LIB_DIR=$PWD/deps/vips/lib"
+              echo "PKG_CONFIG_PATH=$PWD/deps/vips/lib/pkgconfig"
+            } >> "$GITHUB_ENV"
+            echo "$PWD/deps/vips/bin" >> "$GITHUB_PATH"
+          fi
+
+          # 2. Download and checksum official ExifTool 13.61 distribution
           curl -fL --retry 5 --retry-all-errors --retry-delay 15 --connect-timeout 30 -o exiftool.tar.gz https://downloads.sourceforge.net/project/exiftool/Image-ExifTool-13.61.tar.gz
           echo "df7f42c14b4f58a60bec39feae0ee9593000ee27e44920d2b0a21c6627de0baa  exiftool.tar.gz" | shasum -a 256 -c -
           mkdir -p deps/exiftool
           tar -xzf exiftool.tar.gz -C deps/exiftool --strip-components=1
+          rm -f exiftool.tar.gz
           echo "EXIFTOOL_DIR=$PWD/deps/exiftool" >> "$GITHUB_ENV"
           echo "$PWD/deps/exiftool" >> "$GITHUB_PATH"
 
@@ -439,15 +518,17 @@ jobs:
         run: node scripts/prepare-bundle.mjs
 
       - name: Build Tauri application (unsigned)
-        env:
-          PHOTOS_DEV_HOMEBREW: "1"
         run: pnpm tauri build --bundles app
 
       - name: Post-build bundle packaging & library relocation
         run: node scripts/package-bundle.mjs
 
       - name: Clean-environment smoke test (macOS arm64)
+        env:
+          IS_FORK_PR: ${{ github.event.pull_request.head.repo.fork == true }}
         run: |
+          set -euo pipefail
+
           # 1. Unzip portable zip package to fresh testing folder outside target/
           ZIP_PATH="src-tauri/target/release/bundle/macos/photos-manager-macos-arm64.zip"
           if [ ! -f "$ZIP_PATH" ]; then
@@ -459,7 +540,7 @@ jobs:
           mkdir -p /tmp/smoke-extracted
           rm -rf /tmp/smoke-extracted/*
           unzip -q "$ZIP_PATH" -d /tmp/smoke-extracted/
-          TEST_APP=$(find /tmp/smoke-extracted -name "*.app" -maxdepth 1 | head -n 1)
+          TEST_APP="$(find /tmp/smoke-extracted -name "*.app" -maxdepth 1 | head -n 1)"
           if [ -z "$TEST_APP" ]; then
             echo "❌ No .app bundle found in extracted archive"
             exit 1
@@ -468,65 +549,139 @@ jobs:
           chmod +x "$EXE_PATH"
           echo "Testing extracted bundle at: $TEST_APP"
 
-          # 2. Check bundled dylib table in docs/native-dependencies.md §4.3
-          echo "=== Verifying bundled dylib table against docs/native-dependencies.md §4.3 ==="
-          node scripts/check-dylib-table.mjs "$TEST_APP"
-
-          # 3. Verify libvips CLI untrusted loader control test (proves libvips honours VIPS_BLOCK_UNTRUSTED)
-          echo "=== CLI Control Test 1: vips copy without VIPS_BLOCK_UNTRUSTED (must succeed) ==="
-          vips copy tests/fixtures/generated/fixture_blocked.svg /tmp/svg_control_allowed.png
-          test -f /tmp/svg_control_allowed.png
-          echo "✓ Success: vips copy succeeded when unblocked"
-
-          echo "=== CLI Control Test 2: vips copy with VIPS_BLOCK_UNTRUSTED=1 (must fail) ==="
-          set +e
-          CLI_BLOCK_OUTPUT=$(VIPS_BLOCK_UNTRUSTED=1 vips copy tests/fixtures/generated/fixture_blocked.svg /tmp/svg_control_blocked.png 2>&1)
-          CLI_BLOCK_EXIT=$?
-          set -e
-          echo "$CLI_BLOCK_OUTPUT"
-          if [ $CLI_BLOCK_EXIT -eq 0 ]; then
-            echo "❌ Control failure: vips copy loaded SVG despite VIPS_BLOCK_UNTRUSTED=1"
-            exit 1
+          # 2. Check bundled dylib table in docs/native-dependencies.md §4.3 (non-fork custom zip builds)
+          if [ "${IS_FORK_PR:-false}" != "true" ]; then
+            echo "=== Verifying bundled dylib table against docs/native-dependencies.md §4.3 ==="
+            node scripts/check-dylib-table.mjs "$TEST_APP"
+          else
+            echo "Fork PR (Homebrew fallback): skipping exact custom-zip 22-dylib table check."
           fi
-          if ! echo "$CLI_BLOCK_OUTPUT" | grep -q "not a known file format"; then
-            echo "❌ Expected error message containing 'not a known file format'"
-            exit 1
-          fi
-          echo "✓ Success: vips copy rejected SVG under VIPS_BLOCK_UNTRUSTED=1 with code $CLI_BLOCK_EXIT"
 
-          # 4. Verify otool -L for main binary and all bundled dylibs (expect zero Homebrew or /usr/local lines)
-          echo "=== Checking otool -L on main binary for Homebrew / usr/local ==="
-          otool -L "$EXE_PATH" | grep -E "/opt/homebrew|/usr/local" || echo "✓ Main binary clean: no Homebrew or /usr/local references"
-          echo "=== Checking otool -L on all bundled dylibs ==="
-          for lib in "$TEST_APP"/Contents/Frameworks/*.dylib; do
-            LEAKS=$(otool -L "$lib" | grep -E "/opt/homebrew|/usr/local" || true)
+          # 3. Verify libvips CLI untrusted loader control test (zero | grep -q pipelines)
+          if [ "${IS_FORK_PR:-false}" = "true" ]; then
+            echo "=== CLI Control Test 1 (fork Homebrew): vips copy without VIPS_BLOCK_UNTRUSTED (must succeed) ==="
+            vips copy tests/fixtures/generated/fixture_blocked.svg /tmp/svg_control_allowed.png
+            test -f /tmp/svg_control_allowed.png
+            echo "✓ Success: vips copy succeeded when unblocked"
+
+            echo "=== CLI Control Test 2 (fork Homebrew): vips copy with VIPS_BLOCK_UNTRUSTED=1 (must fail) ==="
+            set +e
+            CLI_BLOCK_OUTPUT="$(VIPS_BLOCK_UNTRUSTED=1 vips copy tests/fixtures/generated/fixture_blocked.svg /tmp/svg_control_blocked.png 2>&1)"
+            CLI_BLOCK_EXIT=$?
+            set -e
+            echo "$CLI_BLOCK_OUTPUT"
+            if [ "$CLI_BLOCK_EXIT" -eq 0 ]; then
+              echo "❌ Control failure: vips copy loaded SVG despite VIPS_BLOCK_UNTRUSTED=1"
+              exit 1
+            fi
+            if [[ "$CLI_BLOCK_OUTPUT" != *"not a known file format"* ]]; then
+              echo "❌ Expected error message containing 'not a known file format'"
+              exit 1
+            fi
+            echo "✓ Success: vips copy rejected SVG under VIPS_BLOCK_UNTRUSTED=1 with code $CLI_BLOCK_EXIT"
+          else
+            VIPS_CLI="$VIPS_DIR/bin/vips"
+            echo "=== CLI Control Test 1 (custom -Drsvg=disabled): vips -l lists heifload without svgload/magickload ==="
+            LOADERS_OUT="$(env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "$VIPS_CLI" -l)"
+            if [[ "$LOADERS_OUT" != *"(heifload),"* ]]; then
+              echo "❌ Expected (heifload), in $VIPS_CLI -l"
+              exit 1
+            fi
+            if [[ "$LOADERS_OUT" == *"svgload"* ]] || [[ "$LOADERS_OUT" == *"magickload"* ]]; then
+              echo "❌ Disallowed loader listed in $VIPS_CLI -l"
+              exit 1
+            fi
+            echo "✓ Success: custom CLI lists (heifload) and omits svgload/magickload"
+
+            echo "=== CLI Control Test 2 (custom -Drsvg=disabled): unblocked and VIPS_BLOCK_UNTRUSTED=1 both reject SVG ==="
+            set +e
+            CLI_UNBLOCKED_OUT="$(env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "$VIPS_CLI" copy tests/fixtures/generated/fixture_blocked.svg /tmp/svg_control_allowed.png 2>&1)"
+            CLI_UNBLOCKED_EXIT=$?
+            CLI_BLOCK_OUT="$(env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin VIPS_BLOCK_UNTRUSTED=1 "$VIPS_CLI" copy tests/fixtures/generated/fixture_blocked.svg /tmp/svg_control_blocked.png 2>&1)"
+            CLI_BLOCK_EXIT=$?
+            set -e
+            echo "Unblocked exit=$CLI_UNBLOCKED_EXIT: $CLI_UNBLOCKED_OUT"
+            echo "Blocked exit=$CLI_BLOCK_EXIT: $CLI_BLOCK_OUT"
+            if [ "$CLI_UNBLOCKED_EXIT" -eq 0 ] || [ "$CLI_BLOCK_EXIT" -eq 0 ]; then
+              echo "❌ SVG unexpectedly loaded"
+              exit 1
+            fi
+            if [[ "$CLI_UNBLOCKED_OUT" != *"not a known file format"* ]] || [[ "$CLI_BLOCK_OUT" != *"not a known file format"* ]]; then
+              echo "❌ Expected 'not a known file format' for both SVG attempts"
+              exit 1
+            fi
+            echo "✓ Success: SVG rejected cleanly unblocked and under VIPS_BLOCK_UNTRUSTED=1"
+          fi
+
+          # 4. Verify otool -L and LC_RPATH on main binary and all bundled dylibs (zero Homebrew / build-prefix leaks)
+          echo "=== Checking otool -L and LC_RPATH on main binary and all bundled dylibs ==="
+          for target in "$EXE_PATH" "$TEST_APP"/Contents/Frameworks/*.dylib; do
+            LEAKS="$(otool -L "$target" | tail -n +2 | grep -E "/opt/homebrew|/usr/local|/Cellar|/Users/|/tmp/|/var/" || true)"
             if [ -n "$LEAKS" ]; then
-              echo "❌ Leak in $(basename "$lib"): $LEAKS"
+              echo "❌ otool -L leak in $(basename "$target"): $LEAKS"
+              exit 1
+            fi
+            RP_LEAKS="$(otool -l "$target" | grep -A2 "cmd LC_RPATH" | grep -E "/opt/homebrew|/usr/local|/Cellar|/Users/|/tmp/|/var/" || true)"
+            if [ -n "$RP_LEAKS" ]; then
+              echo "❌ LC_RPATH leak in $(basename "$target"): $RP_LEAKS"
               exit 1
             fi
           done
-          echo "✓ All bundled dylibs clean: zero Homebrew or /usr/local references"
+          echo "✓ Main binary and all bundled dylibs clean: zero Homebrew, /usr/local, or build-prefix references"
 
-          # 5. Physically hide Homebrew on runner to prove complete hermeticity
-          sudo mv /opt/homebrew /opt/homebrew.off
+          # 5. Physically hide Homebrew on runner (with trap restore) to prove complete hermeticity
+          BREW_HIDDEN=0
+          restore_homebrew() {
+            if [ "$BREW_HIDDEN" -eq 1 ] && [ -d /opt/homebrew.off ] && [ ! -e /opt/homebrew ]; then
+              sudo mv /opt/homebrew.off /opt/homebrew
+              BREW_HIDDEN=0
+            fi
+          }
+          trap restore_homebrew EXIT
+          if [ -d /opt/homebrew ]; then
+            sudo mv /opt/homebrew /opt/homebrew.off
+            BREW_HIDDEN=1
+          fi
 
-          # 6. Execute smoke test in stripped clean environment (no bypass flags)
+          # 6. Execute smoke test in stripped clean environment (pass REQUIRE_HEIC explicitly across env -i on non-fork runs)
           set +e
-          env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "$EXE_PATH" --smoke-test --out smoke-macos-arm64.json
+          if [ "${IS_FORK_PR:-false}" = "true" ]; then
+            env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "$EXE_PATH" --smoke-test --out smoke-macos-arm64.json
+          else
+            env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin REQUIRE_HEIC=1 "$EXE_PATH" --smoke-test --out smoke-macos-arm64.json
+          fi
           SMOKE_EXIT=$?
           set -e
 
-          # 7. Restore Homebrew
-          sudo mv /opt/homebrew.off /opt/homebrew
+          # 7. Restore Homebrew immediately before assertions/uploads
+          restore_homebrew
+          trap - EXIT
 
           cat smoke-macos-arm64.json
-          if [ $SMOKE_EXIT -ne 0 ]; then
+          if [ "$SMOKE_EXIT" -ne 0 ]; then
             echo "❌ Clean-environment smoke test failed with code $SMOKE_EXIT"
-            exit $SMOKE_EXIT
+            exit "$SMOKE_EXIT"
           fi
 
-          # 8. Verify macOS reports heic_decode_verified == false with expected note (TASK-0E Part B)
-          python3 -c "import json; d = json.load(open('smoke-macos-arm64.json')); assert d.get('heic_decode_verified') is False, 'Expected false'; assert d.get('heic_note') == 'not packaged yet (TASK-0F)', d.get('heic_note'); print('✓ Verified macOS smoke output: heic_decode_verified == false')"
+          # 8. Verify macOS reports heic_decode_verified == true on non-fork runs (or false on fork PRs)
+          python3 - "${IS_FORK_PR:-false}" <<'PY'
+          import json
+          import sys
+
+          is_fork = sys.argv[1] == "true"
+          d = json.load(open("smoke-macos-arm64.json", "r", encoding="utf-8"))
+          assert d.get("status") == "ok", d
+          if is_fork:
+              assert d.get("heic_decode_verified") is False, f"Expected false on fork PR, got {d.get('heic_decode_verified')}"
+              assert d.get("heic_note") == "no deps token (fork)", d.get("heic_note")
+              print("✓ Verified fork-PR macOS smoke output: heic_decode_verified == false (no deps token (fork))")
+          else:
+              assert d.get("heic_decode_verified") is True, f"Expected true, got {d.get('heic_decode_verified')} ({d.get('heic_note')})"
+              assert "heifload" in d.get("libvips", {}).get("supported_loaders", []), d.get("libvips")
+              assert d.get("libvips", {}).get("is_in_bundle") is True, d.get("libvips")
+              assert d.get("libvips", {}).get("disallowed_loaders_absent") is True, d.get("libvips")
+              print(f"✓ Verified macOS smoke output: heic_decode_verified == true ({d.get('heic_note')})")
+          PY
 
       - name: Upload smoke test report
         uses: actions/upload-artifact@v4

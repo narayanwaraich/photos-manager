@@ -1,0 +1,50 @@
+# Pinned Upstream Sources & Build Metadata for macOS arm64 libvips (HEVC Decode)
+# Exact parity versions with Windows custom build deps/win64-vips (TASK-0E)
+
+target=macos-arm64
+artifact=vips-macos-arm64-8.18.6-hevc.zip
+target_release_repo=narayanwaraich/photos-manager-deps
+target_release_tag=macos-arm64-vips-8.18.6-hevc1
+
+# Built-from-source tarballs (verified locally by shasum -a 256)
+vips_version=8.18.6
+vips_url=https://github.com/libvips/libvips/releases/download/v8.18.6/vips-8.18.6.tar.xz
+vips_sha256=3c41e1d5458081bfa4a5bc54e116c46259c75c6760a18027764555632b9dda3e
+vips_license=LGPL-2.1-or-later
+
+libheif_version=1.23.2
+libheif_url=https://github.com/strukturag/libheif/releases/download/v1.23.2/libheif-1.23.2.tar.gz
+libheif_sha256=8bd5d41d19dc84536d118b04774709f244df6104ef66d623dad5fa4650143405
+libheif_license=LGPL-3.0-or-later
+
+libde265_version=1.1.1
+libde265_url=https://github.com/strukturag/libde265/releases/download/v1.1.1/libde265-1.1.1.tar.gz
+libde265_sha256=fd48a927e94ed74fc7ce8829d222b9d8599fcbfe8b6448ba66705babc56ab219
+libde265_license=LGPL-3.0-or-later
+
+libaom_version=3.14.1
+libaom_url=https://storage.googleapis.com/aom-releases/libaom-3.14.1.tar.gz
+libaom_sha256=44bf90dbd23e734d50e70a8c41c285193922938bd0d3bc2ee56764d181d55ef5
+libaom_license=BSD-2-Clause
+
+# Explicit build exclusions:
+# - No x265, x264, OpenH264, kvazaar, vvenc, svt-av1, rav1e
+# - No fftw, imagequant, quantizr, ImageMagick, librsvg, poppler, openslide, openexr, jpeg-xl, libraw
+# - Modules disabled (-Dmodules=disabled) so heifload is compiled directly into libvips.42.dylib
+
+# Exact Homebrew build tools & leaf formula versions from verified Run #3 (42945772807):
+# Build tools (not bundled): cmake=4.4.5, meson=1.12.1, ninja=1.13.2, pkgconf=3.0.10
+# Bundled leaf formulas (12 components): gettext=1.0, glib=2.90.1, highway=1.4.0, jpeg-turbo=3.2.1, libexif=0.6.26, libpng=1.6.59, libtiff=4.7.2, little-cms2=2.19.1, pcre2=10.49, webp=1.6.0, xz=5.8.4, zstd=1.5.7_1
+# Installed formula not bundled (SDK /usr/lib/libffi.dylib resolved instead): libffi=3.8.0
+# macOS system SDK libraries: /System/Library/Frameworks/*, /usr/lib/libSystem.B.dylib, /usr/lib/libc++.1.dylib, /usr/lib/libexpat.1.dylib, /usr/lib/libffi.dylib, /usr/lib/libiconv.2.dylib, /usr/lib/libobjc.A.dylib, /usr/lib/libresolv.9.dylib, /usr/lib/libz.1.dylib
+
+# CI Runner Environment (macos-14 retired 2026-11-02 per https://github.com/actions/runner-images/pull/15227):
+runner_label=macos-15
+runner_image=macos-15-arm64
+runner_image_version=20261104.0514.1
+runner_os_version=15.8.2
+runner_os_build=24H232
+deployment_target=15.0
+xcode_version=Xcode 16.4 Build version 16F6
+verified_run_id=42945772807
+verified_zip_sha256=6bb24d51dedf9f69344aa187cb0f9651b7842de4c465643480f3a794481dba64
