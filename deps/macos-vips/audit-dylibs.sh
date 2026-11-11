@@ -29,11 +29,14 @@ fi
 
 INPUT_PATH="$1"
 TMP_DIR=""
+STRINGS_TMP="$(mktemp)"
+NM_TMP="$(mktemp)"
 # shellcheck disable=SC2329
 cleanup() {
   if [[ -n "$TMP_DIR" ]] && [[ -d "$TMP_DIR" ]]; then
     rm -rf "$TMP_DIR"
   fi
+  rm -f "$STRINGS_TMP" "$NM_TMP"
 }
 trap cleanup EXIT
 
@@ -59,9 +62,10 @@ FORBIDDEN_PATTERN="x265|x264|fftw|imagequant|magick|poppler|rsvg|openslide"
 echo "=== Auditing macOS libvips archive: $AUDIT_TARGET ==="
 
 # (a) Forbidden filenames anywhere in archive
-if find "$VIPS_ROOT" \( -iname "*x265*" -o -iname "*x264*" -o -iname "*fftw*" -o -iname "*imagequant*" -o -iname "*magick*" -o -iname "*poppler*" -o -iname "*rsvg*" -o -iname "*openslide*" \) | grep -q .; then
+FORBIDDEN_FILES="$(find "$VIPS_ROOT" \( -iname "*x265*" -o -iname "*x264*" -o -iname "*fftw*" -o -iname "*imagequant*" -o -iname "*magick*" -o -iname "*poppler*" -o -iname "*rsvg*" -o -iname "*openslide*" \))"
+if [[ -n "$FORBIDDEN_FILES" ]]; then
   echo "FAIL (a): Found forbidden filename matching (${FORBIDDEN_PATTERN}):"
-  find "$VIPS_ROOT" \( -iname "*x265*" -o -iname "*x264*" -o -iname "*fftw*" -o -iname "*imagequant*" -o -iname "*magick*" -o -iname "*poppler*" -o -iname "*rsvg*" -o -iname "*openslide*" \)
+  printf '%s\n' "$FORBIDDEN_FILES"
   EXIT_CODE=1
 else
   echo "PASS (a): No forbidden filenames (${FORBIDDEN_PATTERN}) in archive"
@@ -76,7 +80,8 @@ if [[ -d "$VIPS_ROOT/lib" ]]; then
 fi
 if [[ -d "$VIPS_ROOT/bin" ]]; then
   while IFS= read -r -d '' f; do
-    if file -b "$f" | grep -q "Mach-O"; then
+    file_desc="$(file -b "$f")"
+    if [[ "$file_desc" == *"Mach-O"* ]]; then
       MACHO_FILES+=("$f")
     fi
   done < <(find "$VIPS_ROOT/bin" -maxdepth 1 -type f -print0)
@@ -140,17 +145,19 @@ fi
 rule_c_fail=0
 for f in "${MACHO_FILES[@]}"; do
   base="$(basename "$f")"
-  if strings -a "$f" | grep -E -i -q "libx265|x265_encoder|x265_param"; then
+  strings -a "$f" > "$STRINGS_TMP"
+  nm -g "$f" > "$NM_TMP" 2>/dev/null || true
+  if grep -E -i -q "libx265|x265_encoder|x265_param" "$STRINGS_TMP"; then
     echo "  $base contains forbidden x265 symbol/linkage string (libx265/x265_encoder/x265_param)"
     rule_c_fail=1
   fi
-  if nm -g "$f" 2>/dev/null | grep -i -q "x265"; then
+  if grep -i -q "x265" "$NM_TMP"; then
     echo "  $base exports/imports x265 symbol in Mach-O symbol table"
     rule_c_fail=1
   fi
   # Bare "x265" string allowed only in libvips.42.dylib / libvips-cpp.42.dylib (VipsForeignHeifEncoder enum nick)
   if [[ "$base" != libvips*.dylib ]]; then
-    if strings -a "$f" | grep -i -q "x265"; then
+    if grep -i -q "x265" "$STRINGS_TMP"; then
       echo "  Non-exempt binary $base contains string 'x265'"
       rule_c_fail=1
     fi
@@ -175,9 +182,12 @@ fi
 if [[ -z "$libheif_file" ]]; then
   echo "  Missing regular libheif*.dylib in lib/"
   rule_d_fail=1
-elif ! otool -L "$libheif_file" | grep -q "libde265"; then
-  echo "  $(basename "$libheif_file") does NOT dynamically link libde265 in otool -L!"
-  rule_d_fail=1
+else
+  libheif_otool="$(otool -L "$libheif_file")"
+  if [[ "$libheif_otool" != *"libde265"* ]]; then
+    echo "  $(basename "$libheif_file") does NOT dynamically link libde265 in otool -L!"
+    rule_d_fail=1
+  fi
 fi
 
 if [[ $rule_d_fail -ne 0 ]]; then

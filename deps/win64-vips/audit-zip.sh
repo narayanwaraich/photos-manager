@@ -29,7 +29,8 @@ if [[ ! -f "$ZIP_FILE" ]]; then
 fi
 
 TMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TMP_DIR"' EXIT
+STRINGS_TMP=$(mktemp)
+trap 'rm -rf "$TMP_DIR" "$STRINGS_TMP"' EXIT
 
 unzip -q "$ZIP_FILE" -d "$TMP_DIR"
 
@@ -43,9 +44,10 @@ EXIT_CODE=0
 echo "=== Auditing libvips archive: $(basename "$ZIP_FILE") ==="
 
 # (a) No file whose name contains x265 anywhere in the zip
-if find "$TMP_DIR" -iname "*x265*" | grep -q .; then
+forbidden_x265_files=$(find "$TMP_DIR" -iname "*x265*")
+if [[ -n "$forbidden_x265_files" ]]; then
   echo "FAIL (a): Found file containing 'x265' in filename:"
-  find "$TMP_DIR" -iname "*x265*"
+  printf '%s\n' "$forbidden_x265_files"
   EXIT_CODE=1
 else
   echo "PASS (a): No file containing 'x265' in name anywhere in archive"
@@ -58,7 +60,8 @@ while IFS= read -r -d '' dll; do
   if [[ "$base" == "libvips-42.dll" || "$base" == "libvips-cpp-42.dll" ]]; then
     continue
   fi
-  if strings -a "$dll" | grep -i -q "x265"; then
+  strings -a "$dll" > "$STRINGS_TMP"
+  if grep -i -q "x265" "$STRINGS_TMP"; then
     echo "  Non-exempt DLL $base contains string 'x265'"
     rule_b_fail=1
   fi
@@ -75,7 +78,8 @@ fi
 rule_c_fail=0
 while IFS= read -r -d '' dll; do
   base=$(basename "$dll")
-  if strings -a "$dll" | grep -E -i -q "libx265|x265_encoder|x265_param"; then
+  strings -a "$dll" > "$STRINGS_TMP"
+  if grep -E -i -q "libx265|x265_encoder|x265_param" "$STRINGS_TMP"; then
     echo "  DLL $base contains forbidden x265 symbol/linkage string"
     rule_c_fail=1
   fi
@@ -98,9 +102,12 @@ libheif_dll=$(find "$VIPS_ROOT/bin" -type f -name "libheif*.dll" | head -n 1)
 if [[ -z "$libheif_dll" ]]; then
   echo "  libheif DLL not found in bin/"
   rule_d_fail=1
-elif ! strings -a "$libheif_dll" | grep -i -q "libde265"; then
-  echo "  libheif DLL ($libheif_dll) does not contain string 'libde265'"
-  rule_d_fail=1
+else
+  strings -a "$libheif_dll" > "$STRINGS_TMP"
+  if ! grep -i -q "libde265" "$STRINGS_TMP"; then
+    echo "  libheif DLL ($libheif_dll) does not contain string 'libde265'"
+    rule_d_fail=1
+  fi
 fi
 
 if [[ $rule_d_fail -ne 0 ]]; then
@@ -123,7 +130,8 @@ fi
 
 # (f) No fftw, imagemagick, poppler (files or versions.json)
 rule_f_fail=0
-if find "$TMP_DIR" -iname "*fftw*" -o -iname "*magick*" -o -iname "*poppler*" | grep -q .; then
+disallowed_files=$(find "$TMP_DIR" \( -iname "*fftw*" -o -iname "*magick*" -o -iname "*poppler*" \))
+if [[ -n "$disallowed_files" ]]; then
   echo "  Found disallowed files (fftw/magick/poppler)"
   rule_f_fail=1
 fi

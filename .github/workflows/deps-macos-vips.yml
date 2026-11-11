@@ -135,12 +135,12 @@ jobs:
           CLEAN_PATH="/usr/bin:/bin:/usr/sbin:/sbin:$VIPS_BIN"
           echo "=== 1. Check vips -l lists heifload with stripped PATH and hidden Homebrew ==="
           LOADERS_OUT="$(env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vips" -l)"
-          echo "$LOADERS_OUT" | grep -E "heifload|jpegload|pngload|webpload|tiffload|gifload|svgload|magickload" || true
-          if ! echo "$LOADERS_OUT" | grep -q "heifload"; then
-            echo "ERROR: vips -l does NOT list heifload!"
+          grep -E "heifload|jpegload|pngload|webpload|tiffload|gifload|svgload|magickload" <<< "$LOADERS_OUT" || true
+          if [[ "$LOADERS_OUT" != *"(heifload),"* ]]; then
+            echo "ERROR: vips -l does NOT list (heifload),!"
             exit 1
           fi
-          if echo "$LOADERS_OUT" | grep -qE "svgload|magickload"; then
+          if [[ "$LOADERS_OUT" == *"svgload"* || "$LOADERS_OUT" == *"magickload"* ]]; then
             echo "ERROR: Unexpected untrusted loader (svgload/magickload) listed!"
             exit 1
           fi
@@ -151,7 +151,7 @@ jobs:
           env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vipsthumbnail" "$HEIC_FIXTURE" -s 320 -o /tmp/heic_thumb.png
           THUMB_HDR="$(env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vipsheader" /tmp/heic_thumb.png)"
           echo "Thumbnail header: $THUMB_HDR"
-          if ! echo "$THUMB_HDR" | grep -q "240x320"; then
+          if [[ "$THUMB_HDR" != *"240x320"* ]]; then
             echo "ERROR: Expected 240x320 upright thumbnail, got: $THUMB_HDR"
             exit 1
           fi
@@ -159,7 +159,7 @@ jobs:
           env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vips" copy "$HEIC_FIXTURE" /tmp/heic_copy.png
           COPY_HDR="$(env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vipsheader" /tmp/heic_copy.png)"
           echo "Copy header: $COPY_HDR"
-          if ! echo "$COPY_HDR" | grep -q "480x640"; then
+          if [[ "$COPY_HDR" != *"480x640"* ]]; then
             echo "ERROR: Expected 480x640 upright copy, got: $COPY_HDR"
             exit 1
           fi
@@ -170,7 +170,7 @@ jobs:
           env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vips" copy "$P3_FIXTURE" /tmp/p3_copy.png
           P3_COPY_HDR="$(env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vipsheader" /tmp/p3_copy.png)"
           echo "P3 copy header: $P3_COPY_HDR"
-          if ! echo "$P3_COPY_HDR" | grep -q "640x480"; then
+          if [[ "$P3_COPY_HDR" != *"640x480"* ]]; then
             echo "ERROR: Expected 640x480 P3 copy, got: $P3_COPY_HDR"
             exit 1
           fi
@@ -178,7 +178,7 @@ jobs:
           env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vipsthumbnail" "$P3_FIXTURE" -s 320 -o /tmp/p3_thumb.png
           P3_THUMB_HDR="$(env -i PATH="$CLEAN_PATH" "$VIPS_BIN/vipsheader" /tmp/p3_thumb.png)"
           echo "P3 thumb header: $P3_THUMB_HDR"
-          if ! echo "$P3_THUMB_HDR" | grep -q "320x240"; then
+          if [[ "$P3_THUMB_HDR" != *"320x240"* ]]; then
             echo "ERROR: Expected 320x240 P3 thumb, got: $P3_THUMB_HDR"
             exit 1
           fi
@@ -196,7 +196,7 @@ jobs:
             echo "ERROR: SVG unexpectedly decoded without librsvg!"
             exit 1
           fi
-          if ! echo "$SVG_UNBLOCKED_OUT" | grep -q "not a known file format"; then
+          if [[ "$SVG_UNBLOCKED_OUT" != *"not a known file format"* ]]; then
             echo "ERROR: Expected 'not a known file format' on unblocked SVG"
             exit 1
           fi
@@ -210,7 +210,7 @@ jobs:
             echo "ERROR: SVG unexpectedly decoded under VIPS_BLOCK_UNTRUSTED=1!"
             exit 1
           fi
-          if ! echo "$SVG_BLOCKED_OUT" | grep -q "not a known file format"; then
+          if [[ "$SVG_BLOCKED_OUT" != *"not a known file format"* ]]; then
             echo "ERROR: Expected 'not a known file format' on blocked SVG"
             exit 1
           fi

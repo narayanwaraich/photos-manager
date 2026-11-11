@@ -270,16 +270,17 @@ cmake --build "${BUILD_DIR}/libheif" --parallel
 cmake --install "${BUILD_DIR}/libheif"
 
 echo "--- Verifying libheif linkage before building libvips ---"
-otool -L "${STAGE_PREFIX}/lib/libheif.dylib"
-if ! otool -L "${STAGE_PREFIX}/lib/libheif.dylib" | grep -q "libde265"; then
+heif_otool="$(otool -L "${STAGE_PREFIX}/lib/libheif.dylib")"
+printf '%s\n' "$heif_otool"
+if [[ "$heif_otool" != *"libde265"* ]]; then
   echo "ERROR: libheif.dylib does not dynamically link libde265!" >&2
   exit 1
 fi
-if ! otool -L "${STAGE_PREFIX}/lib/libheif.dylib" | grep -q "libaom"; then
+if [[ "$heif_otool" != *"libaom"* ]]; then
   echo "ERROR: libheif.dylib does not dynamically link libaom!" >&2
   exit 1
 fi
-if otool -L "${STAGE_PREFIX}/lib/libheif.dylib" | grep -qi "x265"; then
+if grep -qi "x265" <<< "$heif_otool"; then
   echo "ERROR: libheif.dylib unexpectedly links x265!" >&2
   exit 1
 fi
