@@ -1,7 +1,7 @@
 # Photos Manager — Product and Technical Specification
 
-**Version:** 2.0 (merged rewrite) · **Date:** 2026-11-02
-**Targets:** Windows 10/11 x64 and macOS (Apple Silicon first). Primary development on macOS; a Windows PC is available for validation.
+**Version:** 2.1 (merged rewrite, updated after Phase 0 findings) · **Date:** 2026-11-12
+**Targets:** Windows 10/11 x64 and macOS (Apple Silicon first). Primary development on macOS; a Windows laptop is available for validation.
 **Model:** local-first, single-user desktop app; many library roots; optional AI.
 **Stack:** Tauri 2 · Rust · React + TypeScript · SQLite · libvips · ExifTool · optional local embeddings (EmbeddingGemma 2) · optional cloud AI providers.
 
@@ -13,6 +13,7 @@ This file replaces the earlier draft spec, the amendments file, the AI addendum 
 - **Tasks cite sections** by number (for example "§9.2"). Agents read this file's sections named in their task, not the whole file, except in TASK-0A.
 - **Unverified facts** are marked **(unverified)**. Library versions, API fields, model IDs and CLI flags must be checked against official sources before use; the coding model's knowledge ends in March 2026.
 - **Extensibility is designed, not scaffolded.** Later features (§13) must be possible without rewriting v1, but v1 contains no placeholder modules, empty tables or stub commands for them.
+- **Agent boundaries (D17, also in `AGENTS.md`):** coding agents never create, change or delete GitHub secrets, tokens, repositories, releases or settings, and never read or reuse the owner's login token. They stop and tell the owner what to do.
 
 ---
 
@@ -21,6 +22,8 @@ This file replaces the earlier draft spec, the amendments file, the AI addendum 
 A cross-platform desktop photo manager that indexes photos wherever they already live, shows one unified catalogue, finds exact and visually similar duplicates, and gives safe tools to view, search, tag, group, move, copy, rename and reorganise files.
 
 It is **not** an importer that forces originals into a proprietary library. Originals stay at their paths unless the user runs an explicit file operation. The database and cache live elsewhere.
+
+The first real use is managing the owner's iPhone photos (HEIC, and sometimes Apple ProRAW) on a Mac and a Windows laptop.
 
 ### 1.1 Principles
 
@@ -36,11 +39,11 @@ It is **not** an importer that forces originals into a proprietary library. Orig
 
 ### 1.2 MVP scope [MVP]
 
-Add/remove/pause/rescan library roots · recursive indexing (symlinks off) · virtualized thumbnail grid and folder tree · full-size viewer with metadata panel · search and filters (name, folder, date, size, dimensions, camera, tags, favorites) · exact duplicates (BLAKE3) · visually similar groups (pHash) · local semantic search and "find similar" (EmbeddingGemma 2, after its spike) · safe move/copy/rename/trash with dry-run, journal, undo where possible · optional cloud captions/tags/query parsing through a provider abstraction.
+Add/remove/pause/rescan library roots · recursive indexing (symlinks off) · virtualized thumbnail grid and folder tree · full-size viewer with metadata panel · search and filters (name, folder, date, size, dimensions, camera, tags, favorites) · exact duplicates (BLAKE3) · visually similar groups (pHash) · local semantic search and "find similar" (EmbeddingGemma 2, opt-in per root) · safe move/copy/rename/trash with dry-run, journal, undo where possible · iPhone HEIC photos · RAW photos shown from their embedded JPEG preview (Tier 1, §13.1, D15) · optional cloud captions/tags/query parsing through a provider abstraction (bring-your-own-key, §9.2).
 
 ### 1.3 Later versions [LATER] — designed for in §13
 
-RAW previews and RAW+JPEG pairs · GPS map view · import from external drives and cards · photo backup · video management · face recognition. Suggested order: RAW previews → import → backup → maps → video → faces.
+Full RAW decoding (Tier 2) and RAW+JPEG pairs · GPS map view · import from external drives and cards · photo backup · video management · face recognition. Suggested order: RAW pairs → import → backup → maps → video → faces.
 
 ### 1.4 Not in scope
 
@@ -106,6 +109,8 @@ Everything runs in the Tauri process except optional sidecars (ExifTool; later a
 | API keys | OS credential store | One entry per provider |
 | Originals | user library roots | Never copied or deleted silently |
 
+The app data folder is named after the app identifier `com.narayanwaraich.photosmanager` (D8).
+
 ---
 
 ## 3. Technology decisions
@@ -118,7 +123,7 @@ React + TypeScript (strict, no `any`) · Vite · Tailwind CSS · shadcn/ui + Rad
 
 | Concern | Choice | Rule |
 |---|---|---|
-| Shell | `tauri` 2.x | Capabilities least-privilege |
+| Shell | `tauri` 2.x | Capabilities least-privilege; never an alpha |
 | Async | `tokio`, `tokio-util` (cancellation) | CPU/native work off the executor |
 | DB | `sqlx` (SQLite, migrations) | Verified in TASK-0A; `rusqlite` on a dedicated thread is the accepted alternative if SQLx proves awkward |
 | Errors / IDs / time | `thiserror` + `anyhow`, `uuid`, `time` | Stable error codes at the IPC edge |
@@ -127,33 +132,56 @@ React + TypeScript (strict, no `any`) · Vite · Tailwind CSS · shadcn/ui + Rad
 | HTTP | `reqwest` with rustls | Cloud AI and model download |
 | Secrets | OS credential store (`keyring` or reviewed Tauri plugin) | Never plaintext |
 | Trash | tested cross-platform adapter (`trash` crate candidate) | Verify on both OSes |
-| ONNX | `ort` (ONNX Runtime) | Embedding runtime candidate **[SPIKE]** |
+| ONNX | `ort` (ONNX Runtime), pinned exactly | Chosen by TASK-0B (R2); Rust parity proven by TASK-0B2 **[SPIKE]** |
 | Logging | `tracing` | |
 
 ### 3.3 Image and metadata libraries
 
-- **libvips** is the primary engine for thumbnails, resize and orientation, behind an `ImageProcessor` trait. The Rust binding (`vips` crate is a candidate) must be verified for maintenance, ABI and packaging **[SPIKE]**. Initialise once, limit concurrency, query loader capabilities (HEIC/AVIF/WebP/TIFF) at runtime.
-- **ExifTool** is a bundled sidecar, invoked without a shell with argument arrays, batch JSON output, size and time caps. Read-only in v1. It also has options for extracting embedded RAW previews, which is the cheapest path to RAW support (§13).
-- **LibRaw** (full RAW rendering) and **ffmpeg** (video) are [LATER], behind `RawDecoder` and `VideoProbe`/`VideoDecoder` traits. Mind LGPL/GPL obligations when choosing builds.
+- **libvips is the only image engine on both OSes (D10).** It does thumbnails, resize, orientation and all decoding, behind an `ImageProcessor` trait. There is no second decode path (no macOS ImageIO, no Windows WIC) in v1: it would give different colour, orientation and HDR behaviour on one OS and add unsafe FFI. The Rust binding is the `libvips` crate (resolved as 1.7.2; on Windows a personal git fork of the bindings through `[patch.crates-io]` in `src-tauri/Cargo.toml`, rung 1 of the ladder below; revisit once the own-build zip is stable on both OSes). Rules: initialise libvips once at app start and return a `Result` (never `.expect()` inside a lazy init, never `std::env::set_var` after threads exist); limit concurrency; query loader capabilities (HEIC/AVIF/WebP/TIFF) at runtime; libvips's error buffer is process-wide, so read it through a locked copy or serialise error reads before any worker pool thumbnails in parallel.
+- **HEIF stack (D11, D18):** the HEIC/HEIF/AVIF loader is built **into** our own pinned libvips build (libvips 8.18.6; libheif with libde265 for HEVC decoding and libaom for AV1 decoding; **no x265 and no encoders**; no runtime plugin or module loading). The same recipe and versions on both OSes, so both behave the same on the same files. HEVC patents are separate from library licences (fine for personal use; a legal check is required before any distribution, §19.1). Decoder libraries are dynamic libraries so they stay replaceable (LGPL).
+- **Known differences between the two builds (D20):** the macOS build cannot write GIF (libvips probes `cgif` only when `imagequant` or `quantizr` is found, and Homebrew's `imagequant` 4.x is GPL; GIF reading works through `nsgif`) and targets macOS 15.0 or later. Revisit in Phase 7 if GIF export or older macOS is wanted.
+- **ExifTool** is a bundled sidecar, invoked without a shell with argument arrays, batch JSON output, size and time caps; its child process is killed on timeout and oversize output. Call it with minor-warning tolerance (`-m`) so large array tags do not fail a read. Read-only in v1. It also extracts embedded RAW previews (§13.1).
+- **LibRaw** (full RAW rendering, through libvips `dcrawload`) and **ffmpeg** (video) are [LATER], behind `RawDecoder` and `VideoProbe`/`VideoDecoder` traits. Mind LGPL/GPL obligations when choosing builds. The stock Windows libvips zip contains no LibRaw, so Tier 2 RAW needs our own pinned build (§3.4).
 - The Rust `image` crate may serve tests and a fallback; it is not HEIC/RAW support.
 
-**Fallback ladder** if libvips cannot be made self-contained on both OSes, tried in order and each logged as a decision: (1) another binding or our own thin C-API wrapper; (2) bundled libvips command-line tools as a sidecar; (3) pure-Rust JPEG/PNG/WebP/TIFF (`image`, `fast_image_resize`, `kamadak-exif`) with HEIC/RAW shown as unsupported; (4) a stack change (Electron + `sharp`), which needs explicit human approval. `rexiv2` is excluded (needs a system library).
+**Fallback ladder** if libvips cannot be made self-contained on both OSes, tried in order and each logged as a decision: (1) another binding or our own thin C-API wrapper; (2) bundled libvips command-line tools as a sidecar; (3) pure-Rust JPEG/PNG/WebP/TIFF (`image`, `fast_image_resize`, `kamadak-exif`) with HEIC/RAW shown as unsupported; (4) a stack change (Electron + `sharp`), which needs explicit human approval. `rexiv2` is excluded (needs a system library). A platform decoder for HEIC is a documented fallback only, and only with the owner's agreement.
 
 ### 3.4 Native dependency release gate
 
-Before any feature depends on a native dependency (libvips, ExifTool, ONNX Runtime or llama.cpp, later LibRaw/ffmpeg), prove a **clean release build** loads it on both OSes with Homebrew/Chocolatey/system copies removed from the environment. Record exact version, source, license, architecture, codecs, bundling path and smoke result in `docs/native-dependencies.md`. System-installed copies never count.
+Before any feature depends on a native dependency (libvips, ExifTool, ONNX Runtime, later LibRaw/ffmpeg), prove a **clean release build** loads it on both OSes with Homebrew/Chocolatey/system copies removed from the environment. Record exact version, source, license, architecture, codecs, bundling path and smoke result in `docs/native-dependencies.md`. System-installed copies never count.
+
+**Dependency builds we produce ourselves (libvips with HEVC decode, later LibRaw or others):**
+
+1. The recipe lives under `deps/<platform>-vips/` (README, `UPSTREAM.txt`, build script, audit script). Upstream source is **not** vendored: every tarball, commit and base image is pinned by SHA-256 or digest and recorded in `UPSTREAM.txt` (D14). Leaf libraries taken from a package manager are recorded with versions and licences.
+2. The build runs in a **manually started** workflow (`workflow_dispatch` only), is audited (no forbidden library by file name or linkage, no non-system absolute path, no GPL or unknown licence), and is tested on a second clean runner with the package manager hidden, using only the zip.
+3. The result is stored as a **checksum-pinned release asset in the private deps repo** (D13), never as a public release of this repository and never rebuilt by app CI. A rebuild floats (leaf versions, base images), so the stored asset and its SHA-256 are the real artifact.
+4. App CI downloads it **fail-closed**: token present on non-fork runs, a download with real retries and exit-code checks, SHA-256 matched, `REQUIRE_HEIC=1` for the smoke test. A fork pull request (no secrets) falls back to the stock or Homebrew path and reports `heic_decode_verified: false`. An expired token turns CI red on purpose.
+5. **Gate-script rule (D19):** audit and CI check scripts never end a pipe in an early-exiting reader (`grep -q`, `head`) under `set -o pipefail`: a closed pipe fails the pipeline, giving a false alarm or, when the check looks for something bad, a silent pass. Large output goes to a file or to a variable read without a pipe. Every gate is proven against a bad input of realistic size with the needle first (fake `strings`/`nm` on PATH), not only against tiny files, and has a committed regression test.
 
 ### 3.5 Decision log
 
 | ID | Decision | State |
 |---|---|---|
 | D1 | Tauri 2 + Rust + React/TS. Electron + `sharp` is the fallback only if the §3.3 ladder is exhausted; needs human approval | Accepted |
-| D2 | libvips + ExifTool, ladder in §3.3 | Accepted; binding **[SPIKE]** |
-| D3 | Local embeddings first (EmbeddingGemma 2), cloud providers second and opt-in | Accepted; runtime **[SPIKE]** |
+| D2 | libvips + ExifTool, ladder in §3.3 | Accepted; binding provisional (Windows uses a git fork) |
+| D3 | Local embeddings first (EmbeddingGemma 2), cloud providers second and opt-in | Accepted; runtime chosen by TASK-0B (ONNX Runtime via `ort`, Q8, 256 d, vision budget 140), Rust parity pending (TASK-0B2) |
 | D4 | IPC types: hand-written DTOs + Zod, or generate from Rust (`tauri-specta` candidate). Agent verifies Tauri 2 support, then the owner decides | Open, decide at start of Phase 1 |
 | D5 | EmbeddingGemma 2 is Apache 2.0 (owner and Google's announcement). Ship the license text and notices with the app and any redistributed weights; link Google's acceptable-use note in the licenses screen | Accepted |
 | D6 | Model weights are downloaded on consent from a pinned source with a pinned SHA-256; never bundled or committed | Accepted |
 | D7 | UI language is English in v1; keep strings in one place so localisation is possible | Accepted |
+| D8 | App identifier `com.narayanwaraich.photosmanager`; the app-data folder name follows it; dev data is not migrated | Accepted |
+| D9 | iPhone HEIC decode on both OSes is a Phase 0 task | Accepted |
+| D10 | libvips stays the only image engine on both OSes; no ImageIO or WIC seam in v1 | Accepted |
+| D11 | HEIC-capable libvips comes from our own pinned build recipe (libheif + libde265 + libaom decode, no x265) | Accepted |
+| D12 | CI hygiene: docs-only commits `[skip ci]` and `paths-ignore`; `concurrency` cancels superseded runs; push trigger `task/**` and `main` (§17.1) | Accepted |
+| D13 | Public repository (free Actions minutes): no secrets or personal data in files or history; no binary with HEVC or GPL code as a public release; the HEVC libvips zips live in a private deps repo behind a read-only token; app bundles and installers are Actions artifacts with short retention | Accepted |
+| D14 | Own-build recipes pin their base images and tarballs by digest or SHA-256 and record them in `UPSTREAM.txt` (§3.4) | Accepted |
+| D15 | RAW in two tiers: Tier 1 (embedded JPEG preview through ExifTool, no new native library) planned for Phase 1/2; Tier 2 (full decode through LibRaw) later with its own ADR (§13.1) | Proposed; owner confirms |
+| D16 | Commits use GitHub's no-reply address; existing history is not rewritten | Accepted |
+| D17 | Agent boundaries for secrets and accounts (§0, `AGENTS.md`) | Accepted |
+| D18 | The macOS libvips is our own build on a manual macOS arm64 runner workflow, stored checksum-pinned in the private deps repo | Accepted |
+| D19 | Gate-script rule: no early-exit pipe readers under `pipefail`; every gate proven against a realistic bad input (§3.4) | Accepted |
+| D20 | macOS libvips differs from the Windows zip: no GIF writing, deployment target macOS 15.0 (§3.3) | Accepted |
 
 ---
 
@@ -164,6 +192,7 @@ photos-manager/
 ├── AGENTS.md  IMPLEMENTATION_SPEC.md  README.md
 ├── .agents/rules/   (workspace skills: see docs/ANTIGRAVITY_SETUP.md for the path your version uses)
 ├── docs/        (ORCHESTRATION, REVIEW_CHECKLIST, STATUS, ANTIGRAVITY_SETUP, native-dependencies, ...)
+├── deps/        (recipes for dependency builds we produce ourselves: win64-vips, macos-vips)
 ├── tasks/  reports/  spikes/
 ├── src/                      # React: app/ components/ features/ lib/tauri/ stores/ shared/
 ├── src-tauri/
@@ -293,7 +322,7 @@ CREATE TABLE asset_metadata (
 CREATE TABLE derivatives (
   id TEXT PRIMARY KEY,
   asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL,                       -- thumb_grid | preview | (later) raw_preview | video_poster | face_crop
+  kind TEXT NOT NULL,                       -- thumb_grid | preview | raw_preview | (later) video_poster | face_crop
   cache_relative_path TEXT NOT NULL,
   width INTEGER NOT NULL, height INTEGER NOT NULL,
   source_fingerprint TEXT NOT NULL, processor_version INTEGER NOT NULL,
@@ -399,7 +428,7 @@ CREATE TABLE ai_analysis (
 CREATE TABLE asset_embeddings (
   asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
   model_id TEXT NOT NULL,                   -- e.g. 'embeddinggemma-2'
-  model_revision TEXT NOT NULL,             -- weights + quantization, pinned by checksum
+  model_revision TEXT NOT NULL,             -- weights + quantisation + vision token budget + preprocessing version, pinned by checksum
   modality TEXT NOT NULL CHECK (modality IN ('image','text')),
   source TEXT NOT NULL,                     -- 'preview-thumbnail' | 'caption' | 'filename'
   dim INTEGER NOT NULL,                     -- 128 | 256 | 512 | 768
@@ -461,9 +490,10 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(
 
 | Class | v1 | Notes |
 |---|---|---|
-| JPEG, PNG, WebP, GIF, TIFF, BMP | Yes | Via libvips |
-| HEIC/HEIF, AVIF | Yes if the bundled libvips build supports them on both OSes; else `unsupported` with clear UI | Patent/licensing noted in `docs/native-dependencies.md`; decided in TASK-0A/0C |
-| RAW (CR2/CR3/NEF/ARW/DNG/RAF/ORF/RW2…) | Recognised and listed as unsupported in v1 | §13.1 adds embedded-preview support |
+| JPEG, PNG, WebP, TIFF, BMP | Yes | Via libvips |
+| GIF | Read on both OSes; write only on Windows | D20 |
+| HEIC/HEIF, AVIF | Yes, through our own pinned libvips build on both OSes (§3.3) | Verified in CI on synthetic fixtures with a clean environment on both OSes; real-iPhone-file checks are the owner's (Phase 0 exit). Patent and licence notes in `docs/native-dependencies.md` |
+| RAW (DNG, CR2/CR3, NEF, ARW, RAF, ORF, RW2…) | Tier 1 (D15): indexed through ExifTool metadata and shown from the camera's embedded JPEG preview; no RAW decoder | §13.1. Preview size varies by camera; a phone DNG's preview may be small |
 | Video (MP4/MOV/…) | Recognised, not indexed in v1 | §13.5 |
 
 ---
@@ -472,23 +502,23 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(
 
 ### 7.1 Derivatives
 
-- `thumb_grid`: 256 px long edge, WebP or JPEG quality ~80 (choose by benchmark). `preview`: up to ~2048 px for the viewer; the full original is only decoded when the user zooms to 100%.
-- Always apply EXIF orientation when generating derivatives. Convert to sRGB; never trust an embedded profile blindly. Strip metadata from derivatives.
+- `thumb_grid`: 256 px long edge, WebP or JPEG quality ~80 (choose by benchmark). `preview`: up to ~2048 px for the viewer; the full original is only decoded when the user zooms to 100%. `raw_preview` (Tier 1): the embedded JPEG extracted by ExifTool, then thumbnailed and previewed like any other source.
+- Always apply EXIF orientation when generating derivatives (for HEIC, libvips `heifload` applies the container rotation on load; the `vipsthumbnail` path gives upright output with no double rotation: verified on the synthetic fixture on Windows, on a real landscape iPhone photo on macOS; a real **portrait** HEIC and the orientation of RAW previews are still to be checked, STATUS risks 29 and 39). Convert to sRGB; never trust an embedded profile blindly. Strip metadata from derivatives.
 - Writes are atomic: temp file in the cache dir, fsync, rename. A derivative row is inserted after the file exists. Cache keys derive from `source_fingerprint` + `processor_version`; a mismatch regenerates.
 - Cache size cap with LRU eviction (default 5 GB, user setting). Eviction never touches originals.
-- Decoder safety: pixel-count and memory caps (default 200 MP), per-file timeout, panic isolation per job, a corrupt file marks the asset `error` and moves on.
+- Decoder safety: pixel-count and memory caps (default 200 MP), per-file timeout, panic isolation per job, a corrupt file marks the asset `error` and moves on. Untrusted loaders (SVG, ImageMagick) are blocked at runtime (`VIPS_BLOCK_UNTRUSTED`).
 - Priority: visible-first. The grid reports visibility; jobs for visible items jump the queue, and cancel when scrolled away.
 
 ### 7.2 Serving images to the WebView
 
-Use a Tauri custom URI protocol (for example `asset-thumb://<asset_id>/<kind>`) that resolves ids to cache paths in Rust. **No image bytes over IPC commands. No raw filesystem paths exposed to the WebView. No `fs` plugin or wide `asset:` scope.** Set a strict CSP allowing only that scheme for `img-src`. Verified in TASK-0A on both OSes; WebView2 and WKWebView treat custom protocols slightly differently (URL shape), which the spike must record.
+Use a Tauri custom URI protocol (for example `asset-thumb://<asset_id>/<kind>`) that resolves ids to cache paths in Rust. **No image bytes over IPC commands. No raw filesystem paths exposed to the WebView. No `fs` plugin or wide `asset:` scope.** Set a strict CSP allowing only that scheme for `img-src`. Verified in TASK-0A on both OSes; WebView2 and WKWebView treat custom protocols slightly differently (URL shape), which the spike recorded. The 0A handler is spike-only: Phase 2 replaces it with id lookup in the app cache dir through an async handler.
 
 ### 7.3 Metadata
 
-- ExifTool batch JSON, read-only, `-n` numeric output plus a separate human pass if needed, with per-call size/time caps, and a restart policy. Never interpolate paths into a shell; pass an arguments file or arg array, with `-charset filename=<native>` handling per OS (verified on Windows non-ASCII paths in TASK-0A).
+- ExifTool batch JSON, read-only, `-n` numeric output plus a separate human pass if needed, minor-warning tolerance (`-m`), with per-call size/time caps, and a restart policy. Never interpolate paths into a shell; pass an arguments file or arg array, with `-charset filename=<native>` handling per OS (verified on Windows non-ASCII paths in TASK-0A). A kill-on-timeout test exists on macOS; the Windows variant is added with the metadata work.
 - Normalise into `assets` columns (dimensions, orientation, date taken with its source, camera, lens, exposure, GPS). Keep full tag dumps in `asset_metadata` with size caps (truncate and flag over 256 KB).
 - Date taken priority: `DateTimeOriginal` → `CreateDate` → `ModifyDate` → filename pattern → file mtime. Record which one won in `date_taken_source`. Keep the offset if present (`OffsetTimeOriginal`).
-- GPS is stored (lat/lon as REAL, altitude in `asset_metadata`) from v1 even though the map is later (§13.2). It is treated as sensitive: never sent to a cloud provider by default (§9.6).
+- GPS is stored (lat/lon as REAL, altitude in `asset_metadata`) from v1 even though the map is later (§13.2). It is treated as sensitive: never sent to a cloud provider by default (§9.3).
 - Metadata extraction failure yields `partial/failed` status and never blocks thumbnailing or browsing.
 
 ---
@@ -511,7 +541,7 @@ Hardlinks and clones: files sharing a file identity are the same data; show them
 - **Evidence:** a candidate pair gets a `similarity_edges` row with Hamming distance. A second cheap check (aspect ratio compatibility, optional low-resolution structural similarity) reduces false positives.
 - **Grouping is not transitive.** A~B and B~C do not imply A~C. Build review groups as cliques/clusters around a seed with a stated maximum member distance (for example complete-linkage or "all members within T of the seed"), record the `basis`, and show per-member distances. No naive connected components over the edge graph.
 - **Thresholds** come from a labelled fixture set (§16.3), not from guesses. Defaults: strict (distance ≤ 4), balanced (≤ 8), loose (≤ 12); the UI offers the three labelled presets.
-- Rotation, crop, heavy edits and screenshots/memes are known weak cases for pHash; the semantic layer (§9.1) is the "find more like this" complement, not a replacement.
+- Rotation, crop, heavy edits and screenshots/memes are known weak cases for pHash; the semantic layer (§9.1) is the "find more like this" complement, not a replacement. TASK-0B measured that embedding distractors score close to true duplicates, which is why pHash and BLAKE3 decide duplicates and embeddings only advise.
 - Burst shots, RAW+JPEG and edited versions are **similar, not duplicates**; the UI says "similar" and offers grouping/stacking, never "delete".
 
 ### 8.3 Review UI behaviour
@@ -530,25 +560,27 @@ AI is advisory, opt-in, isolated behind traits, and never touches files (AGENTS.
 
 **v1 use:** (a) semantic search ("beach at sunset") by embedding the text query and ranking image vectors; (b) "find similar" from an image vector; (c) optional text embeddings of captions/filenames for hybrid ranking with FTS5. It is advisory ranking; it never decides duplicates.
 
-**Rules (all verified against the model card, to be re-checked in TASK-0B):**
+**Cost and consequence (TASK-0B, Apple M4, CPU):** about 1 s per image at budget 140 means about 27 hours for 100,000 photos on one stream; the 8 GB Windows laptop is slower and not yet measured. Therefore **embedding is opt-in per library root, resumable, pausable, and shows an ETA** (measured throughput × remaining items). The app never starts embedding a library on its own, and semantic search over a root works only for the part already embedded (the UI says how much).
 
-1. **Dimension:** default stored dimension **256** (card/report: about 95% of full-dimension image retrieval quality at one third of the storage). Allow 512 or 768 as a setting; 128 only for coarse text shortlisting, never for image search. Truncate the first *d* components then **re-normalise (L2)**. Query and corpus must use the same *d*; never mix dims in one search. The stored `dim` column enforces this.
+**Rules (checked against the model card and measured by TASK-0B; parity in Rust to be proven by TASK-0B2):**
+
+1. **Dimension:** default stored dimension **256** (card/report: about 95% of full-dimension image retrieval quality at one third of the storage; the 0B fixture set saturates at 100% for every real configuration and cannot discriminate dimensions, so the default rests on the model card). Allow 512 or 768 as a setting; 128 only for coarse text shortlisting, never for image search. Truncate the first *d* components then **re-normalise (L2)**. Query and corpus must use the same *d*; never mix dims in one search. The stored `dim` column enforces this.
 2. **Prefixes apply to text only.** Queries: `task: search result | query: <text>`. Documents: `title: <title or none> | text: <text>`. Images take **no** prefix.
-3. **Precision:** run in fp32 or bf16. The model card warns against fp16 for activations; ONNX fp16 files exist and must be validated by cosine against the fp32 reference before use. Quantised int8/int4 variants are acceptable only if TASK-0B measures acceptable retrieval loss on our fixtures.
-4. **Image input:** feed the same orientation-corrected preview derivative used elsewhere. The default vision token budget is 280; TASK-0B compares 140 vs 280 for speed/quality (the report's ablation suggests 140 loses little). Preprocessing (resize, normalisation, patching) must match the reference implementation exactly; a mismatch silently degrades quality, so parity against the Python reference is a gate.
+3. **Precision:** run in fp32 or bf16. The model card warns against fp16 for activations. The recommended artifact is the Q8 ONNX export (cosine to the fp32 reference: text 0.99997, images 0.9982 at budget 280; Q4 is visibly worse). fp16 and int4 are not used.
+4. **Vision token budget: default 140** (2.5× faster than 280, no loss on the 0B fixtures); 280 is an optional quality setting. **A different budget is a different embedding** (mean cosine 0.9872, minimum 0.9308 between 140 and 280): budgets are never mixed in one index, and the budget is part of `model_revision`. Image input is the orientation-corrected preview derivative used elsewhere. Preprocessing (resize, normalisation, patching, position ids, tokenisation) must match the reference implementation exactly; a mismatch silently degrades quality (wrong normalisation measured: image cosine 0.75, retrieval 45%), so parity against the Python reference is a gate (TASK-0B2).
 5. **Cosine only:** with normalised vectors, cosine = dot product. Unit tests cover normalisation, truncation and ordering.
-6. **Versioning:** each vector row carries `model_id`, `model_revision` (weights + quantisation + preprocessing version) and `dim`. A revision change marks vectors stale and queues re-embedding in the background; old rows remain usable until replaced.
-7. **Memory:** text-only mode is the default (about 200 MB class on-device per the report); load the vision encoder on demand when embedding images or running image-based queries, unload after an idle timeout. Report resident memory in the TASK-0B spike. Embedding jobs are lowest priority, battery/power aware where the OS allows, and pause on user activity.
-8. **License:** Apache 2.0. Include `LICENSE`/`NOTICE` text for the weights and any converted artifacts, record the exact source repository and its checksum, and link Google's usage notice in the app's licences screen. Redistributing converted weights stays the owner's decision (D5/D6); default is download-on-consent.
+6. **Versioning:** each vector row carries `model_id`, `model_revision` (weights + quantisation + budget + preprocessing version) and `dim`. A revision change marks vectors stale and queues re-embedding in the background; old rows remain usable until replaced.
+7. **Memory:** text-only mode is the default (about 200 MB class on-device per the report); load the vision encoder on demand when embedding images or running image-based queries (+~115 MB measured in Python), unload after an idle timeout. Clean-process memory in Rust is measured by TASK-0B2. Embedding jobs are lowest priority, battery/power aware where the OS allows, and pause on user activity.
+8. **License:** Apache 2.0. Neither model repository ships a LICENSE file (the licence is declared in the README front matter), so the app ships the Apache 2.0 text plus a NOTICE naming the model, the converted-weights repository and its pinned commit; link Google's usage notice in the app's licences screen. Redistributing converted weights stays the owner's decision (D5/D6); default is download-on-consent.
 
-**Runtime options, in order of preference, decided by TASK-0B [SPIKE]:**
+**Runtime (decided by TASK-0B, accepted 2026-11-05):** R2, ONNX Runtime in-process through `ort` (pinned exactly; it is a release candidate), with the `onnx-community` Q8 export: about 485 MiB for the text graph plus the vision encoder, no audio encoder. CPU execution provider: CoreML failed on the zero-length video/audio inputs of the backbone; CoreML on the vision encoder alone and DirectML on Windows are measured by TASK-0B2. The ONNX Runtime library is bundled inside the signed app, never downloaded with the weights (hardened-runtime macOS apps cannot load unsigned libraries fetched later); it is a native dependency under §3.4. Alternatives, kept for the record:
 
-| ID | Option | Strength | Risk |
-|---|---|---|---|
-| R2 | ONNX Runtime via `ort`, with `onnx-community` ONNX exports | In-process, no sidecar, good size options (fp32 ≈ 2.9 GB total, q8 ≈ 0.85 GB, q4 ≈ 0.47 GB; q8 cosine ≈ 0.9997 vs fp32 reported, q4 ≈ 0.975) | Input tensor names and image preprocessing undocumented outside Transformers.js; ONNX Runtime packaging per OS |
-| R1 | llama.cpp (GGUF) as a bundled sidecar server or library | Mature local runtime; GGUF conversions exist (ggml-org and community) with mmproj for multimodal | Mainline image-embedding support for this model unproven; sidecar lifecycle |
-| R3 | User-supplied OpenAI-compatible embedding endpoint (Ollama, LM Studio, MLX) | Zero packaging burden; power users | Not offline-by-default; variable behaviour |
-| R4 | Python `sentence-transformers` | The **reference** for parity tests and fixture vectors | Never shipped; spike/test only |
+| ID | Option | State |
+|---|---|---|
+| R1 | llama.cpp (GGUF) sidecar | Rejected on evidence: mainline `llama-server` returns text-only vectors for this model (upstream issue 30082, closed "not planned"); not run by us |
+| R2 | ONNX Runtime via `ort` | **Chosen** (TASK-0B); Rust tokenisation and preprocessing parity **[SPIKE]** until TASK-0B2 |
+| R3 | User-supplied OpenAI-compatible embedding endpoint (Ollama, LM Studio, MLX) | Optional later setting; not offline-by-default |
+| R4 | Python `sentence-transformers` | The **reference** for parity tests and fixture vectors; never shipped |
 
 The app depends only on the `EmbeddingProvider` trait:
 
@@ -560,11 +592,11 @@ trait EmbeddingProvider {
 }
 ```
 
-If no runtime passes TASK-0B on both OSes, semantic search is deferred; the rest of the product is unaffected (that is the point of the seam). The decision and evidence go to `docs/embedding-runtime.md`.
+If the Rust path fails TASK-0B2 on either OS, semantic search is deferred; the rest of the product is unaffected (that is the point of the seam). The decision and evidence go to `docs/embedding-runtime.md`.
 
-### 9.2 Cloud and LLM providers (Phase 6)
+### 9.2 Cloud and LLM providers (Phase 6, may follow Phase 7)
 
-An `AiProvider` trait with adapters (Gemini, Claude, OpenAI, and a generic OpenAI-compatible endpoint covering Ollama and others). Capabilities per provider are declared (vision input, structured output, max image size) and never assumed. Model IDs are user-editable settings and are verified against the provider's current docs at implementation time; never hard-coded from memory.
+Cloud AI is not a priority. **First version: bring-your-own-key plus a local OpenAI-compatible endpoint** (Ollama and similar), not a set of vendor-specific adapters. An `AiProvider` trait keeps vendor adapters (Gemini, Claude, OpenAI) possible later. Capabilities per provider are declared (vision input, structured output, max image size) and never assumed. Model IDs are user-editable settings and are verified against the provider's current docs at implementation time; never hard-coded from memory. Phase 6 may be scheduled after Phase 7 at the owner's call.
 
 **Uses:** captions and tags, natural-language query → structured filter JSON, and duplicate-review explanations. All outputs are validated against a Rust schema, stored in `ai_analysis` with provider/model/prompt version, shown as suggestions, and applied only by the user.
 
@@ -611,7 +643,7 @@ A duplicate action only builds a plan of `trash` items for the files marked `rem
 
 ### 10.4 Windows specifics
 
-Locked files (antivirus, indexers) retry with bounded backoff and then report; handle sharing violations; verify Recycle Bin behaviour for files above the bin size limit and on removable drives; long paths via `\\?\`. These are exactly the cases the Windows PC is used to validate manually (§17.2).
+Locked files (antivirus, indexers) retry with bounded backoff and then report; handle sharing violations; verify Recycle Bin behaviour for files above the bin size limit and on removable drives; long paths via `\\?\`. These are exactly the cases the Windows laptop is used to validate manually (§17.2).
 
 ---
 
@@ -619,11 +651,11 @@ Locked files (antivirus, indexers) retry with bounded backoff and then report; h
 
 - A `JobManager` with typed jobs (`scan`, `metadata`, `thumbnail`, `hash`, `phash`, `embed`, `ai_analyze`, `cache_evict`), priorities, per-type concurrency limits (I/O-bound vs CPU-bound), and `CancellationToken` for every job.
 - Defaults: scanning 1 walker per root; hashing bounded by disk (1–2 concurrent on spinning disks, 4 on SSD); thumbnail and pHash by CPU cores minus one; embeddings 1 batch at a time; cloud AI per-provider limits.
-- Job state is persisted (`jobs` table). On restart, interrupted jobs resume from their last persisted checkpoint or are re-queued; every job is idempotent.
+- Job state is persisted (`jobs` table). On restart, interrupted jobs resume from their last persisted checkpoint or are re-queued; every job is idempotent. `embed` jobs are per root, opt-in, pausable, and report an ETA.
 - Progress is pushed via Tauri **Channels** (throttled to a few updates per second); the UI never polls in a tight loop.
 - A global "pause background work" switch and automatic throttling while the user is interacting with the grid.
 - No unbounded queues; no unbounded in-memory collections of file records; stream and batch.
-- Panics in a worker are caught, recorded as a job failure with an error code, and do not take down the app.
+- Panics in a worker are caught, recorded as a job failure with an error code, and do not take down the app (so release builds must not use `panic = "abort"`).
 
 ---
 
@@ -647,7 +679,7 @@ Locked files (antivirus, indexers) retry with bounded backoff and then report; h
 - Capabilities and permissions are least-privilege and listed in `src-tauri/capabilities/`. No `shell`, `fs` or `sql` plugin access from the WebView. The dialog plugin is allowed for folder selection only.
 - Strict CSP; no remote scripts; no `eval`; the app loads only bundled assets. External links open in the default browser via a vetted allowlisted command.
 - Sidecars (ExifTool and later) are launched from Rust at fixed resource paths with argument arrays and timeouts; never through a shell.
-- Dependency hygiene: `cargo audit`/`cargo deny` and `pnpm audit` in CI; new dependencies are listed with exact version, source and licence in each task report.
+- Dependency hygiene: `cargo audit`/`cargo deny` and `pnpm audit` in CI; new dependencies are listed with exact version, source and licence in each task report. A documented advisory ignore needs a reason, a date and a re-check condition.
 - Logging redacts paths by default (hash or relativise), never logs keys or prompts that contain user data, and has size-rotated files.
 
 ### 12.4 Data protection
@@ -658,12 +690,14 @@ The catalogue contains paths, GPS and AI text and is sensitive. It stays local; 
 
 ## 13. Extension seams for later versions [LATER]
 
-Each item states **what is built in v1 to make it possible** (cheap, already in this spec) and **what the later version adds**. Nothing in this section is implemented before the owner schedules it; v1 must not contain stubs for it.
+Each item states **what is built in v1 to make it possible** (cheap, already in this spec) and **what the later version adds**. Nothing in this section is implemented before the owner schedules it, except RAW Tier 1 (§13.1, D15); v1 must not contain stubs for the rest.
 
-### 13.1 RAW previews and RAW+JPEG pairs
+### 13.1 RAW: previews (Tier 1), full decode (Tier 2), RAW+JPEG pairs
 
-- **v1 seams:** `files` vs `assets` vs `asset_files(role)`; RAW extensions are recognised and stored as `unsupported` files; `derivatives.kind` is open; ExifTool is already bundled.
-- **Later:** extract the embedded JPEG preview with ExifTool (`PreviewImage`/`JpgFromRaw`) as a `raw_preview` derivative, so RAW files show in the grid and viewer without a RAW decoder. Pair `IMG_1234.CR3` + `IMG_1234.JPG` into one asset (`asset_files.role = raw | primary`), with a setting for which is the "primary" and operations that move both together. Full demosaicing through LibRaw behind a `RawDecoder` trait only if embedded previews prove insufficient; check LibRaw's licence (LGPL/CDDL) and packaging first. Duplicate logic must not treat a RAW and its JPEG as removable duplicates of each other.
+- **v1 seams:** `files` vs `assets` vs `asset_files(role)`; RAW extensions recognised; `derivatives.kind` is open; ExifTool is already bundled.
+- **Tier 1 (D15, planned for Phase 1 and 2; no new native library):** every RAW format is indexed by its ExifTool metadata and shown from the camera's **embedded JPEG preview** (`PreviewImage` / `JpgFromRaw`), extracted by ExifTool as a `raw_preview` derivative and thumbnailed by libvips, so the same code runs on both OSes. Evidence (2026-11-10): an iPhone 12 Pro ProRAW DNG carries a full-size 4032×3024 JPEG preview (3.8 MB) and ExifTool reads it (use `-m`, it warns about large arrays). Open points: the preview's orientation versus the DNG `Orientation` tag; preview size varies by camera (phone DNGs sometimes embed only a tiny one, and then the asset shows as low-resolution rather than failing).
+- **Tier 2 (later, own ADR):** full RAW decode through libvips `dcrawload` (LibRaw), which needs our own pinned build like HEIC (the stock Windows zip has no LibRaw); check LibRaw's licence (LGPL/CDDL) and packaging first. Unproven on ProRAW.
+- **Pairs:** pair `IMG_1234.CR3` + `IMG_1234.JPG` into one asset (`asset_files.role = raw | primary`), with a setting for which is "primary" and operations that move both together. XMP sidecars need rules (Phase 4/5). Duplicate logic must not treat a RAW and its JPEG as removable duplicates of each other.
 
 ### 13.2 Maps from GPS metadata
 
@@ -718,28 +752,36 @@ Left sidebar: Library (all photos, favorites, recents), Folders (tree by root, w
 
 ### 14.3 Search
 
-Filters: name, folder, date range, size, dimensions, orientation, camera/lens, tags, albums, favorite, has GPS, duplicate status. FTS5 for text. Semantic query box (when embeddings are ready) merges semantic and FTS5 results (reciprocal-rank fusion) and shows which signal matched. An optional natural-language query bar (cloud or local LLM) converts text to a structured filter, **shown to the user as editable chips before running**.
+Filters: name, folder, date range, size, dimensions, orientation, camera/lens, tags, albums, favorite, has GPS, duplicate status. FTS5 for text. Semantic query box (when embeddings are ready for the roots searched) merges semantic and FTS5 results (reciprocal-rank fusion) and shows which signal matched. An optional natural-language query bar (cloud or local LLM) converts text to a structured filter, **shown to the user as editable chips before running**.
 
 ### 14.4 Settings
 
-Library roots, cache location/size, thumbnail quality, duplicate presets, AI providers with per-provider consent and cost caps, local-only switch, embeddings model/dim/runtime, language (English v1), theme, background-work throttling, diagnostics export.
+Library roots (with a per-root "embed for semantic search" switch, progress and ETA), cache location/size, thumbnail quality, duplicate presets, AI providers with per-provider consent and cost caps, local-only switch, embeddings model/dim/vision budget/runtime, language (English v1), theme, background-work throttling, diagnostics export.
 
 ---
 
 ## 15. Performance and resource targets
 
-Targets for the reference machines; they are verified by benchmarks, not asserted.
+Targets for the two reference machines; they are verified by benchmarks on **both**, not asserted.
+
+| Machine | Role | Spec |
+|---|---|---|
+| Mac | Primary dev machine, upper reference | Apple M4 (10-core), 16 GB RAM, macOS |
+| Windows laptop | Low-end reference | Acer Swift SF314-43: AMD Ryzen 7 5700U, 8 GB RAM, 496 MB graphics, Windows 11 |
+
+The table's targets are written for the Mac. On the laptop, record the measured number next to the target; a miss is a finding to report and fix or accept explicitly, never a silent exception. Memory is checked on the laptop first (8 GB).
 
 | Area | Target |
 |---|---|
 | Cold start to usable UI | ≤ 2 s on SSD with 100k assets |
 | Grid scroll | 60 fps on 100k assets (virtualized, no layout thrash) |
 | First-pass scan (metadata only) | ≥ 300 files/s on SSD (JPEG), progress visible within 1 s |
-| Thumbnail generation | ≥ 50/s for typical 12–24 MP JPEG on an 8-core machine |
+| Thumbnail generation | ≥ 50/s for typical 12–24 MP JPEG on an 8-core machine (HEIC is slower: measure it) |
 | Exact duplicate pass | disk-bound; only candidate sizes hashed; resumable |
 | pHash candidate search | sub-quadratic; 100k assets in minutes, not hours |
 | Brute-force vector search | ≤ 100 ms for 100k × 256-d on a laptop (otherwise adopt an index) |
 | Memory | App ≤ ~500 MB RSS excluding model; embedding model memory reported separately |
+| Embedding throughput | Measured, not targeted: about 1 s per image at budget 140 on the Mac (Python); Rust numbers on both machines from TASK-0B2; shown to the user as an ETA |
 | Catalogue size | ~5–10 KB/asset including metadata; DB stays well under 1 GB at 100k assets |
 | Idle | zero CPU when no jobs are running |
 
@@ -756,8 +798,9 @@ Benchmark harness and synthetic catalogue generator (10k/100k) are built in Phas
 - **Failure injection** at each operation boundary (after stage, after copy, after verify, before source removal, mid-journal write) with assertions that no user data is lost.
 - **Frontend**: component tests (Vitest + Testing Library); Playwright against the dev build for key flows (platform differences caveat: the packaged WebView differs from Playwright's Chromium).
 - **Property tests** (`proptest`) for path normalisation and plan generation (no destination escapes, no collisions).
-- **Fixtures:** a committed small image set (original, resized, recompressed, rotated, cropped, screenshots, unrelated lookalikes, corrupt files, EXIF with/without offsets, HEIC, non-ASCII/long/reserved Windows names), generated by script where possible and documented. Never real personal photos.
+- **Fixtures:** a committed small image set (original, resized, recompressed, rotated, cropped, screenshots, unrelated lookalikes, corrupt files, EXIF with/without offsets, HEIC, non-ASCII/long/reserved Windows names), generated by script where possible and documented. Never real personal photos. Real iPhone files are used only by the owner, on copies, outside the repository.
 - **Security checks:** the grep checks in `docs/REVIEW_CHECKLIST.md`, `cargo deny`, `cargo audit`, `pnpm audit`.
+- **Gate scripts** (audits, CI checks) are themselves tested against bad inputs (§3.4, D19).
 
 ### 16.2 The `pnpm verify` command
 
@@ -765,7 +808,7 @@ One command that runs: format check, lint, TypeScript type-check, frontend tests
 
 ### 16.3 Calibration
 
-Duplicate thresholds and semantic-search defaults are tuned on labelled fixture sets and their numbers (precision/recall at each preset) are recorded in `docs/calibration.md`. Semantic search quality is judged on a small hand-labelled query set, not by vibes.
+Duplicate thresholds and semantic-search defaults are tuned on labelled fixture sets and their numbers (precision/recall at each preset) are recorded in `docs/calibration.md`. Semantic search quality is judged on a small hand-labelled query set, not by vibes. The 0B fixture set (20 synthetic scenes) saturates and cannot do this job; Phase 4B needs a harder one. Near-duplicate evaluation uses group-level labels (every pair in a group is a positive), not base-to-variant pairs only.
 
 ### 16.4 Definition of done (every task)
 
@@ -779,23 +822,34 @@ Acceptance criteria met with evidence; `pnpm verify` green; no new warnings; dep
 
 | Platform | v1 status | Notes |
 |---|---|---|
-| macOS arm64 (Apple Silicon) | Primary dev and release target | macOS version floor decided in TASK-0A (WKWebView and Tauri minimums) |
-| macOS x64 | Only if CI and a test machine exist; otherwise not claimed | Universal builds multiply native-dependency work |
-| Windows 10/11 x64 | Release target; validated by CI and the owner's Windows PC | WebView2 runtime handling decided in TASK-0C |
+| macOS arm64 (Apple Silicon) | Primary dev and release target | Floor macOS 15.0 (our libvips build targets it, D20); the app's own `minos` is to be checked in Phase 7 |
+| macOS x64 | Not built or tested; not claimed | Universal builds multiply native-dependency work |
+| Windows 10/11 x64 | Release target; validated by CI and the owner's Windows laptop | WebView2 runtime handling decided in TASK-0C |
 | Windows arm64, Linux | Not supported in v1 | The code should not preclude them |
 
-### 17.2 Cross-platform validation process (the owner develops on a Mac; the Windows PC is always available)
+**CI cost and hygiene rules (D12, D13):**
 
-- **CI is the first line** on both OSes (TASK-0C) but is not proof of behaviour with real folders, real drives, real antivirus and real WebView2.
-- **Manual Windows pass, per phase gate (and before any release):** on the Windows PC, `git pull`, `pnpm install`, `pnpm verify`, `pnpm tauri dev`, then the phase's smoke checklist from `docs/ORCHESTRATION.md` §6: a folder with non-ASCII and very long names, an external USB drive and an unplugging scenario, Recycle Bin behaviour, locked files, high-DPI scaling, and a file operation across drives. Record results in the phase report. A phase with a platform-sensitive feature (Phases 1, 2, 5, 7) does not pass its gate on macOS evidence alone.
-- Antigravity may be used on the Windows PC for Windows-only fixes, in the same branch/task discipline as on the Mac.
+- Docs-only commits carry `[skip ci]`; `ci.yml` has `paths-ignore` for `docs/**` (note: the dylib-table check reads `docs/native-dependencies.md`, so a table edit alone is validated only by the next code push).
+- `concurrency` cancels superseded runs; the push trigger is `task/**` and `main`.
+- The macOS job runs on every push while the repository is public (free minutes). If the repository ever becomes private again, gate it to `main` and manual runs (a full run then costs about $0.32).
+- Heavy dependency builds are done once, manually, and stored checksum-pinned in the private deps repo (§3.4); app CI never rebuilds them. Actions artifacts of public runs are downloadable by any signed-in GitHub user: bundles and installers that contain libde265 keep short retention (3 days), and libvips zips are deleted early.
+- Dependabot pull requests get no Actions secrets and therefore fail closed on the deps download; treat as a known limit.
+
+### 17.2 Cross-platform validation process (the owner develops on a Mac; the Windows laptop is always available)
+
+- **CI is the first line** on both OSes (TASK-0C) but is not proof of behaviour with real folders, real drives, real antivirus, real iPhone files and real WebView2.
+- **Manual Windows pass, per phase gate (and before any release):** on the Windows laptop, `git pull`, `pnpm install`, `pnpm verify`, `pnpm tauri dev`, then the phase's smoke checklist from `docs/ORCHESTRATION.md` §6: a folder with non-ASCII and very long names, an external USB drive and an unplugging scenario, Recycle Bin behaviour, locked files, high-DPI scaling, and a file operation across drives. Record results in the phase report. A phase with a platform-sensitive feature (Phases 1, 2, 5, 7) does not pass its gate on macOS evidence alone.
+- **The Windows clean-machine test runs the installer, not the bare exe.** A bare exe does not carry its DLLs (TASK-0C found this the hard way). The test installs the NSIS installer, runs the smoke test from the install folder with a reduced PATH, and checks that the loaded libvips comes from the install folder.
+- **The Visual C++ runtime must be accounted for:** the exe links the C runtime statically (`.cargo/config.toml`), CI's `dumpbin /dependents` must show no `VCRUNTIME`/`MSVCP`, and every installed libvips DLL is scanned the same way (they depend only on the Windows Universal CRT and system DLLs). Not scanned: the ExifTool Perl runtime (low risk).
+- Antigravity may be used on the Windows laptop for Windows-only fixes, in the same branch/task discipline as on the Mac.
+- A dev setup on Windows needs several environment variables (`VIPS_DIR`, `VIPS_LIB_DIR`, `EXIFTOOL_DIR`, `PKG_CONFIG_PATH`, `LIB`, `PATH`); they are documented in the setup guide. Code moves between the machines through GitHub, never through a file-sync tool.
 
 ### 17.3 Packaging
 
-- Tauri bundles produce `.dmg`/`.app` on macOS and NSIS/MSI on Windows. Native libraries (libvips and its codecs, ExifTool + its Perl runtime on Windows, ONNX Runtime or llama.cpp if selected) are bundled as resources/sidecars and located from the app bundle, never from the machine (§3.4).
-- **Release gate:** a clean-machine smoke test on both OSes (no developer tools or package-manager libraries installed) that launches the packaged app, scans a fixture, shows thumbnails, reads metadata, and performs a trash operation.
-- **Phase 7 (not before):** macOS Developer ID signing + notarization (needs an Apple Developer account), Windows code signing (certificate cost and SmartScreen reputation), the Tauri updater with signed update manifests, crash-log opt-in, and a third-party licence listing including EmbeddingGemma 2's Apache 2.0 notice. If this is a personal-use tool, unsigned builds are acceptable for the owner's own machines; distribution to others requires the signing work.
-- Reproducible builds: lockfiles committed, Rust toolchain pinned (`rust-toolchain.toml`), Node and pnpm versions pinned, CI actions pinned.
+- Tauri bundles produce `.dmg`/`.app` on macOS and NSIS/MSI on Windows. Native libraries (libvips and its codecs, ExifTool + its Perl runtime on Windows, ONNX Runtime) are bundled as resources/sidecars and located from the app bundle, never from the machine (§3.4).
+- **Release gate:** a clean-machine smoke test on both OSes (no developer tools or package-manager libraries installed) that launches the packaged app, scans a fixture, shows thumbnails, reads metadata, decodes a HEIC fixture, and performs a trash operation.
+- **Phase 7 (not before):** macOS Developer ID signing + notarization (needs an Apple Developer account), Windows code signing (certificate cost and SmartScreen reputation), the Tauri updater with signed update manifests, crash-log opt-in, and a third-party licence listing including EmbeddingGemma 2's Apache 2.0 notice. libheif and libde265 are LGPL-3.0-or-later: ship notices and a source offer, and keep them replaceable (dynamic libraries). HEVC patent pools need a legal check before any distribution. If this is a personal-use tool, unsigned builds are acceptable for the owner's own machines; distribution to others requires the signing and legal work.
+- Reproducible builds: lockfiles committed, **Rust toolchain pinned to an exact version in `rust-toolchain.toml` and in CI (1.99.1 at the time of writing)**, Node and pnpm versions pinned, CI actions pinned (the floating `dtolnay/rust-toolchain@stable` is replaced in Phase 7 at the latest).
 
 ---
 
@@ -805,15 +859,15 @@ Each phase has a gate. Gates are real: the next phase does not start until the g
 
 | Phase | Content | Gate |
 |---|---|---|
-| **0 Feasibility** | **0A** scaffold, `pnpm verify`, SQLite/SQLx + migrations + pragmas, libvips and ExifTool spikes, custom protocol + CSP spike, minimal capabilities · **0B** embedding runtime spike (§9.1) · **0C** CI matrix and clean-machine packaging | Native deps proven in a clean release build on both OSes; embedding runtime decision recorded (or semantic search deferred); D4 ready to decide |
-| **1 Catalogue and scanning** | Volumes/roots/folders/files/assets schema, scanner with generations, jobs, watcher hints, offline-root behaviour | Two roots scanned; restart mid-scan leaves no wrong "missing"; Windows manual pass |
-| **2 Grid and viewer** | Thumbnail/preview pipeline, protocol serving, virtual grid, folder tree, viewer, synthetic-catalogue benchmark | 10k/100k synthetic scroll target; originals untouched; Windows manual pass |
+| **0 Feasibility** | **0A** scaffold, `pnpm verify`, SQLite/SQLx + migrations + pragmas, libvips and ExifTool spikes, custom protocol + CSP spike, minimal capabilities · **0B** embedding runtime spike (§9.1) · **0C** CI matrix and clean-machine packaging · **0D** HEIC investigation · **0E** Windows own libvips with HEVC decode · **0F** macOS own libvips with HEVC decode · **0B2** Rust tokenisation and preprocessing parity (before 4B; does not gate Phase 1) | Native deps proven in a clean release build on both OSes; iPhone HEIC decode proven in packaged builds on both OSes (CI fixtures, plus the owner's real files on each OS); embedding runtime decision recorded; D4 ready to decide |
+| **1 Catalogue and scanning** | Volumes/roots/folders/files/assets schema, scanner with generations, jobs, watcher hints, offline-root behaviour; libvips init and error-buffer housekeeping (§3.3); ExifTool call hardening | Two roots scanned; restart mid-scan leaves no wrong "missing"; Windows manual pass |
+| **2 Grid and viewer** | Thumbnail/preview pipeline (including HEIC and the RAW Tier 1 embedded preview), protocol serving, virtual grid, folder tree, viewer, synthetic-catalogue benchmark on both machines | 10k/100k synthetic scroll target; originals untouched; Windows manual pass |
 | **3 Metadata and search** | ExifTool ingestion, normalised columns, FTS5, filters, favorites/tags/albums | Malformed metadata never crashes a scan; queries are paginated and parameterised |
 | **4 Exact and visual duplicates** | BLAKE3 pipeline, pHash, candidate index, review groups and UI, calibration | Labelled-corpus precision/recall recorded; no auto-delete anywhere |
-| **4B Local semantic search** | `EmbeddingProvider` from 0B, embedding jobs, vector search, hybrid ranking, "find similar" | Thresholds calibrated on fixtures; memory report; advisory only |
+| **4B Local semantic search** | `EmbeddingProvider` from 0B/0B2, opt-in per-root embedding jobs with ETA, vector search, hybrid ranking, "find similar" | Needs 0B2 accepted; thresholds calibrated on a harder labelled set; memory and ETA report on both machines; advisory only |
 | **5 Safe file operations** | OperationManager: plan/confirm/journal/execute/undo/recovery, Trash adapters, reorganise-by-rule, duplicate cleanup | Injected-failure tests at every boundary on both OSes; Windows manual pass with locked files and external drive |
-| **6 Cloud AI** | `AiProvider` adapters, consent, budgets, captions/tags, NL query chips | No key in bundle or logs; no upload during scan; per-provider isolation |
-| **7 Hardening and release** | Performance pass, accessibility pass, packaging, signing (if distributing), licence audit, docs | Clean-machine smoke test on both OSes; licence audit done |
+| **6 Cloud AI** (may follow Phase 7) | Bring-your-own-key and local OpenAI-compatible endpoint first; consent, budgets, captions/tags, NL query chips; vendor adapters later | No key in bundle or logs; no upload during scan; per-provider isolation |
+| **7 Hardening and release** | Performance pass, accessibility pass, packaging, signing (if distributing), licence and legal audit (HEVC, LGPL), docs | Clean-machine smoke test on both OSes; licence audit done |
 | **Later (§13)** | Scheduled by the owner one at a time, each preceded by an ADR | per ADR |
 
 Phase ordering note: Phase 5 (file operations) is deliberately after browsing, search and duplicates so the viewing/analysis half of the product is useful before anything can modify files, but the **OperationManager design (§10) is final now**, so earlier phases never invent their own ad-hoc file changes.
@@ -824,34 +878,41 @@ Phase ordering note: Phase 5 (file operations) is deliberately after browsing, s
 
 ### 19.1 Risks
 
-1. **Native packaging** (libvips + codecs, ExifTool/Perl, ONNX Runtime/llama.cpp) self-contained on two OSes is the largest technical risk. Mitigation: Phase 0 gates, fallback ladder (§3.3).
-2. **Embedding runtime maturity:** image embedding through GGUF is unproven in mainline tooling; ONNX preprocessing is undocumented. Mitigation: TASK-0B parity tests against the Python reference; the seam lets the app ship without semantic search.
+1. **Native packaging** (libvips + codecs, ExifTool/Perl, ONNX Runtime) self-contained on two OSes is the largest technical risk. Mitigation: Phase 0 gates, fallback ladder (§3.3), own pinned builds (§3.4).
+2. **Embedding runtime maturity:** image embedding through GGUF is unproven in mainline tooling; ONNX preprocessing is undocumented outside Transformers.js. Mitigation: TASK-0B2 parity tests against the Python reference; the seam lets the app ship without semantic search.
 3. **Model knowledge cutoff** (March 2026): the coding agent may use stale crate/plugin APIs. Mitigation: verify-before-use rule, checklist greps, small tasks.
 4. **Windows is a second-class dev environment** for the owner. Mitigation: CI plus the manual Windows pass at each platform-sensitive gate (§17.2).
 5. **Data-loss bugs** in file operations. Mitigation: §10, failure injection, Trash-only, no auto-delete, review of the journal state machine before any execution code.
 6. **Metadata and perceptual-hash false positives/negatives.** Mitigation: calibration on fixtures, "similar" vs "duplicate" wording, human review.
-7. **Cost/pricing drift** for cloud AI (Gemini 3.8 Flash promotional pricing ends 31 Dec 2026; API model IDs unverified). Mitigation: budgets, editable model IDs, estimates before batches.
+7. **Cost/pricing drift** for cloud AI (Gemini 3.8 Flash promotional pricing ends 31 Dec 2026; API model IDs unverified). Mitigation: budgets, editable model IDs, estimates before batches; cloud AI is low priority.
 8. **Scope creep toward §13 features.** Mitigation: ADR requirement; "no stubs for later features" rule.
+9. **HEVC patents and LGPL obligations.** libde265 and libheif are LGPL-3.0-or-later; HEVC patent pools are separate from the library licences. Fine for personal use; legal check and notices before any distribution (Phase 7). Not a legal opinion.
+10. **Own-build maintenance.** Our libvips builds float on base images and package-manager leaves when rebuilt. Mitigation: pinned digests and tarball checksums, the stored release asset as the real artifact, fail-closed CI, an expiring read-only token (renew before expiry, currently 2027-02-07).
+11. **Public repository hygiene.** What is public stays public (forks, caches, history). Mitigation: D13 rules, gitleaks pre-flight, synthetic fixtures only, short artifact retention, no personal photos anywhere in the repository.
+12. **Gate scripts that fail open.** Mitigation: D19 and regression tests for every gate.
+13. **Embedding time on the low-end machine.** About 27 hours per 100,000 photos on the Mac; the 8 GB laptop is slower. Mitigation: opt-in per root, resumable, pausable, ETA (§9.1).
 
 ### 19.2 Open questions for the owner (defaults in brackets; the plan proceeds on the defaults)
 
 1. Distribution: personal use only, or release to others? [personal first; design for release]
 2. Typical library size and where it lives (internal SSD, external HDD, NAS)? [≤ 100k photos, mostly internal/external SSD]
-3. Main file types (JPEG, HEIC from iPhone, RAW)? [JPEG + HEIC; RAW later]
+3. Main file types (JPEG, HEIC from iPhone, RAW)? [JPEG + HEIC; RAW through embedded previews (D15, owner to confirm), full decode later]
 4. Sidecars (XMP) and other managers (Apple Photos, Lightroom) in the mix? [ignored in v1, never modified]
-5. Hardware for local AI (RAM, Apple Silicon generation, Windows GPU)? [8–16 GB RAM, CPU/Metal; no GPU assumed]
-6. Which cloud providers and budget? [Gemini first, per-provider caps]
-7. App name and bundle identifier? [working name "Photos Manager"; identifier chosen before first packaged build]
+5. Hardware for local AI: [answered: Mac M4 16 GB, Windows laptop Ryzen 7 5700U 8 GB, CPU only]
+6. Cloud providers and budget? [answered: not a priority; bring-your-own-key and local OpenAI-compatible endpoint first]
+7. App name and bundle identifier? [answered: working name "Photos Manager", `com.narayanwaraich.photosmanager`]
 8. D4: generated IPC types vs hand-written DTOs? [decide in Phase 1 after 0A]
+9. D15: RAW Tier 1 (embedded previews) in Phases 1 and 2? [yes unless the owner objects]
 
 ---
 
 ## 20. Glossary of identifiers
 
-`asset` logical item · `file` physical file · `volume` disk · `root` indexed directory · `derivative` generated image · `analyzer` versioned computation · `fingerprint` size+mtime+identity · `scan_generation` per-scan UUID · `review_group` duplicate/similar set · `plan` precomputed file-operation preview · `journal` persisted per-item operation state · `ADR` architecture decision record in `docs/adr/`.
+`asset` logical item · `file` physical file · `volume` disk · `root` indexed directory · `derivative` generated image · `analyzer` versioned computation · `fingerprint` size+mtime+identity · `scan_generation` per-scan UUID · `review_group` duplicate/similar set · `plan` precomputed file-operation preview · `journal` persisted per-item operation state · `ADR` architecture decision record in `docs/adr/` · `deps repo` the private repository `photos-manager-deps` holding checksum-pinned native dependency builds · `budget` the vision token budget of an image embedding.
 
 ---
 
 ## Change log
 
 - 2026-11-02 — v2.0: merged rewrite replacing the earlier draft, the amendments file, the AI addendum and the decision records. Added the files/assets/volumes/derivatives model, versioned analyzers, similarity edges and review groups, the EmbeddingGemma 2 multimodal rules (Apache 2.0), the extension seams in §13, and the Windows validation process in §17.2.
+- 2026-11-12 — v2.1: applied the eleven pending edits from `docs/STATUS.md` after Phase 0 findings. §9.1 opt-in per root with ETA, budget 140 and 256 d, budgets never mixed, runtime decided (R2); §15 reference machines (Mac M4 16 GB, Windows laptop Ryzen 7 5700U 8 GB); §9.2/§19.2/§18 cloud AI is bring-your-own-key plus local endpoint, Phase 6 may follow Phase 7; §17.3 Rust toolchain pinned exactly; §3.3/§6.5 HEIF stack (libvips only, own pinned build, no x265, patent note); §17.2 installer-based Windows clean-machine test and VC++ runtime accounting; §3.4 own-build recipe rules, digest pins and the gate-script rule (D19); §17.1 CI hygiene rules (D12); §3.3/§13.1 RAW in two tiers (D15); decision log extended to D20 (D20: no GIF writing on macOS, deployment target 15.0). Also folded in: the agent-boundary rule (D17, §0), libvips initialisation and error-buffer rules (STATUS risks 8 and 37), `raw_preview` derivative kind, the `model_revision` content, HEIC orientation status, new risks 9 to 13. D15 stays "proposed" until the owner confirms.
