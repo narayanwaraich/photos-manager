@@ -22,7 +22,7 @@ This document records the exact versions, sources, licenses, install requirement
 | **libvips (Native C Library)** | `8.18.6` (Windows x64 & macOS arm64 custom builds) | LGPL-2.1-or-later | `https://github.com/libvips/libvips` | 2026-11-11 | Custom pinned HEVC-decode-only archives (`libheif 1.23.2` + `libde265 1.1.1` + `libaom 3.14.1`, zero `x265`, zero GPL); untrusted loaders blocked/disabled. |
 | **ExifTool** | `13.61` | Perl Artistic License 1.0 OR GPL-1.0-or-later | `https://exiftool.org/` | 2026-11-06 | Official distribution on both OSes. Windows standalone zip (Strawberry Perl runtime) + macOS Perl script. |
 | **ONNX Runtime Rust Binding** | `ort = "=2.0.0-rc.15"` | MIT OR Apache-2.0 | `https://crates.io/crates/ort/2.0.0-rc.15` | 2026-11-05 | Candidate embedding runtime from TASK-0B. Pinned with exact version (`=`). |
-| **ONNX Runtime (Native C Library)** | `1.20.1` | MIT | `https://github.com/microsoft/onnxruntime` | 2026-11-05 | Bundling documented in §4.5. Not integrated in product code until Phase 4B. |
+| **ONNX Runtime (Native C Library)** | `1.31.1` | MIT | `https://github.com/microsoft/onnxruntime/releases/tag/v1.31.1` | 2026-11-12 | Loaded via `ort` `load-dynamic` from checksum-pinned official GitHub releases; bundling documented in §4.5. Not integrated in `src-tauri/` until Phase 4B. |
 | **EmbeddingGemma 2** (Model) | Spike in TASK-0B | Apache-2.0 | `https://ai.google.dev/gemma/docs/embeddinggemma` | 2026-11-02 | Multimodal (768-d / 256-d Matryoshka). Weights downloaded on consent; see TASK-0B. |
 
 ---
@@ -186,12 +186,18 @@ Per TASK-0C Known Issue 2 and Review Finding 3, `svgload` (librsvg) and `magickl
 
 ### 4.5 ONNX Runtime Packaging (EmbeddingGemma 2 local runtime)
 
-Per the TASK-0B spike recommendation (`docs/embedding-spike.md`):
-- **Crate Version Pin:** `ort = "=2.0.0-rc.15"` pinned in `Cargo.toml`.
-- **Paired Native Library:** ONNX Runtime `v1.20.1` (MIT License).
-- **Bundling Location on macOS arm64:** `libonnxruntime.1.20.1.dylib` placed in `Contents/Frameworks/` and linked via `@rpath`.
-- **Bundling Location on Windows x64:** `onnxruntime.dll` placed adjacent to `photos-manager.exe`.
-- **Status:** Bundling steps documented. Implementation deferred to Phase 4B per spec §18 delivery plan.
+Per TASK-0B and TASK-0B2 parity validation (`docs/embedding-runtime.md`):
+- **Crate Version Pin:** `ort = "=2.0.0-rc.15"` pinned in `Cargo.toml` (`default-features = false`, `features = ["std", "ndarray", "load-dynamic", "api-31", "coreml", "directml"]`). With `load-dynamic`, `ort-sys` executes zero CDN binary downloads during `cargo build`; the host app explicitly points `ort::init_from(path)` at a checksum-verified local runtime library.
+- **Paired Native Library:** Official Microsoft ONNX Runtime **`v1.31.1`** (API 31, MIT License, `https://github.com/microsoft/onnxruntime/releases/tag/v1.31.1`):
+  - **macOS arm64:** `onnxruntime-osx-arm64-1.31.1.tgz` (`https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/onnxruntime-osx-arm64-1.31.1.tgz`, `36,936,435` bytes, SHA-256 `2e1344a1926ee50eb25b38153cb6992c3567515aef0e677a1a520a1798896d6f`) -> extracts `lib/libonnxruntime.1.31.1.dylib` (`44,797,256` bytes).
+  - **Windows x64 (CPU EP):** `onnxruntime-win-x64-1.31.1.zip` (`https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/onnxruntime-win-x64-1.31.1.zip`, `82,929,944` bytes, SHA-256 `5869e26bb25314375f2d5ef1877e3ea06b1543d6c710e6e4a1ec2f7177ab4b2c`) -> extracts `lib/onnxruntime.dll`. *(Note: upstream Microsoft `onnxruntime-win-x64-1.31.1.zip` is CPU-only; official `Microsoft.ML.OnnxRuntime.DirectML` NuGet stopped at `1.24.4`, whereas `ort` `api-31` requires ORT `>= 1.31`. GPU DirectML on 1.31+ requires pyke's third-party `x86_64-pc-windows-msvc+directml` build or staying on CPU EP.)*
+- **Bundling Path (Hardened Runtime & Clean Machine):**
+  - **macOS arm64:** Bundle `libonnxruntime.1.31.1.dylib` inside `Contents/Frameworks/` so it is signed and notarized with the `.app` (macOS Hardened Runtime refuses unsigned libraries downloaded after install). `otool -L` confirms `libonnxruntime.1.31.1.dylib` depends solely on Apple `/System/Library/Frameworks/` and `/usr/lib/` (zero `/opt/homebrew` paths).
+  - **Windows x64:** Bundle `onnxruntime.dll` (and `onnxruntime_providers_shared.dll` if present) adjacent to `photos-manager.exe` (or in `resources/` loaded via explicit path to `ort::init_from(...)`).
+- **OS Tested & Remaining Unproven Items:**
+  - **Tested:** macOS 27.0 arm64 (`env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin` clean-environment parity + `otool -L`) and Windows Server 2025 x64 CI (`windows-latest`, clean `PATH`, `dumpbin /dependents`).
+  - **Unproven:** Owner's low-end Windows 11 consumer laptop (Ryzen 7 5700U, 8 GB RAM — guide in `docs/embedding-validation.md`), Windows installer code-signing/packaging flow (Phase 4B/7), and DirectML execution provider on real Windows GPU hardware.
+- **Status:** Bundling paths and clean-environment loading verified in spike `spikes/embeddings/rust-parity/`. Integration into `src-tauri/` deferred to Phase 4B per spec §18.
 
 ---
 

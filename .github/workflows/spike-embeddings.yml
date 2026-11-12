@@ -1,0 +1,264 @@
+name: Embedding Parity Spike (macOS arm64 & Windows x64)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spike-embeddings-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x64:
+    name: windows-x64
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/embeddings/rust-parity -> target
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prove SHA-256 mismatch fails closed
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          python spikes/embeddings/fetch_models.py --test-bad-checksum
+          $code = $LASTEXITCODE
+          if ($code -eq 0) {
+            Write-Error "Expected negative checksum test to exit non-zero, got 0"
+            exit 1
+          }
+          Write-Host "Confirmed bad checksum failed closed with exit code $code"
+
+      - name: Fetch pinned Q8 weights, tokenizer, and ORT v1.31.1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python spikes/embeddings/fetch_models.py --platform win-x64
+
+      - name: Build release binary and run unit tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo test --manifest-path spikes/embeddings/rust-parity/Cargo.toml
+          cargo build --release --manifest-path spikes/embeddings/rust-parity/Cargo.toml
+
+      - name: Check DLL dependencies and run clean-environment parity + bench
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bin = "spikes\embeddings\rust-parity\target\release\embedding-parity.exe"
+          $ortDll = (Get-ChildItem -Path "spikes\embeddings\models\ort-runtime" -Filter "onnxruntime.dll" -Recurse | Select-Object -First 1).FullName
+          if (-not $ortDll) {
+            throw "onnxruntime.dll not found under spikes\embeddings\models\ort-runtime"
+          }
+          Write-Host "Pinned ORT DLL: $ortDll"
+
+          New-Item -ItemType Directory -Path spike-out -Force | Out-Null
+          $outFile = "spike-out\parity-windows-x64.txt"
+
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem -Path "$vsPath\VC\Tools\MSVC" -Filter "dumpbin.exe" -Recurse | Where-Object { $_.FullName -match "bin\\Hostx64\\x64\\dumpbin\.exe" } | Select-Object -First 1 -ExpandProperty FullName
+          if ($dumpbin) {
+            "=== dumpbin /dependents embedding-parity.exe ===" | Out-File -FilePath $outFile -Encoding utf8
+            & $dumpbin /dependents $bin | Out-File -FilePath $outFile -Append -Encoding utf8
+            "=== dumpbin /dependents onnxruntime.dll ===" | Out-File -FilePath $outFile -Append -Encoding utf8
+            & $dumpbin /dependents $ortDll | Out-File -FilePath $outFile -Append -Encoding utf8
+          }
+
+          # Strip PATH to OS system directories only for clean-environment check
+          $origPath = $env:PATH
+          $env:PATH = "C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem"
+          try {
+            "=== FULL PARITY COMPARE + PREVIEW TEST (Windows x64) ===" | Out-File -FilePath $outFile -Append -Encoding utf8
+            & $bin --ort-lib $ortDll --threads 4 compare --preview-test | Tee-Object -FilePath $outFile -Append
+            if ($LASTEXITCODE -ne 0) {
+              throw "Parity compare failed with exit code $LASTEXITCODE"
+            }
+
+            "=== NEGATIVE WRONG-PREPROCESS GATE CHECK (Windows x64) ===" | Out-File -FilePath $outFile -Append -Encoding utf8
+            $ErrorActionPreference = 'Continue'
+            & $bin --ort-lib $ortDll --threads 4 compare --wrong-mode imagenet-norm --max-images 5 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $outFile -Append
+            $wrongExit = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            if ($wrongExit -eq 0) {
+              throw "Expected wrong preprocessing gate to fail, but it exited 0"
+            }
+            "Confirmed wrong-mode gate failed with exit code $wrongExit" | Out-File -FilePath $outFile -Append -Encoding utf8
+
+            "=== BENCHMARK SWEEP (Windows x64 GitHub runner) ===" | Out-File -FilePath $outFile -Append -Encoding utf8
+            & $bin --ort-lib $ortDll bench --mode sweep --sweep-threads 1,2,4,8 --budgets 70,140,280 --batches 1,2,4 --num-images 4 | Tee-Object -FilePath $outFile -Append
+            if ($LASTEXITCODE -ne 0) {
+              throw "Bench sweep failed with exit code $LASTEXITCODE"
+            }
+
+            "=== B70 vs B140 CHECK (Windows x64) ===" | Out-File -FilePath $outFile -Append -Encoding utf8
+            & $bin --ort-lib $ortDll --threads 4 bench --mode b70-vs-b140 | Tee-Object -FilePath $outFile -Append
+
+            "=== DIRECTML EP PROBE (Windows x64) ===" | Out-File -FilePath $outFile -Append -Encoding utf8
+            $ErrorActionPreference = 'Continue'
+            & $bin --ort-lib $ortDll --threads 4 bench --mode ep-compare --vision-ep directml --num-images 4 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $outFile -Append
+            "DirectML probe exit code: $LASTEXITCODE" | Out-File -FilePath $outFile -Append -Encoding utf8
+            $ErrorActionPreference = 'Stop'
+
+            "=== PEAK WORKING SET MEMORY PROBE (Windows x64) ===" | Out-File -FilePath $outFile -Append -Encoding utf8
+            foreach ($m in @("single-text", "single-image", "single-drop-vision")) {
+              $psi = New-Object System.Diagnostics.ProcessStartInfo
+              $psi.FileName = (Resolve-Path $bin).Path
+              $psi.Arguments = "--ort-lib `"$ortDll`" --threads 4 bench --mode $m --budget 140"
+              $psi.RedirectStandardOutput = $true
+              $psi.RedirectStandardError = $true
+              $psi.UseShellExecute = $false
+              $p = [System.Diagnostics.Process]::Start($psi)
+              $peakWs = 0L
+              while (-not $p.HasExited) {
+                try {
+                  $p.Refresh()
+                  if ($p.PeakWorkingSet64 -gt $peakWs) { $peakWs = $p.PeakWorkingSet64 }
+                } catch {}
+                Start-Sleep -Milliseconds 50
+              }
+              $p.WaitForExit()
+              try {
+                if ($p.PeakWorkingSet64 -gt $peakWs) { $peakWs = $p.PeakWorkingSet64 }
+              } catch {}
+              $stdout = $p.StandardOutput.ReadToEnd()
+              $stderr = $p.StandardError.ReadToEnd()
+              $mb = [math]::Round($peakWs / 1MB, 2)
+              "[$m] exit=$($p.ExitCode) PeakWorkingSet=${mb} MiB ($peakWs B)" | Out-File -FilePath $outFile -Append -Encoding utf8
+              $stdout | Out-File -FilePath $outFile -Append -Encoding utf8
+              if ($stderr) { $stderr | Out-File -FilePath $outFile -Append -Encoding utf8 }
+            }
+          } finally {
+            $env:PATH = $origPath
+          }
+
+      - name: Upload Windows binary and printed tables only (never weights)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: embedding-parity-windows-x64
+          path: |
+            spikes/embeddings/rust-parity/target/release/embedding-parity.exe
+            spike-out/parity-windows-x64.txt
+          retention-days: 3
+
+  macos-15:
+    name: macos-15
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+          targets: aarch64-apple-darwin
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/embeddings/rust-parity -> target
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prove SHA-256 mismatch fails closed
+        run: |
+          set +e
+          python3 spikes/embeddings/fetch_models.py --test-bad-checksum
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "Expected negative checksum test to fail, got 0"
+            exit 1
+          fi
+          echo "Confirmed bad checksum failed closed with exit code $code"
+
+      - name: Fetch pinned Q8 weights, tokenizer, and ORT v1.31.1
+        run: python3 spikes/embeddings/fetch_models.py --platform darwin-arm64
+
+      - name: Build release binary and run unit tests
+        run: |
+          cargo test --manifest-path spikes/embeddings/rust-parity/Cargo.toml
+          cargo build --release --manifest-path spikes/embeddings/rust-parity/Cargo.toml
+
+      - name: Clean-environment gate and parity compare (macOS arm64)
+        run: |
+          set -euo pipefail
+          mkdir -p spike-out
+          OUT="spike-out/parity-macos-arm64.txt"
+          BIN="spikes/embeddings/rust-parity/target/release/embedding-parity"
+          ORT_LIB="spikes/embeddings/models/ort-runtime/onnxruntime-osx-arm64-1.31.1/lib/libonnxruntime.1.31.1.dylib"
+
+          {
+            echo "=== otool -L binary ==="
+            otool -L "$BIN"
+            echo "=== otool -L dylib ==="
+            otool -L "$ORT_LIB"
+          } | tee "$OUT"
+
+          BREW_HIDDEN=0
+          restore_homebrew() {
+            if [ "$BREW_HIDDEN" -eq 1 ] && [ -d /opt/homebrew.off ] && [ ! -e /opt/homebrew ]; then
+              sudo mv /opt/homebrew.off /opt/homebrew || true
+              BREW_HIDDEN=0
+            fi
+          }
+          trap restore_homebrew EXIT
+          if [ -d /opt/homebrew ]; then
+            if sudo -n mv /opt/homebrew /opt/homebrew.off 2>/dev/null; then
+              BREW_HIDDEN=1
+              echo "Temporarily hid /opt/homebrew during clean-environment check" | tee -a "$OUT"
+            else
+              echo "Note: /opt/homebrew kept in place (relying on env -i PATH + otool -L verification)" | tee -a "$OUT"
+            fi
+          fi
+
+          env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "$BIN" --ort-lib "$ORT_LIB" --threads 4 compare --preview-test | tee -a "$OUT"
+
+          set +e
+          env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "$BIN" --ort-lib "$ORT_LIB" --threads 4 compare --wrong-mode imagenet-norm --max-images 5 2>&1 | tee -a "$OUT"
+          WRONG_EXIT=$?
+          set -e
+          if [ "$WRONG_EXIT" -eq 0 ]; then
+            echo "Expected wrong preprocessing gate to fail, got 0"
+            exit 1
+          fi
+          echo "Confirmed wrong-mode gate failed with exit code $WRONG_EXIT" | tee -a "$OUT"
+
+          restore_homebrew
+          trap - EXIT
+
+      - name: Upload macOS binary and printed tables only (never weights)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: embedding-parity-macos-arm64
+          path: |
+            spikes/embeddings/rust-parity/target/release/embedding-parity
+            spike-out/parity-macos-arm64.txt
+          retention-days: 3

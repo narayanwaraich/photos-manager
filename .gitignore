@@ -38,6 +38,7 @@ __pycache__/
 *$py.class
 # Rust build artifacts
 spikes/embeddings/ort-probe/target/
+spikes/embeddings/rust-parity/target/
 # Machine learning model weights and caches (never commit weights)
 *.onnx
 *.onnx_data
