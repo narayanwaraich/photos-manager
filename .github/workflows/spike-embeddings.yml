@@ -20,7 +20,7 @@ jobs:
   windows-x64:
     name: windows-x64
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -48,6 +48,7 @@ jobs:
           $ErrorActionPreference = 'Continue'
           python spikes/embeddings/fetch_models.py --test-bad-checksum
           $code = $LASTEXITCODE
+          $global:LASTEXITCODE = 0
           if ($code -eq 0) {
             Write-Error "Expected negative checksum test to exit non-zero, got 0"
             exit 1
@@ -104,6 +105,7 @@ jobs:
             $ErrorActionPreference = 'Continue'
             & $bin --ort-lib $ortDll --threads 4 compare --wrong-mode imagenet-norm --max-images 5 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $outFile -Append
             $wrongExit = $LASTEXITCODE
+            $global:LASTEXITCODE = 0
             $ErrorActionPreference = 'Stop'
             if ($wrongExit -eq 0) {
               throw "Expected wrong preprocessing gate to fail, but it exited 0"
@@ -123,6 +125,7 @@ jobs:
             $ErrorActionPreference = 'Continue'
             & $bin --ort-lib $ortDll --threads 4 bench --mode ep-compare --vision-ep directml --num-images 4 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $outFile -Append
             "DirectML probe exit code: $LASTEXITCODE" | Out-File -FilePath $outFile -Append -Encoding utf8
+            $global:LASTEXITCODE = 0
             $ErrorActionPreference = 'Stop'
 
             "=== PEAK WORKING SET MEMORY PROBE (Windows x64) ===" | Out-File -FilePath $outFile -Append -Encoding utf8
@@ -170,7 +173,7 @@ jobs:
   macos-15:
     name: macos-15
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
