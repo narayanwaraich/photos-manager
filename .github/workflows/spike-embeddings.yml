@@ -2,12 +2,6 @@ name: Embedding Parity Spike (macOS arm64 & Windows x64)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - task/0B2
-    paths:
-      - '.github/workflows/spike-embeddings.yml'
-      - 'spikes/embeddings/**'
 
 permissions:
   contents: read

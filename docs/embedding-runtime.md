@@ -4,7 +4,7 @@
 **Date:** 2026-11-12  
 **Machines Measured So Far:**
 - **macOS arm64:** Apple M4 (10 cores, 16 GiB RAM, macOS 27.0 build `26A428`) — **verified locally**
-- **Windows Server 2025 x64 CI (`windows-latest`):** *Pending CI run*
+- **Windows Server 2025 x64 CI (`windows-latest`, 4 vCPUs, 16 GiB RAM):** — **verified via GitHub Actions Run `43360608967`**
 - **Owner Windows 11 Consumer Laptop (Acer Swift SF314-43, Ryzen 7 5700U, 8 GB RAM):** *TBD — owner to run per [`docs/embedding-validation.md`](./embedding-validation.md)*
 
 ---
@@ -110,7 +110,9 @@ Proposed format (spec §5.2 & §9.1):
 | **macOS 27.0 arm64 (Apple M4 16 GB)** `/usr/bin/time -l` (`env -i`) | `single-text` (backbone only) | **`566.3 MiB`** (`593,854,464` B) | `324.0 MiB` (`339,690,408` B) | Loads `tokenizer.json` + `model_quantized` only (`load=80.0 ms`, `infer=64.0 ms`). |
 | **macOS 27.0 arm64 (Apple M4 16 GB)** `/usr/bin/time -l` (`env -i`) | `single-image` (backbone + vision) | **`937.8 MiB`** (`983,384,064` B) | `366.5 MiB` (`384,222,696` B) | Vision adds `+371.5 MiB` max RSS (`load_vision=57.8 ms`). |
 | **macOS 27.0 arm64 (Apple M4 16 GB)** `/usr/bin/time -l` (`env -i`) | `single-drop-vision` (load -> embed -> drop vision -> embed text) | **`970.1 MiB`** (`1,017,266,176` B) | `367.6 MiB` (`385,434,992` B) | Proves vision session drops cleanly while text search stays active. |
-| **Windows Server 2025 x64 CI** (`PeakWorkingSet64`) | `single-text` / `single-image` / `single-drop-vision` | *Pending CI run* | N/A | Will be populated from CI log. |
+| **Windows Server 2025 x64 CI** (`PeakWorkingSet64`) | `single-text` (backbone only) | **`361.4 MiB`** (`378,916,864` B) | N/A | Measured via PowerShell `Get-Process \| Select PeakWorkingSet64` in clean process. `load_bb=329.8 ms`, `infer=501.1 ms`. |
+| **Windows Server 2025 x64 CI** (`PeakWorkingSet64`) | `single-image` (backbone + vision) | **`579.7 MiB`** (`607,858,688` B) | N/A | Vision adds `+218.3 MiB` working set (`load_vis=281.4 ms`, `tot=4193.7 ms`). |
+| **Windows Server 2025 x64 CI** (`PeakWorkingSet64`) | `single-drop-vision` | **`579.7 MiB`** (`607,866,880` B) | N/A | Verified vision session dropped cleanly; text queries remain active (`dim=256`). |
 | **Owner Laptop (Ryzen 7 5700U, 8 GB, Win 11)** | `single-text` / `single-image` | *TBD (`docs/embedding-validation.md`)* | N/A | Required to verify 8 GB RAM ceiling alongside OS + WebView2. |
 
 ### 5.2 Throughput & Extrapolated Single-Stream ETA Table
@@ -123,7 +125,7 @@ Proposed format (spec §5.2 & §9.1):
 | **macOS 27.0 arm64 (Apple M4 10c)** | Bulk Max (`threads=8, batch=4, b140`) | `44.4 ms` (`22.5 q/s`) | `726.1 ms` (`1.7 / 665.5 / 58.9 ms`) | `1.377 img/s` | `~2.0 h` (`7,262 s`) | `~20.2 h` (`72,622 s`) |
 | **macOS 27.0 arm64 (Apple M4 10c)** | High Detail (`threads=8, batch=4, b280`) | `44.4 ms` (`22.5 q/s`) | `1759.9 ms` (`2.6 / 1648.8 / 108.5 ms`) | `0.568 img/s` | `~4.9 h` | `~48.9 h` |
 | **macOS 27.0 arm64 (Apple M4 10c)** | Lower Detail* (`threads=8, batch=4, b70`) | `44.4 ms` (`22.5 q/s`) | `319.9 ms` (`2.1 / 279.1 / 38.7 ms`) | `3.126 img/s` | `~0.9 h` | `~8.9 h` |
-| **Windows Server 2025 x64 (CI)** | `threads=4, batch=4, b140` | *Pending CI run* | *Pending CI run* | *Pending* | *Pending* | *Pending* |
+| **Windows Server 2025 x64 (CI)** | `threads=4, batch=4, b140` | `411.4 ms` (`2.4 q/s`) | `3452.1 ms` (`7.4 / 3083.3 / 361.4 ms`) | `0.290 img/s` | `~9.6 h` (`34,521 s`) | `~95.9 h` (`345,210 s`) |
 | **Ryzen 7 5700U (8 GB Win 11 Laptop)** | `threads=4, batch=4, b140` | *TBD (owner run)* | *TBD (owner run)* | *TBD* | *TBD* | *TBD* |
 
 *\*Budget `70` is reported only (`2.14x` faster than `b140` at `t=4, batch=1`; `cos(b70, b140) 768d mean=0.987898 min=0.981846`); retrieval quality vs `b140` is NOT validated on the 20-scene synthetic fixture set, so `b140` remains the default recommendation.*
