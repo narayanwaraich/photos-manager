@@ -162,26 +162,45 @@ Get-Content "C:\pm-test\smoke-laptop.json"
 - [ ] `heic_decode_verified` is `true` with `heic_note: "HEVC decode and upright 240x320 thumbnail verified"`.
 
 ### Step 3.5: Owner Step — Real iPhone HEIC File Validation
-Test decoding a real iPhone HEIC file from personal photos:
+Test decoding a real iPhone HEIC file from personal photos. **The installer does not contain the command-line tools** (`vipsthumbnail.exe`, `vipsheader.exe`): it holds only the app and its DLLs. For this check, download the same libvips zip that CI uses from the private deps repo; it has the command-line tools in `bin\` next to the DLLs.
+
 > [!IMPORTANT]
-> **Privacy Invariant:** Decode one of your own iPhone HEIC files (work on a copy, not the original). **Do not commit personal photos to git.**
+> **Privacy Invariant:** Decode one of your own iPhone HEIC files (work on a copy, not the original); prefer a **portrait** photo. **Do not commit personal photos to git.**
 
 ```powershell
-# 1. Place a test iPhone HEIC file at a temporary path (work on a copy, not the original):
-$myHeic = "C:\temp\my_iphone_photo_copy.heic"
+# 1. Download the pinned zip (needs `gh auth status` to be logged in as the repo owner).
+#    No gh on this machine? Open the release page in the browser while signed in and download the .zip by hand into C:\vips-hevc.
+New-Item -ItemType Directory -Force C:\vips-hevc | Out-Null
+gh release download win64-vips-8.18.6-hevc1 --repo narayanwaraich/photos-manager-deps --pattern "*.zip" --dir C:\vips-hevc
+Expand-Archive -Path (Get-ChildItem C:\vips-hevc\*.zip | Select-Object -First 1).FullName -DestinationPath C:\vips-hevc\x -Force
+$vt = (Get-ChildItem C:\vips-hevc\x -Recurse -Filter vipsthumbnail.exe | Select-Object -First 1).FullName
+$vh = (Get-ChildItem C:\vips-hevc\x -Recurse -Filter vipsheader.exe | Select-Object -First 1).FullName
+$vt; $vh    # both must print a path; if one is empty, paste the output of: Get-ChildItem C:\vips-hevc\x -Recurse -Filter *.exe | Select-Object FullName
 
-# 2. Test CLI decode using the bundled vipsthumbnail from the installed application:
-$outWebp = "C:\temp\my_iphone_thumb.webp"
-& "C:\pm-test\bin\vipsthumbnail.exe" $myHeic -s 320 -o $outWebp
-if ($LASTEXITCODE -eq 0 -and (Test-Path $outWebp)) {
-    echo "✓ Success: Real iPhone HEIC decoded to WebP thumbnail!"
-} else {
-    echo "❌ Failed to decode iPhone HEIC file."
-}
+# 2. Work on a COPY of one of your own iPhone HEIC files:
+Copy-Item "C:\path\to\your\IMG_xxxx.HEIC" C:\temp\heic_copy.heic    # create C:\temp first if needed
 
-# 3. Clean up only the generated output thumbnail (preserve input photo copy):
-Remove-Item -Force $outWebp -ErrorAction SilentlyContinue
+# 3. Decode with only the Windows system folders on PATH (clean-environment test):
+$origPath = $env:PATH
+$env:PATH = "C:\Windows\System32;C:\Windows"
+& $vh -f width  C:\temp\heic_copy.heic
+& $vh -f height C:\temp\heic_copy.heic
+& $vh -f orientation C:\temp\heic_copy.heic      # prints a number (1 to 8) or an error if the field is absent
+& $vt C:\temp\heic_copy.heic -s 320 -o C:\temp\heic_thumb.webp
+$code = $LASTEXITCODE
+& $vh C:\temp\heic_thumb.webp
+$env:PATH = $origPath
+"vipsthumbnail exit code: $code"
+if ($code -eq 0 -and (Test-Path C:\temp\heic_thumb.webp)) { "PASS: file written" } else { "FAIL" }
+
+# 4. Open the thumbnail and compare it with the original in the Photos app: upright? same colours?
+Start-Process C:\temp\heic_thumb.webp
+
+# 5. Clean up the generated files (keep the copy until you have reported the result):
+Remove-Item -Force C:\temp\heic_thumb.webp -ErrorAction SilentlyContinue
 ```
+
+Expected: `vipsthumbnail exit code: 0`, a `vipsheader` line for the thumbnail such as `heic_thumb.webp: 240x320 uchar, 3 bands, srgb, webpload` (portrait source) or `320x240 ...` (landscape source), and an upright picture with the original's colours. Report the five `vipsheader` lines, the exit code and what the picture looks like. Delete `C:\vips-hevc` and `C:\temp\heic_copy.heic` afterwards.
 
 ### Step 3.6: Clean Up / Uninstall
 ```powershell
