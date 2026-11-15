@@ -1,6 +1,6 @@
 # REPORT-0B2: Rust Tokenisation and Image Preprocessing Parity for EmbeddingGemma 2 (ONNX Q8)
 
-**Branch:** `task/0B2` · **Commit:** `f318d96` · **Date:** 2026-11-15  
+**Branch:** `task/0B2` · **Commit:** `db455dc` · **Date:** 2026-11-15  
 **OS actually tested:**
 - macOS 27.0 arm64 (Apple M4 workstation, 10 cores, 16 GiB RAM)
 - macOS 15.8.2 arm64 (GitHub Actions runner `131672945688`, 3 cores, 14 GiB RAM)
