@@ -113,7 +113,7 @@ Proposed format (spec §5.2 & §9.1):
 | **Windows Server 2025 x64 CI** (`PeakWorkingSet64`) | `single-text` (backbone only) | **`361.4 MiB`** (`378,916,864` B) | N/A | Measured via PowerShell `Get-Process \| Select PeakWorkingSet64` in clean process. `load_bb=329.8 ms`, `infer=501.1 ms`. |
 | **Windows Server 2025 x64 CI** (`PeakWorkingSet64`) | `single-image` (backbone + vision) | **`579.7 MiB`** (`607,858,688` B) | N/A | Vision adds `+218.3 MiB` working set (`load_vis=281.4 ms`, `tot=4193.7 ms`). |
 | **Windows Server 2025 x64 CI** (`PeakWorkingSet64`) | `single-drop-vision` | **`579.7 MiB`** (`607,866,880` B) | N/A | Probe records peak working set only (579.7 MiB, identical to single-image peak); live memory reduction after dropping the vision session is unmeasured here. |
-| **Owner Laptop (Ryzen 7 5700U, 8 GB, Win 11)** | `single-text` / `single-image` | *TBD (`docs/embedding-validation.md`)* | N/A | Required to verify 8 GB RAM ceiling alongside OS + WebView2. |
+| **Owner Laptop (Ryzen 7 5700U, 8 GB, Win 11)** | `single-text` / `single-image` / `single-drop-vision` | *Not measured: the 2026-11-15 probe failed (exit 1, no data) because the script started the child process outside the repo folder, so it could not find the model files; rerun pending with the fixed script in `docs/embedding-validation.md` §4a* | N/A | Required to verify 8 GB RAM ceiling alongside OS + WebView2. |
 
 ### 5.2 Throughput & Extrapolated Single-Stream ETA Table
 
@@ -126,7 +126,11 @@ Proposed format (spec §5.2 & §9.1):
 | **macOS 27.0 arm64 (Apple M4 10c)** | High Detail (`threads=8, batch=4, b280`) | `44.4 ms` (`22.5 q/s`) | `1759.9 ms` (`2.6 / 1648.8 / 108.5 ms`) | `0.568 img/s` | `~4.9 h` | `~48.9 h` |
 | **macOS 27.0 arm64 (Apple M4 10c)** | Lower Detail* (`threads=8, batch=4, b70`) | `44.4 ms` (`22.5 q/s`) | `319.9 ms` (`2.1 / 279.1 / 38.7 ms`) | `3.126 img/s` | `~0.9 h` | `~8.9 h` |
 | **Windows Server 2025 x64 (CI)** | `threads=4, batch=4, b140` | `411.4 ms` (`2.4 q/s`) | `3452.1 ms` (`7.4 / 3083.3 / 361.4 ms`) | `0.290 img/s` | `~9.6 h` (`34,521 s`) | `~95.9 h` (`345,210 s`) |
-| **Ryzen 7 5700U (8 GB Win 11 Laptop)** | `threads=4, batch=4, b140` | *TBD (owner run)* | *TBD (owner run)* | *TBD* | *TBD* | *TBD* |
+| **Ryzen 7 5700U (8 GB Win 11 Laptop, owner run 2026-11-15)** | `threads=4, batch=2, b140` (4 images per cell) | `301.0 ms` (`3.3 q/s`) | `2456.5 ms` (`3.1 / 2171.0 / 282.5 ms`) | `0.407 img/s` | `~6.8 h` | `~68.2 h` |
+| **Ryzen 7 5700U (8 GB Win 11 Laptop, owner run 2026-11-15)** | `threads=8, batch=2, b140` (best b140 cell) | `270.0 ms` (`3.7 q/s`) | `1878.9 ms` (`3.4 / 1630.5 / 245.0 ms`) | `0.532 img/s` | `~5.2 h` | `~52.2 h` |
+| **Ryzen 7 5700U (8 GB Win 11 Laptop, owner run 2026-11-15)** | `threads=8, batch=4, b70` | `270.0 ms` | `900.2 ms` (`2.2 / 773.2 / 124.8 ms`) | `1.111 img/s` | `~2.5 h` | `~25.0 h` |
+
+*Laptop figures come from 4 images per cell (short runs): they show the speed of a cool machine, not sustained speed under thermal throttling over hours, and each 100,000-photo figure is an extrapolation. `threads=1`: 7.0 s/img at b140. b280: 4.3 to 5.0 s/img at `threads=8` (about 120 to 140 h per 100,000). b70 vs b140 on the laptop: `1.80x` faster, `cos(b70, b140) mean=0.987898`. Text query: `270 to 301 ms` at 8 or 4 threads (`669 ms` at 1 thread). The CPU has 8 cores and 16 logical processors; thread counts above 8 were not swept.*
 
 *\*Budget `70` is reported only (`2.14x` faster than `b140` at `t=4, batch=1`; `cos(b70, b140) 768d mean=0.987898 min=0.981846`); retrieval quality vs `b140` is NOT validated on the 20-scene synthetic fixture set, so `b140` remains the default recommendation.*
 
@@ -142,7 +146,7 @@ Proposed format (spec §5.2 & §9.1):
 
 ## 7. Remaining Unknowns (Out of Scope of TASK-0B2)
 
-1. **Owner's Windows 11 Consumer Laptop (`Ryzen 7 5700U, 8 GB RAM`):** Only CI server hardware runs automatically; consumer thermal throttling, real Indexing ETA, and 8 GB RAM peak headroom under OS + WebView2 remain unmeasured until [`docs/embedding-validation.md`](./embedding-validation.md) is run.
+1. **Owner's Windows 11 Consumer Laptop (`Ryzen 7 5700U, 8 GB RAM`):** Only CI server hardware runs automatically; the 2026-11-15 laptop run reproduced every parity number (tokens 61/61, same cosines to six decimals) and measured speed (§5.2). Still unmeasured: **8 GB RAM peak headroom** under OS + WebView2 (the memory probe failed on a script bug, see §5.1) and sustained speed under thermal throttling.
 2. **Real `libvips` Previews:** Stand-in previews used the Rust `image` crate (`JPEG q80, max_edge=1024`); real app previews come from `libvips` (`<= 2048 px`, spec §7.1). Parity must be re-checked cleanly in Phase 4B using generated `libvips` fixtures.
 3. **Real User Photographs & Retrieval Quality (`Spec §16.3`):** Only 20 synthetic scenes (+ transforms/aspect cases) were evaluated; recall/MRR calibration and `b70` vs `b140` quality tradeoffs remain Phase 4B work.
 4. **Windows DirectML on Real GPU Hardware:** Unproven (`onnxruntime-win-x64-1.31.1.zip` is CPU-only).

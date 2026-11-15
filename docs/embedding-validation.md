@@ -32,7 +32,7 @@
 ## 2. Download the CI Binary Artifact
 
 1. Open the repository **Actions** tab on GitHub (`https://github.com/narayanwaraich/photos-manager/actions`) and select the green **Embedding Parity Spike** (`spike-embeddings.yml`) run on `task/0B2` (Run ID `43360608967`).
-2. Download the **`embedding-parity-windows-x64`** artifact and extract `embedding-parity.exe` into `C:\emb-val\bin\`.
+2. Download the **`embedding-parity-windows-x64`** artifact and extract it into `C:\emb-val\bin\`. The zip keeps its folder structure, so the exe lands at `C:\emb-val\bin\spikes\embeddings\rust-parity\target\release\embedding-parity.exe`; set `$bin` to that path in section 4 (or find it with `Get-ChildItem C:\emb-val -Recurse -Filter embedding-parity.exe`).
 3. > [!NOTE]
    > **Artifact Retention (3 Days):**
    > GitHub Actions retains artifacts for 3 days (expires ~2026-11-16 for Run `43360608967`). If the artifact has expired, ask the orchestrator to re-dispatch the workflow (`workflow_dispatch`), or build locally using step 4 below.
@@ -51,10 +51,10 @@
 
 ## 3. Fetch & Checksum-Verify Weights and ONNX Runtime `v1.31.1`
 
-From a copy or checkout of the repository containing **only** committed synthetic files (e.g., `C:\emb-val\repo`), run one standard-library command to download and SHA-256-verify `tokenizer.json`, the four Q8 ONNX files, and `onnxruntime-win-x64-1.31.1.zip`:
+From the **root folder of your repository checkout** on branch `task/0B2` (or `main` after merge; there is no `C:\emb-val\repo`), run one standard-library command to download and SHA-256-verify `tokenizer.json`, the four Q8 ONNX files, and `onnxruntime-win-x64-1.31.1.zip`:
 
 ```powershell
-cd C:\emb-val\repo
+cd C:\Users\<you>\Projects\photos-manager     # your repo root
 python spikes\embeddings\fetch_models.py --platform win-x64
 ```
 
@@ -73,7 +73,7 @@ Test-Path "C:\Windows\System32\vcruntime140.dll"
 Execute the clean-environment run with only OS system directories on `PATH`, saving the full output for the orchestrator:
 
 ```powershell
-$bin = "C:\emb-val\bin\embedding-parity.exe"
+$bin = (Get-ChildItem C:\emb-val\bin -Recurse -Filter embedding-parity.exe | Select-Object -First 1).FullName
 $ortDll = (Get-ChildItem -Path "spikes\embeddings\models\ort-runtime" -Filter "onnxruntime.dll" -Recurse | Select-Object -First 1).FullName
 $log = "C:\emb-val\laptop-results.txt"
 
@@ -102,6 +102,7 @@ try {
     foreach ($m in @("single-text", "single-image", "single-drop-vision")) {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $bin
+        $psi.WorkingDirectory = (Get-Location).Path   # REQUIRED: .NET starts the child in the folder PowerShell was launched from, not the current folder, and the exe finds the model files by relative path
         $psi.Arguments = "--ort-lib `"$ortDll`" --threads 4 bench --mode $m --budget 140"
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
@@ -117,6 +118,7 @@ try {
         $mb = [math]::Round($peakWs / 1MB, 2)
         "[$m] exit=$($p.ExitCode) PeakWorkingSet=${mb} MiB ($peakWs B)" | Out-File -FilePath $log -Append -Encoding utf8
         $p.StandardOutput.ReadToEnd() | Out-File -FilePath $log -Append -Encoding utf8
+        $p.StandardError.ReadToEnd() | Out-File -FilePath $log -Append -Encoding utf8
     }
 } finally {
     $env:PATH = $origPath
@@ -124,6 +126,47 @@ try {
 
 Get-Content $log
 ```
+
+---
+
+### 4a. Re-run only the memory probes (about 2 minutes)
+
+If section 5 of the log shows `exit=1` and a tiny working set, the child process could not find its files (see the `WorkingDirectory` line above). Re-run just the three probes, from the repository root:
+
+```powershell
+cd C:\Users\<you>\Projects\photos-manager     # your repo root, branch task/0B2 or main
+$bin = (Get-ChildItem C:\emb-val\bin -Recurse -Filter embedding-parity.exe | Select-Object -First 1).FullName
+$ortDll = (Get-ChildItem -Path "spikes\embeddings\models\ort-runtime" -Filter "onnxruntime.dll" -Recurse | Select-Object -First 1).FullName
+$log = "C:\emb-val\laptop-memory.txt"
+$origPath = $env:PATH
+$env:PATH = "C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem"
+"=== CLEAN-PROCESS PEAK WORKING SET ===" | Out-File -FilePath $log -Encoding utf8
+foreach ($m in @("single-text", "single-image", "single-drop-vision")) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $bin
+    $psi.WorkingDirectory = (Get-Location).Path
+    $psi.Arguments = "--ort-lib `"$ortDll`" --threads 4 bench --mode $m --budget 140"
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $peakWs = 0L
+    while (-not $p.HasExited) {
+        try { $p.Refresh(); if ($p.PeakWorkingSet64 -gt $peakWs) { $peakWs = $p.PeakWorkingSet64 } } catch {}
+        Start-Sleep -Milliseconds 50
+    }
+    $p.WaitForExit()
+    try { if ($p.PeakWorkingSet64 -gt $peakWs) { $peakWs = $p.PeakWorkingSet64 } } catch {}
+    $mb = [math]::Round($peakWs / 1MB, 2)
+    "[$m] exit=$($p.ExitCode) PeakWorkingSet=${mb} MiB ($peakWs B)" | Out-File -FilePath $log -Append -Encoding utf8
+    $p.StandardOutput.ReadToEnd() | Out-File -FilePath $log -Append -Encoding utf8
+    $p.StandardError.ReadToEnd() | Out-File -FilePath $log -Append -Encoding utf8
+}
+$env:PATH = $origPath
+Get-Content $log
+```
+
+Expect `exit=0` for all three, a peak of roughly 360 MiB (text) and 580 MiB (image) if the laptop behaves like the CI server; report whatever it prints.
 
 ---
 

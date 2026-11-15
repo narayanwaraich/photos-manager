@@ -1,6 +1,6 @@
 # Photos Manager — Product and Technical Specification
 
-**Version:** 2.1.1 (merged rewrite, updated after Phase 0 findings and TASK-0B2) · **Date:** 2026-11-14
+**Version:** 2.1.2 (merged rewrite, updated after Phase 0 findings and TASK-0B2) · **Date:** 2026-11-15
 **Targets:** Windows 10/11 x64 and macOS (Apple Silicon first). Primary development on macOS; a Windows laptop is available for validation.
 **Model:** local-first, single-user desktop app; many library roots; optional AI.
 **Stack:** Tauri 2 · Rust · React + TypeScript · SQLite · libvips · ExifTool · optional local embeddings (EmbeddingGemma 2) · optional cloud AI providers.
@@ -565,7 +565,7 @@ AI is advisory, opt-in, isolated behind traits, and never touches files (AGENTS.
 
 **v1 use:** (a) semantic search ("beach at sunset") by embedding the text query and ranking image vectors; (b) "find similar" from an image vector; (c) optional text embeddings of captions/filenames for hybrid ranking with FTS5. It is advisory ranking; it never decides duplicates.
 
-**Cost and consequence (TASK-0B, Apple M4, CPU):** about 1 s per image at budget 140 means about 24 hours for 100,000 photos on one stream (Rust, 4 threads, batch 4: 0.86 s per image). On a 4-vCPU Windows CI server the same setting takes 3.45 s per image, about 96 hours for 100,000 photos; the 8 GB Windows laptop is not yet measured and is expected to be in the same range or slower. Therefore **embedding is opt-in per library root, resumable, pausable, and shows an ETA** (measured throughput × remaining items). The app never starts embedding a library on its own, and semantic search over a root works only for the part already embedded (the UI says how much).
+**Cost and consequence (TASK-0B, Apple M4, CPU):** about 1 s per image at budget 140 means about 24 hours for 100,000 photos on one stream (Rust, 4 threads, batch 4: 0.86 s per image). On a 4-vCPU Windows CI server the same setting takes 3.45 s per image, about 96 hours for 100,000 photos; the owner's 8 GB laptop (Ryzen 7 5700U) measured 1.9 s per image at 8 threads and 2.5 s at 4 threads on short runs, about 52 to 68 hours per 100,000 photos (sustained speed under throttling not measured). Therefore **embedding is opt-in per library root, resumable, pausable, and shows an ETA** (measured throughput × remaining items). The app never starts embedding a library on its own, and semantic search over a root works only for the part already embedded (the UI says how much).
 
 **Rules (checked against the model card and measured by TASK-0B; parity in Rust to be proven by TASK-0B2):**
 
@@ -786,7 +786,7 @@ The table's targets are written for the Mac. On the laptop, record the measured 
 | pHash candidate search | sub-quadratic; 100k assets in minutes, not hours |
 | Brute-force vector search | ≤ 100 ms for 100k × 256-d on a laptop (otherwise adopt an index) |
 | Memory | App ≤ ~500 MB RSS excluding model; embedding model memory reported separately |
-| Embedding throughput | Measured, not targeted: Rust, budget 140, 4 threads, batch 4: 0.86 s per image on the Mac M4, 3.45 s on a 4-vCPU Windows CI server (laptop pending); shown to the user as an ETA |
+| Embedding throughput | Measured, not targeted: Rust, budget 140: 0.86 s per image on the Mac M4 (4 threads, batch 4), 3.45 s on a 4-vCPU Windows CI server, 2.5 s (4 threads) to 1.9 s (8 threads) on the Ryzen 7 5700U laptop; shown to the user as an ETA |
 | Catalogue size | ~5–10 KB/asset including metadata; DB stays well under 1 GB at 100k assets |
 | Idle | zero CPU when no jobs are running |
 
@@ -895,7 +895,7 @@ Phase ordering note: Phase 5 (file operations) is deliberately after browsing, s
 10. **Own-build maintenance.** Our libvips builds float on base images and package-manager leaves when rebuilt. Mitigation: pinned digests and tarball checksums, the stored release asset as the real artifact, fail-closed CI, an expiring read-only token (renew before expiry, currently 2027-02-07).
 11. **Public repository hygiene.** What is public stays public (forks, caches, history). Mitigation: D13 rules, gitleaks pre-flight, synthetic fixtures only, short artifact retention, no personal photos anywhere in the repository.
 12. **Gate scripts that fail open.** Mitigation: D19 and regression tests for every gate.
-13. **Embedding time on the low-end machine.** About 24 hours per 100,000 photos on the Mac and about 96 hours on a 4-vCPU Windows server; the 8 GB laptop is not yet measured. Mitigation: opt-in per root, resumable, pausable, ETA (§9.1).
+13. **Embedding time on the low-end machine.** About 24 hours per 100,000 photos on the Mac and about 96 hours on a 4-vCPU Windows server and about 52 to 68 hours on the 8 GB laptop. Mitigation: opt-in per root, resumable, pausable, ETA (§9.1).
 
 ### 19.2 Open questions for the owner (defaults in brackets; the plan proceeds on the defaults)
 
@@ -923,3 +923,4 @@ Phase ordering note: Phase 5 (file operations) is deliberately after browsing, s
 - 2026-11-12 — v2.1: applied the eleven pending edits from `docs/STATUS.md` after Phase 0 findings. §9.1 opt-in per root with ETA, budget 140 and 256 d, budgets never mixed, runtime decided (R2); §15 reference machines (Mac M4 16 GB, Windows laptop Ryzen 7 5700U 8 GB); §9.2/§19.2/§18 cloud AI is bring-your-own-key plus local endpoint, Phase 6 may follow Phase 7; §17.3 Rust toolchain pinned exactly; §3.3/§6.5 HEIF stack (libvips only, own pinned build, no x265, patent note); §17.2 installer-based Windows clean-machine test and VC++ runtime accounting; §3.4 own-build recipe rules, digest pins and the gate-script rule (D19); §17.1 CI hygiene rules (D12); §3.3/§13.1 RAW in two tiers (D15); decision log extended to D20 (D20: no GIF writing on macOS, deployment target 15.0). Also folded in: the agent-boundary rule (D17, §0), libvips initialisation and error-buffer rules (STATUS risks 8 and 37), `raw_preview` derivative kind, the `model_revision` content, HEIC orientation status, new risks 9 to 13. D15 stays "proposed" until the owner confirms.
 
 - 2026-11-14 — v2.1.1: numbers and decisions from TASK-0B2 (reviewed, not yet merged). §3.5 D3 state; new decisions D21 to D25 (pure-Rust tokenizer, preprocessing rules and negative gate, ONNX Runtime 1.31.1 via `load-dynamic`, CPU execution provider, one ORT environment per process); §9.1 cost paragraph (Rust throughput and the Windows CI figure), rule 4 (preview fidelity), **rule 7 corrected** (memory: the "about 200 MB" text-only figure was wrong, measured 361 to 566 MiB peak; unloading the vision encoder is unproven), runtime paragraph (CoreML and DirectML results); §15 and risk 13 numbers. The agent's report numbered its own decisions D18 to D22, which collide with existing IDs; they are D21 to D25 here.
+- 2026-11-15 — v2.1.2: TASK-0B2 accepted; owner's laptop numbers (Ryzen 7 5700U, 8 GB) added to §9.1 and §15 and risk 13; laptop memory still unmeasured (probe script bug, rerun pending). Phase 0 exit checks are complete (Mac and Windows real iPhone HEIC).

@@ -2,7 +2,13 @@
 
 Reviewer: orchestrator (Claude) · Date: 2026-11-14 · Branch `task/0B2`, HEAD `f318d96` (commits `c8903c3`, `371e129`, `22a1197`, `47bf4ad`, `f318d96`) · Report: `reports/REPORT-0B2.md` (stated commit `47bf4ad`)
 
-## Verdict: FIX (small, report and docs only; no code change asked) — then ACCEPT
+## Verdict: round 1 (2026-11-14) FIX; **round 2 (2026-11-15) ACCEPT**
+
+Round 2 summary: the agent's round-1 fixes (commit `b2cadc1`, content `db455dc`) were read against the branch diff and the owner's raw output; seven of eight items are done, one is only half done (commands in §5.6 and §5.7 of the report), and none blocks the merge. The owner's laptop run is in and **reproduces every parity number** (see "Round 2" at the end). Open for later, not blocking: laptop memory probes (failed on a script bug in the validation doc, now fixed) and sustained-speed behaviour.
+
+---
+
+### Round 1 text (kept for the record): FIX (small, report and docs only; no code change asked) — then ACCEPT
 
 The technical work is good and the gates are met. What fails the review is the report's honesty on four points (below) and two claims in `docs/embedding-runtime.md` that the measurements do not support. None of these needs a rerun of the spike. 0B2 does **not** gate Phase 1; it must be accepted and merged before Phase 4B starts. The owner's laptop run is part of 0B2 and is still open (see "Open").
 
@@ -72,3 +78,33 @@ I did not read the four large source files line by line and I did not open any j
 ## Fix prompt for the agent (after the owner has pasted the two failed-run logs and the raw run list)
 
 > TASK-0B2, review round 1 (`reports/REVIEW-0B2.md`). No code changes. Edit only `reports/REPORT-0B2.md`, `docs/embedding-runtime.md` and `docs/embedding-validation.md`. (1) §7 Deviations: list every deviation, including the temporary `push` trigger used to start the workflow and its removal. (2) Replace the run log with the owner's raw `gh run list --workflow spike-embeddings.yml --limit 20` output and, for each red run, the cause with the last lines of its log; fix the repo URL to `narayanwaraich/photos-manager`; say honestly how many runs it took. (3) Renumber your decisions D18 to D22 as D21 to D25, in this order: tokenizer features (D21), preprocessing rules (D22), ORT 1.31.1 with load-dynamic (D23), CPU execution provider (D24), shared ORT environment (D25), everywhere they appear (your old D21 shared-environment and D22 CPU-EP numbers swap into D25 and D24). (4) Remove the claims that dropping the vision encoder reclaims about 370 MiB or "proves it drops cleanly" (report and `docs/embedding-runtime.md`, §5.1 and the Phase 4B checklist); write that the probes record peaks only and that current memory after the drop is unmeasured. (5) Preview test: report it as a measurement ([INFO], no gate) with the numbers. (6) Replace `mem-single-*` and `bench-coreml` with the commands that exist in the committed CLI. (7) Fix the task labels in §10 and remove the "proposed next task". (8) `docs/embedding-validation.md`: add `python --version`, branch requirement, power mode, `--num-images 4`, expected duration (1 to 1.5 hours), and the expired-artifact note. Run `pnpm verify`. Report the new commit id. Do not touch the workflow or the crate.
+
+---
+
+## Round 2 (2026-11-15)
+
+### Round-1 items against the branch (read at `origin/task/0B2` = `b2cadc1`; diff against `f318d96` touches only the three allowed files)
+
+| # | Item | Result |
+|---|---|---|
+| 1 | Deviations | Done: five listed (temporary push trigger and its removal, 90-minute timeout, `$LASTEXITCODE` reset, resizer comparison scope, stand-in preview). |
+| 2 | Run history | Done in form: the owner's raw `gh run list` is pasted (two runs of the workflow: `43286961021` red, `43360608967` green); URL org fixed; log tail of the Windows job shown. **Check:** the pasted log tail does match (the bad-checksum test passed, then the step failed on the leftover exit code). The report's statement that the macOS job of the first run "timed out at 45m23s" is **not backed by anything pasted**; treat it as the agent's claim. The second ID I had flagged, `43286960771`, produced no failed log for the owner, so it was not a failed run of this workflow (probably the app CI run of the same push); closed. |
+| 3 | Decision IDs | Done: D21 to D25 in the report and in `docs/embedding-runtime.md`, in the order given. |
+| 4 | Memory claims | Done in the report and in `docs/embedding-runtime.md` (rows and Phase 4B checklist now say peak only, drop unmeasured). |
+| 5 | Preview test | Done: reported as [INFO] measurement with numbers. |
+| 6 | CLI names | **Half done.** The new commands in report §5.6 and §5.7 are not runnable as written: `--backbone-ep` and `-n` do not exist in the committed CLI (`bench` takes `--vision-ep`, `--num-images`, `--budget`, `--mode`; the backbone provider is fixed to CPU in code). They are reconstructions of the old runs, presented as "commands run". Low harm (the numbers match the CI log and the owner's own run uses the right flags), so recorded as a defect, not a blocker. |
+| 7 | §10 labels | Done. |
+| 8 | Laptop guide | Done as asked (Python check, branch, power mode, `--num-images 4`, duration, expiry note), **but the guide itself still had three defects** that the owner's run exposed (below). Those are fixed by the orchestrator in the sync-12 copy of the file. |
+
+### The owner's laptop run (Ryzen 7 5700U, 8 GB, 7,879,585,792 bytes RAM, 8 cores / 16 logical; Windows 11, plugged in)
+
+- **Parity reproduced exactly:** tokens 61/61; tensor summary `global_max_diff=0.101961`, `global_mean_diff=0.000150`; every vector row (text 1.000000; image b140 mean 0.999936 / min 0.997064; b280 0.999945 / 0.996856; preview rows) is **identical to six decimals** to the Mac and the Windows CI server. Same binary, three different CPU families, same result: the pipeline is deterministic enough for the embedding index design.
+- **Speed (4 images per cell, so a cool, short run):** b140 best cell `threads=8, batch=2`: 1.88 s per image (0.53 img/s), text query 270 ms; `threads=4, batch=2`: 2.46 s (0.41 img/s), text 301 ms; `threads=1`: 7.0 s. b70 at `threads=8, batch=4`: 0.90 s per image. b280 is 4.3 to 5.0 s per image. Extrapolated per 100,000 photos: b140 52 to 68 hours, b70 25 hours, b280 120 to 140 hours. The laptop is about 1.4 to 1.8 times faster than the 4-vCPU CI server at the same thread count, so it is not the worst case the CI figure suggested; it is still two to three days of continuous work per 100,000 photos. Sustained throttling over hours is unmeasured.
+- **Budget 70 vs 140:** 1.80x faster, `cos(b70,b140)` mean 0.9879, min 0.9818 (same as the CI server).
+- **DirectML:** fails closed as on CI ("not supported in this build"); CPU EP stays (D24).
+- **Memory probes: no data.** All three returned `exit=1` with a 3 to 11 MiB working set: the validation script starts the child with `Process.Start`, which uses the folder PowerShell was launched from (`C:\Users\apsar\Projects`) as working directory, not the repo folder, so the exe could not find `spikes/embeddings/models/...`. The CI job works because its shell starts in the repo root. The script also never read stderr, which hid the error. Defect in the agent's `docs/embedding-validation.md` (and in my review of it, which only checked flags, not the process model). Fixed in sync-12 (`WorkingDirectory`, stderr, nested artifact path, no `C:\emb-val\repo`); rerun is a two-minute job (`docs/embedding-validation.md` §4a).
+- Other guide defects found by the run: the artifact zip extracts with its folder structure (the exe is at `bin\spikes\embeddings\rust-parity\target\release\`), and section 3 told the owner to `cd C:\emb-val\repo`, which does not exist.
+
+### Verdict
+
+**ACCEPT.** Gates met on three machines; round-1 report defects fixed except one cosmetic (CLI flags in two sections); laptop run adds independent confirmation and real speed numbers. Conditions carried forward, none blocking the merge: (1) laptop memory probes (rerun), (2) the macOS "timeout" claim for run 1 is unverified (`gh run view 43286961021 --repo narayanwaraich/photos-manager --json jobs` would settle it), (3) correct the two report sections when the report is next touched. Phase 4B inherits the checklist in `docs/embedding-runtime.md` §8 plus the new risks 44 to 46 in STATUS.

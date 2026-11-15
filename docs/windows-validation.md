@@ -200,6 +200,8 @@ Start-Process C:\temp\heic_thumb.webp
 Remove-Item -Force C:\temp\heic_thumb.webp -ErrorAction SilentlyContinue
 ```
 
+Seen on the owner's laptop 2026-11-15 (portrait iPhone 12 Pro HEIC, 3024x4032): `width 3024`, `height 4032`, `vips_image_get: field "orientation" not found` (the loader applied the rotation and consumed the tag: expected), a few `bad seek to <number>` lines from `vipsheader` (libheif probing for the end of the file; harmless when the thumbnail command exits 0), `vipsthumbnail exit code: 0`, `heic_thumb.webp: 240x320 uchar, 3 bands, srgb, webpload`, picture upright with the right colours.
+
 Expected: `vipsthumbnail exit code: 0`, a `vipsheader` line for the thumbnail such as `heic_thumb.webp: 240x320 uchar, 3 bands, srgb, webpload` (portrait source) or `320x240 ...` (landscape source), and an upright picture with the original's colours. Report the five `vipsheader` lines, the exit code and what the picture looks like. Delete `C:\vips-hevc` and `C:\temp\heic_copy.heic` afterwards.
 
 ### Step 3.6: Clean Up / Uninstall

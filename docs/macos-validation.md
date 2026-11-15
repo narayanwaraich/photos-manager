@@ -106,11 +106,13 @@ rm -f /tmp/my_iphone_thumb.webp /tmp/my_iphone_photo_copy.heic
 
 ## 4. Cross-OS Parity Check (macOS arm64 vs Windows x64)
 
-Compare the **same synthetic HEIC fixture** (`tests/fixtures/generated/image_orientation_6.heic`) across macOS (`deps/vips` / `smoke-mac.json`) and Windows (`C:\vips` / `smoke-laptop.json` from `docs/windows-validation.md`):
+> **Status 2026-11-15: closed without a manual run.** Both CI smoke tests decode this same fixture in the packaged app and assert 240x320 and the centre pixel (`heic_decode_verified: true`, runs 42786344196, 42958985250, 43021424752), and the owner decoded his own portrait iPhone HEIC with the same pinned zips on both OSes (upright, colours match). The commands below were wrong in the earlier version (they used the stock `C:\vips` zip, which has no HEVC decoder, and a Homebrew-era `deps/vips` folder); they are corrected here for reuse in the Phase 7 clean-machine test.
 
-### macOS arm64 commands:
+Compare the **same synthetic HEIC fixture** (`tests/fixtures/generated/image_orientation_6.heic`) on both OSes with the **pinned HEVC zips**, not the stock libvips.
+
+### macOS arm64 commands (from the repo root; zip from release `macos-arm64-vips-8.18.6-hevc1`):
 ```bash
-VIPS_BIN="$PWD/deps/vips/bin"
+VIPS_BIN=~/Downloads/macvips/vips-macos-arm64-8.18.6-hevc/bin
 env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "$VIPS_BIN/vipsthumbnail" \
   tests/fixtures/generated/image_orientation_6.heic -s 320 -o /tmp/mac_heic_240x320.png
 env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "$VIPS_BIN/vipsheader" /tmp/mac_heic_240x320.png
@@ -118,18 +120,18 @@ env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "$VIPS_BIN/vips" getpoint /tmp/mac_hei
 rm -f /tmp/mac_heic_240x320.png
 ```
 
-### Windows x64 PowerShell commands:
+### Windows x64 PowerShell commands (from the repo root; zip from release `win64-vips-8.18.6-hevc1`, unpacked as in `docs/windows-validation.md` Step 3.5, which sets `$vt` and `$vh`):
 ```powershell
-C:\vips\bin\vipsthumbnail.exe tests\fixtures\generated\image_orientation_6.heic -s 320 -o C:\temp\win_heic_240x320.png
-C:\vips\bin\vipsheader.exe C:\temp\win_heic_240x320.png
-C:\vips\bin\vips.exe getpoint C:\temp\win_heic_240x320.png 120 160
+$vips = Join-Path (Split-Path $vt) "vips.exe"
+& $vt tests\fixtures\generated\image_orientation_6.heic -s 320 -o C:\temp\win_heic_240x320.png
+& $vh C:\temp\win_heic_240x320.png
+& $vips getpoint C:\temp\win_heic_240x320.png 120 160
 Remove-Item -Force C:\temp\win_heic_240x320.png
 ```
 
 *Expected parity:*
 - `vipsheader` reports identical upright dimensions **`240x320`** (`uchar, 3 bands, srgb`) on both macOS and Windows.
-- `vips getpoint ... 120 160` reports matching center pixel RGB (`70 130 180` within encoder/rounding tolerance) on both OSes.
-- Both `smoke-mac.json` and `smoke-laptop.json` report `"libvips.version": "8.18.6"` and `"heic_decode_verified": true`.
+- `vips getpoint ... 120 160` reports matching centre pixel RGB (`70 130 180` within encoder/rounding tolerance) on both OSes.
 
 ---
 
