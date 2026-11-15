@@ -220,3 +220,10 @@ INSERT INTO asset_embeddings (
 ## 9. Unknowns & Out-of-Scope Items
 - **Video & Audio modalities:** Untested in this spike (out of scope for v1 image manager per spec §9.1 and §13).
 - **Windows x64 Execution:** Validated on macOS Apple Silicon; Windows execution using `onnxruntime.dll` must be verified on the owner's Windows test rig before Phase 4.
+
+---
+
+## Update After TASK-0B2 (2026-11-12)
+
+> [!NOTE]
+> **Parity & Clean-Environment Proven in Rust:** TASK-0B2 replaced the Python-only assumptions with a standalone Rust crate ([`spikes/embeddings/rust-parity/`](../spikes/embeddings/rust-parity/)) using `ort = "=2.0.0-rc.15"` (`load-dynamic`), `tokenizers = "0.23.2"` (pure Rust `fancy-regex`), and `fast_image_resize = "6.1.0"` (`CatmullRom`) against official Microsoft ONNX Runtime **`v1.31.1`** (superseding the `1.20.1`/`download-binaries` placeholder note in §5 above). All parity gates passed (`61/61` exact token IDs, `>= 0.9999` text cosine, `>= 0.999` image cosine across budgets 140/280 at `768d` and `256d`). Full runtime specification, thread-sweep benchmarks, memory numbers, and Phase 4B requirements now live in [`docs/embedding-runtime.md`](./embedding-runtime.md).
