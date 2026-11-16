@@ -1,7 +1,7 @@
 # REPORT-1A: Catalogue core: path model, Phase 1 schema, repositories
 
-**Branch:** `task/1A` · **Commit:** `pending` · **Date:** 2026-11-16  
-**OS actually tested:** macOS 27.0 (Apple Silicon arm64) · **Not tested:** Windows 10/11 x64 locally (validated on Windows x64 in GitHub Actions CI run `43807899060`)
+**Branch:** `task/1A` · **Commit:** `3b5b598` · **Date:** 2026-11-16  
+**OS actually tested:** macOS 27.0 (Apple Silicon arm64) · **Not tested:** Windows 10/11 x64 locally (validated on Windows x64 in GitHub Actions CI run `43871350738`)
 
 ## 1. Summary
 
@@ -466,9 +466,18 @@ $ git grep -n "execute_sql" src-tauri
 ### 6. Windows CI Verification and Run Analysis
 
 CI history on `task/1A`:
-It took 2 CI runs to reach a fully passing state:
+It took 2 CI runs to reach a fully passing state after initial submission:
 - First run `43806156774` (red, failed at 2026-11-16T04:49:22Z): Failed during Windows `cargo clippy -- -D warnings` on Windows-only code in `src/filesystem/native_path.rs`.
 - Second run `43807899060` (green): Succeeded on both macOS arm64 and Windows x64 after commit `7b0771d`.
+- Review Round 1 run `43871350738` (green): Succeeded on both macOS arm64 and Windows x64 after commit `3b5b598` addressing all REVIEW-1A findings.
+
+```text
+$ gh run list --branch task/1A --limit 3
+STATUS  TITLE                                                                  WORKFLOW               BRANCH   EVENT  ID           ELAPSED  AGE
+✓       fix(1A): address REVIEW-1A findings across tests, collision logic,...  CI & Packaging Matrix  task/1A  push   43871350738  6m20s    7m
+✓       fix(1A): address Windows-specific clippy lints in native_path          CI & Packaging Matrix  task/1A  push   43807899060  8m53s    7h
+X       feat(1A): path model, Phase 1 schema, domain types, and repositories   CI & Packaging Matrix  task/1A  push   43806156774  6m52s    8h
+```
 
 #### Tail of failed log for run `43806156774`:
 ```text
@@ -493,29 +502,47 @@ windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9614950Z   
 windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9617059Z    = help: to override `-D warnings` add `#[allow(clippy::chunks_exact_to_as_chunks)]`
 ```
 
-#### Windows Job (`windows-x64`, Run `43807899060`) test execution output (condensed 20 of 31 lines):
+#### Windows Job (`windows-x64`, Run `43871350738`) full test execution output (all 37 lines):
 ```text
-windows-x64	Run verification suite (pnpm verify)	running 31 tests
+windows-x64	Run verification suite (pnpm verify)	running 37 tests
+windows-x64	Run verification suite (pnpm verify)	test database::tests::test_enum_from_str_rejection_all_enums ... ok
 windows-x64	Run verification suite (pnpm verify)	test database::tests::test_foreign_keys_on_every_connection ... ok
+windows-x64	Run verification suite (pnpm verify)	test database::tests::test_duplicate_primary_key_is_database_error_not_collision ... ok
 windows-x64	Run verification suite (pnpm verify)	test database::tests::test_init_pool_and_app_settings_migration ... ok
-windows-x64	Run verification suite (pnpm verify)	test database::tests::test_migration_0a_to_phase1 ... ok
 windows-x64	Run verification suite (pnpm verify)	test database::tests::test_cascade_delete_root ... ok
+windows-x64	Run verification suite (pnpm verify)	test database::tests::test_migration_0a_to_phase1 ... ok
+windows-x64	Run verification suite (pnpm verify)	test database::tests::test_platform_guard_pre_migration_rejection ... ok
+windows-x64	Run verification suite (pnpm verify)	test database::tests::test_platform_guard_rejects_mismatch ... ok
 windows-x64	Run verification suite (pnpm verify)	test filesystem::tests::test_from_absolute_not_inside_root ... ok
 windows-x64	Run verification suite (pnpm verify)	test filesystem::tests::test_from_absolute_root_itself ... ok
 windows-x64	Run verification suite (pnpm verify)	test filesystem::tests::test_from_absolute_traversal_in_abs ... ok
+windows-x64	Run verification suite (pnpm verify)	test filesystem::tests::test_from_components_and_from_absolute_reject_same_invalid_names ... ok
 windows-x64	Run verification suite (pnpm verify)	test filesystem::tests::test_nfc_vs_nfd_key_equality ... ok
-windows-x64	Run verification suite (pnpm verify)	test database::tests::test_platform_guard_rejects_mismatch ... ok
+windows-x64	Run verification suite (pnpm verify)	test filesystem::tests::test_proptest_arbitrary_component_validation ... ok
 windows-x64	Run verification suite (pnpm verify)	test filesystem::tests::test_proptest_display_and_separator_independence ... ok
 windows-x64	Run verification suite (pnpm verify)	test filesystem::tests::test_proptest_key_rules_case_policy ... ok
+windows-x64	Run verification suite (pnpm verify)	test database::tests::test_enum_check_sync_and_size_range ... ok
 windows-x64	Run verification suite (pnpm verify)	test filesystem::tests::test_proptest_native_roundtrip_windows ... ok
 windows-x64	Run verification suite (pnpm verify)	test filesystem::tests::test_rejection_table_driven ... ok
 windows-x64	Run verification suite (pnpm verify)	test filesystem::tests::test_windows_odd_byte_length_rejected ... ok
 windows-x64	Run verification suite (pnpm verify)	test filesystem::tests::test_windows_unpaired_surrogate_rejected ... ok
 windows-x64	Run verification suite (pnpm verify)	test filesystem::tests::test_windows_verbatim_support_and_rejections ... ok
-windows-x64	Run verification suite (pnpm verify)	test filesystem::tests::test_proptest_valid_components_never_contain_forbidden ... ok
+windows-x64	Run verification suite (pnpm verify)	test filesystem::tests::test_proptest_nfc_nfd_key_equality ... ok
+windows-x64	Run verification suite (pnpm verify)	test image_pipeline::vips::tests::test_vips_missing_file_error ... ok
+windows-x64	Run verification suite (pnpm verify)	test image_pipeline::vips::tests::test_vips_supported_loaders_reports_real_codecs ... ok
+windows-x64	Run verification suite (pnpm verify)	test image_pipeline::vips::tests::test_vips_blocks_svgload ... ok
+windows-x64	Run verification suite (pnpm verify)	test image_pipeline::vips::tests::test_vips_thumbnail_png ... ok
+windows-x64	Run verification suite (pnpm verify)	test image_pipeline::vips::tests::test_vips_thumbnail_rotated_jpeg ... ok
+windows-x64	Run verification suite (pnpm verify)	test database::tests::test_repository_functions_crud ... ok
 windows-x64	Run verification suite (pnpm verify)	test database::tests::test_uniqueness_path_key_collision ... ok
-windows-x64	Run verification suite (pnpm verify)	test database::tests::test_enum_check_sync_and_size_range ... ok
-windows-x64	Run verification suite (pnpm verify)	test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.74s
+windows-x64	Run verification suite (pnpm verify)	test metadata::tests::test_exiftool_missing_file ... ok
+windows-x64	Run verification suite (pnpm verify)	test metadata::tests::test_exiftool_rejects_non_absolute_path ... ok
+windows-x64	Run verification suite (pnpm verify)	test metadata::tests::test_exiftool_malformed_output ... ok
+windows-x64	Run verification suite (pnpm verify)	test metadata::tests::test_exiftool_non_ascii_filename ... ok
+windows-x64	Run verification suite (pnpm verify)	test metadata::tests::test_exiftool_success ... ok
+windows-x64	Run verification suite (pnpm verify)	test metadata::tests::test_exiftool_timeout ... ok
+windows-x64	Run verification suite (pnpm verify)	test metadata::tests::test_exiftool_long_path ... ok
+windows-x64	Run verification suite (pnpm verify)	test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.01s
 ```
 
 ---
