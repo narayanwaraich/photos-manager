@@ -1,4 +1,5 @@
 pub mod database;
+pub mod domain;
 pub mod filesystem;
 pub mod image_pipeline;
 pub mod metadata;
