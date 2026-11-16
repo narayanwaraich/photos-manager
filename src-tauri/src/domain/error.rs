@@ -5,7 +5,11 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum CatalogueError {
     #[error("Path key collision in root '{root_id}' with path_key {path_key:?}")]
-    PathKeyCollision { root_id: String, path_key: Vec<u8> },
+    PathKeyCollision {
+        root_id: String,
+        path_key: Vec<u8>,
+        existing_id: Option<String>,
+    },
 
     #[error("Catalogue platform mismatch: database encoding '{found}' does not match current platform '{expected}'")]
     PlatformMismatch { expected: String, found: String },

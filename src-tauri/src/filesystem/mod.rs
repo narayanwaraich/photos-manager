@@ -45,6 +45,26 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use std::ffi::OsString;
+    use std::path::Path;
+
+    fn is_forbidden_component(s: &str) -> bool {
+        if s.is_empty()
+            || s == "."
+            || s == ".."
+            || s.contains('\0')
+            || s.contains('/')
+            || s.contains('\\')
+            || s.ends_with(':')
+        {
+            return true;
+        }
+        for comp in Path::new(s).components() {
+            if !matches!(comp, std::path::Component::Normal(_)) {
+                return true;
+            }
+        }
+        false
+    }
 
     // G.1: Native round-trip property test
     #[cfg(unix)]
@@ -118,21 +138,40 @@ mod tests {
         }
 
         #[test]
-        fn test_proptest_valid_components_never_contain_forbidden(
-            comps in proptest::collection::vec("[a-zA-Z0-9_.-]{1,15}", 1..6)
+        fn test_proptest_arbitrary_component_validation(
+            s in prop_oneof![
+                any::<String>(),
+                proptest::string::string_regex("[a-zA-Z0-9_./\\\\:\0 -]{0,25}").unwrap(),
+            ]
         ) {
-            // Filter components to avoid pure '.' or '..' or empty
-            if comps.iter().all(|c| c != "." && c != ".." && !c.contains('/') && !c.contains('\\') && !c.is_empty()) {
-                let rel = RelPath::from_components(&comps);
-                if let Ok(r) = rel {
-                    for c in r.components() {
-                        prop_assert_ne!(c, "..");
-                        prop_assert_ne!(c, ".");
-                        prop_assert!(!c.contains('\0'));
-                        prop_assert!(!c.contains('/'));
-                        prop_assert!(!c.contains('\\'));
-                    }
-                }
+            let res = RelPath::from_components([&s]);
+            let forbidden = is_forbidden_component(&s);
+            if forbidden {
+                prop_assert!(res.is_err(), "Forbidden component {:?} should return Err, got {:?}", s, res);
+            } else {
+                prop_assert!(res.is_ok(), "Clean component {:?} should return Ok, got {:?}", s, res.err());
+            }
+        }
+
+        #[test]
+        fn test_proptest_nfc_nfd_key_equality(
+            raw in "[a-zA-Z0-9\u{00E0}-\u{00FF}\u{0100}-\u{017F}\u{0300}-\u{036F}ßİı]{1,20}"
+        ) {
+            use unicode_normalization::UnicodeNormalization;
+            let nfc: String = raw.nfc().collect();
+            let nfd: String = raw.nfd().collect();
+
+            if !is_forbidden_component(&nfc) && !is_forbidden_component(&nfd) {
+                let rel_nfc = RelPath::from_components([&nfc]).unwrap();
+                let rel_nfd = RelPath::from_components([&nfd]).unwrap();
+
+                let key_nfc_ci = rel_nfc.path_key(PathKeyPolicy { case_sensitive: false });
+                let key_nfd_ci = rel_nfd.path_key(PathKeyPolicy { case_sensitive: false });
+                prop_assert_eq!(key_nfc_ci, key_nfd_ci);
+
+                let key_nfc_cs = rel_nfc.path_key(PathKeyPolicy { case_sensitive: true });
+                let key_nfd_cs = rel_nfd.path_key(PathKeyPolicy { case_sensitive: true });
+                prop_assert_eq!(key_nfc_cs, key_nfd_cs);
             }
         }
     }
@@ -223,6 +262,67 @@ mod tests {
                 tc.name
             );
         }
+    }
+
+    #[test]
+    fn test_from_components_and_from_absolute_reject_same_invalid_names() {
+        #[cfg(windows)]
+        let base_root = Path::new("C:\\library");
+        #[cfg(not(windows))]
+        let base_root = Path::new("/library");
+
+        let invalid_names: &[&str] = &[
+            "..",
+            "bad\0name.jpg",
+            "name:",
+            #[cfg(not(windows))]
+            "sub\\folder",
+        ];
+
+        for name in invalid_names {
+            // from_components must reject
+            let comp_res = RelPath::from_components([*name]);
+            assert!(
+                comp_res.is_err(),
+                "from_components accepted invalid name: {:?}",
+                name
+            );
+
+            // from_absolute as target must reject
+            let abs_target = base_root.join(name);
+            let abs_res = RelPath::from_absolute(base_root, &abs_target);
+            assert!(
+                abs_res.is_err(),
+                "from_absolute accepted invalid target name: {:?}",
+                name
+            );
+
+            // from_absolute as root component must also reject
+            let bad_root = base_root.join(name);
+            let target = bad_root.join("photo.jpg");
+            let root_res = RelPath::from_absolute(&bad_root, &target);
+            assert!(
+                root_res.is_err(),
+                "from_absolute accepted invalid root component: {:?}",
+                name
+            );
+        }
+
+        // Empty component is rejected by from_components
+        assert_eq!(
+            RelPath::from_components([""]).err(),
+            Some(PathError::EmptyComponent)
+        );
+        // CurrentDir dot is rejected by from_components
+        assert_eq!(
+            RelPath::from_components(["."]).err(),
+            Some(PathError::CurrentDirComponent)
+        );
+        // CurrentDir in from_absolute root is rejected
+        assert_eq!(
+            RelPath::from_absolute(Path::new("./library"), Path::new("./library/photo.jpg")).err(),
+            Some(PathError::CurrentDirComponent)
+        );
     }
 
     #[test]

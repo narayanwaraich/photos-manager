@@ -35,17 +35,20 @@ pub async fn insert_folder(
     match result {
         Ok(_) => Ok(()),
         Err(err) => {
-            let s = err.to_string();
-            if s.contains("UNIQUE constraint failed")
-                && (s.contains("path_key") || s.contains("folders.root_id"))
+            if err.as_database_error().map(|e| e.kind())
+                == Some(sqlx::error::ErrorKind::UniqueViolation)
             {
-                Err(CatalogueError::PathKeyCollision {
-                    root_id: folder.root_id.to_string(),
-                    path_key: folder.path_key.clone(),
-                })
-            } else {
-                Err(CatalogueError::Database(err))
+                if let Ok(Some(existing)) =
+                    find_folder_by_key(conn, &folder.root_id, &folder.path_key).await
+                {
+                    return Err(CatalogueError::PathKeyCollision {
+                        root_id: folder.root_id.to_string(),
+                        path_key: folder.path_key.clone(),
+                        existing_id: Some(existing.id.to_string()),
+                    });
+                }
             }
+            Err(CatalogueError::Database(err))
         }
     }
 }

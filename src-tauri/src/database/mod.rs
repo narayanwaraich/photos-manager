@@ -78,12 +78,37 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool, CatalogueError> {
         .connect_with(options)
         .await?;
 
+    let now_ms: i64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| CatalogueError::Database(sqlx::Error::Decode(Box::new(e))))?
+        .as_millis()
+        .try_into()
+        .map_err(|_| CatalogueError::SizeOutOfRange { size: u64::MAX })?;
+
+    // Check if app_settings table exists before running migrations (look, refuse, only then touch)
+    let mut conn = pool.acquire().await?;
+    let has_app_settings: Option<(String,)> = sqlx::query_as(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'app_settings';",
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+
+    if has_app_settings.is_some() {
+        // Database already initialized: check platform guard BEFORE running migrations
+        check_or_set_platform_guard(&mut conn, now_ms).await?;
+    }
+
+    // Release connection borrow before running migrations on the pool
+    drop(conn);
+
     // Run versioned migrations from migrations/ directory
     sqlx::migrate!("./migrations").run(&pool).await?;
 
-    // Validate platform guard
-    let mut conn = pool.acquire().await?;
-    check_or_set_platform_guard(&mut conn, 0).await?;
+    if has_app_settings.is_none() {
+        // Fresh database: stamp platform guard after migrations created app_settings
+        let mut conn = pool.acquire().await?;
+        check_or_set_platform_guard(&mut conn, now_ms).await?;
+    }
 
     Ok(pool)
 }
@@ -778,8 +803,10 @@ mod tests {
             .contains("CHECK constraint failed"));
 
         // 4. FileStatus variants
+        let mut last_file_id = FileId::new();
         for status in FileStatus::all_variants() {
             let fid = FileId::new();
+            last_file_id = fid.clone();
             let key = fid.as_str().as_bytes().to_vec();
             let file = FileRow {
                 id: fid,
@@ -804,6 +831,15 @@ mod tests {
                 .await
                 .expect("FileStatus insert failed");
         }
+        let bad_file_res = sqlx::query("UPDATE files SET status = 'bogus' WHERE id = ?;")
+            .bind(last_file_id.as_str())
+            .execute(&mut *conn)
+            .await;
+        assert!(bad_file_res.is_err());
+        assert!(bad_file_res
+            .unwrap_err()
+            .to_string()
+            .contains("CHECK constraint failed"));
 
         // 5. AssetKind and AssetStatus variants
         let base_file_id = FileId::new();
@@ -828,9 +864,11 @@ mod tests {
         };
         insert_file(&mut conn, &base_file).await.unwrap();
 
+        let mut last_asset_id = AssetId::new();
         for kind in AssetKind::all_variants() {
             for status in AssetStatus::all_variants() {
                 let aid = AssetId::new();
+                last_asset_id = aid.clone();
                 let asset = AssetRow {
                     id: aid,
                     kind: *kind,
@@ -862,6 +900,25 @@ mod tests {
                     .expect("Asset variant insert failed");
             }
         }
+        let bad_asset_kind_res = sqlx::query("UPDATE assets SET kind = 'bogus' WHERE id = ?;")
+            .bind(last_asset_id.as_str())
+            .execute(&mut *conn)
+            .await;
+        assert!(bad_asset_kind_res.is_err());
+        assert!(bad_asset_kind_res
+            .unwrap_err()
+            .to_string()
+            .contains("CHECK constraint failed"));
+
+        let bad_asset_status_res = sqlx::query("UPDATE assets SET status = 'bogus' WHERE id = ?;")
+            .bind(last_asset_id.as_str())
+            .execute(&mut *conn)
+            .await;
+        assert!(bad_asset_status_res.is_err());
+        assert!(bad_asset_status_res
+            .unwrap_err()
+            .to_string()
+            .contains("CHECK constraint failed"));
 
         // 6. Size range validation
         // Size above i64::MAX is rejected before SQL
@@ -931,5 +988,391 @@ mod tests {
         assert!(open_res.is_err());
         let err = open_res.unwrap_err();
         assert_eq!(err.code(), "catalogue_platform_mismatch");
+    }
+
+    // G.8: FromStr rejection for all 6 enums
+    #[test]
+    fn test_enum_from_str_rejection_all_enums() {
+        use std::str::FromStr;
+        assert!(VolumeKind::from_str("bogus").is_err());
+        assert!(RootStatus::from_str("bogus").is_err());
+        assert!(FolderStatus::from_str("bogus").is_err());
+        assert!(FileStatus::from_str("bogus").is_err());
+        assert!(AssetKind::from_str("bogus").is_err());
+        assert!(AssetStatus::from_str("bogus").is_err());
+    }
+
+    // G.6 & Review item 4: Duplicate primary key with different path_key returns Database error, not PathKeyCollision
+    #[tokio::test]
+    async fn test_duplicate_primary_key_is_database_error_not_collision() {
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let db_path = temp_dir.path().join("dup_pk_test.db");
+        let pool = init_pool(&db_path).await.expect("Failed to init pool");
+        let mut conn = pool.acquire().await.expect("Acquire failed");
+
+        let vol_id = VolumeId::new();
+        let volume = VolumeRow {
+            id: vol_id.clone(),
+            kind: VolumeKind::Internal,
+            label: Some("HD".into()),
+            fs_uuid: None,
+            fs_type: None,
+            case_sensitive: false,
+            last_seen_at_ms: None,
+        };
+        insert_volume(&mut conn, &volume).await.unwrap();
+
+        let root_id = RootId::new();
+        let root = RootRow {
+            id: root_id.clone(),
+            volume_id: Some(vol_id),
+            label: "Photos".into(),
+            path_display: "/photos".into(),
+            path_native: b"/photos".to_vec(),
+            status: RootStatus::Active,
+            follow_symlinks: false,
+            include_hidden: false,
+            created_at_ms: 1000,
+            updated_at_ms: 1000,
+            last_scan_at_ms: None,
+            last_scan_generation: None,
+        };
+        insert_root(&mut conn, &root).await.unwrap();
+
+        // 1. Folders: duplicate ID with DIFFERENT path_key
+        let folder_id = FolderId::new();
+        let folder1 = FolderRow {
+            id: folder_id.clone(),
+            root_id: root_id.clone(),
+            parent_id: None,
+            name: "f1".into(),
+            rel_path_display: "f1".into(),
+            rel_path_native: b"f1".to_vec(),
+            path_key: b"f1".to_vec(),
+            status: FolderStatus::Present,
+            modified_at_ms: None,
+            last_seen_generation: None,
+        };
+        insert_folder(&mut conn, &folder1).await.unwrap();
+
+        let folder2 = FolderRow {
+            id: folder_id.clone(), // Duplicate primary key!
+            root_id: root_id.clone(),
+            parent_id: None,
+            name: "f2".into(),
+            rel_path_display: "f2".into(),
+            rel_path_native: b"f2".to_vec(),
+            path_key: b"f2".to_vec(), // Different path_key!
+            status: FolderStatus::Present,
+            modified_at_ms: None,
+            last_seen_generation: None,
+        };
+        let f_err = insert_folder(&mut conn, &folder2).await.unwrap_err();
+        assert_eq!(f_err.code(), "database");
+        assert!(!matches!(f_err, CatalogueError::PathKeyCollision { .. }));
+
+        // 2. Files: duplicate ID with DIFFERENT path_key
+        let file_id = FileId::new();
+        let file1 = FileRow {
+            id: file_id.clone(),
+            root_id: root_id.clone(),
+            folder_id: folder_id.clone(),
+            name: "a.jpg".into(),
+            extension: Some("jpg".into()),
+            rel_path_display: "f1/a.jpg".into(),
+            rel_path_native: b"f1/a.jpg".to_vec(),
+            path_key: b"f1/a.jpg".to_vec(),
+            size_bytes: 100,
+            modified_at_ms: 1000,
+            created_at_ms: None,
+            file_identity: None,
+            status: FileStatus::Present,
+            scan_generation: None,
+            last_verified_at_ms: None,
+            created_in_catalog_at_ms: 1000,
+            updated_at_ms: 1000,
+        };
+        insert_file(&mut conn, &file1).await.unwrap();
+
+        let file2 = FileRow {
+            id: file_id.clone(), // Duplicate primary key!
+            root_id: root_id.clone(),
+            folder_id: folder_id.clone(),
+            name: "b.jpg".into(),
+            extension: Some("jpg".into()),
+            rel_path_display: "f1/b.jpg".into(),
+            rel_path_native: b"f1/b.jpg".to_vec(),
+            path_key: b"f1/b.jpg".to_vec(), // Different path_key!
+            size_bytes: 200,
+            modified_at_ms: 2000,
+            created_at_ms: None,
+            file_identity: None,
+            status: FileStatus::Present,
+            scan_generation: None,
+            last_verified_at_ms: None,
+            created_in_catalog_at_ms: 2000,
+            updated_at_ms: 2000,
+        };
+        let file_err = insert_file(&mut conn, &file2).await.unwrap_err();
+        assert_eq!(file_err.code(), "database");
+        assert!(!matches!(file_err, CatalogueError::PathKeyCollision { .. }));
+    }
+
+    // Review item 1: Test 5 repository functions
+    // (list_volumes, list_roots, find_folder_by_key, find_file_by_key, count_for_root)
+    #[tokio::test]
+    async fn test_repository_functions_crud() {
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let db_path = temp_dir.path().join("repo_crud_test.db");
+        let pool = init_pool(&db_path).await.expect("Failed to init pool");
+        let mut conn = pool.acquire().await.expect("Acquire failed");
+
+        // 1. list_volumes (returns what was inserted in stable order ORDER BY id)
+        let vol1 = VolumeRow {
+            id: VolumeId::from("vol_a"),
+            kind: VolumeKind::Internal,
+            label: Some("Volume A".into()),
+            fs_uuid: None,
+            fs_type: None,
+            case_sensitive: false,
+            last_seen_at_ms: None,
+        };
+        let vol2 = VolumeRow {
+            id: VolumeId::from("vol_b"),
+            kind: VolumeKind::Removable,
+            label: Some("Volume B".into()),
+            fs_uuid: None,
+            fs_type: None,
+            case_sensitive: true,
+            last_seen_at_ms: None,
+        };
+        insert_volume(&mut conn, &vol2).await.unwrap();
+        insert_volume(&mut conn, &vol1).await.unwrap();
+
+        let vol_list = list_volumes(&mut conn).await.unwrap();
+        assert_eq!(vol_list.len(), 2);
+        assert_eq!(vol_list[0].id.as_str(), "vol_a");
+        assert_eq!(vol_list[1].id.as_str(), "vol_b");
+
+        // 2. list_roots (returns what was inserted in stable order ORDER BY created_at_ms)
+        let root1 = RootRow {
+            id: RootId::new(),
+            volume_id: Some(vol1.id.clone()),
+            label: "Root 1".into(),
+            path_display: "/path/1".into(),
+            path_native: b"/path/1".to_vec(),
+            status: RootStatus::Active,
+            follow_symlinks: false,
+            include_hidden: false,
+            created_at_ms: 1000,
+            updated_at_ms: 1000,
+            last_scan_at_ms: None,
+            last_scan_generation: None,
+        };
+        let root2 = RootRow {
+            id: RootId::new(),
+            volume_id: Some(vol2.id.clone()),
+            label: "Root 2".into(),
+            path_display: "/path/2".into(),
+            path_native: b"/path/2".to_vec(),
+            status: RootStatus::Active,
+            follow_symlinks: false,
+            include_hidden: false,
+            created_at_ms: 2000,
+            updated_at_ms: 2000,
+            last_scan_at_ms: None,
+            last_scan_generation: None,
+        };
+        insert_root(&mut conn, &root2).await.unwrap();
+        insert_root(&mut conn, &root1).await.unwrap();
+
+        let root_list = list_roots(&mut conn).await.unwrap();
+        assert_eq!(root_list.len(), 2);
+        assert_eq!(root_list[0].id, root1.id);
+        assert_eq!(root_list[1].id, root2.id);
+
+        // 3. find_folder_by_key (hit and miss)
+        let folder = FolderRow {
+            id: FolderId::new(),
+            root_id: root1.id.clone(),
+            parent_id: None,
+            name: "vacation".into(),
+            rel_path_display: "vacation".into(),
+            rel_path_native: b"vacation".to_vec(),
+            path_key: b"vacation".to_vec(),
+            status: FolderStatus::Present,
+            modified_at_ms: None,
+            last_seen_generation: None,
+        };
+        insert_folder(&mut conn, &folder).await.unwrap();
+
+        // Hit
+        let found_folder = find_folder_by_key(&mut conn, &root1.id, b"vacation")
+            .await
+            .unwrap();
+        assert!(found_folder.is_some());
+        assert_eq!(found_folder.unwrap().id, folder.id);
+
+        // Miss: wrong key
+        let miss_folder_key = find_folder_by_key(&mut conn, &root1.id, b"unknown")
+            .await
+            .unwrap();
+        assert!(miss_folder_key.is_none());
+
+        // Miss: wrong root_id
+        let miss_folder_root = find_folder_by_key(&mut conn, &root2.id, b"vacation")
+            .await
+            .unwrap();
+        assert!(miss_folder_root.is_none());
+
+        // 4. count_for_root and find_file_by_key (hits, misses, count after inserts and after delete)
+        let count0 = count_for_root(&mut conn, &root1.id).await.unwrap();
+        assert_eq!(count0, 0);
+
+        let file1 = FileRow {
+            id: FileId::new(),
+            root_id: root1.id.clone(),
+            folder_id: folder.id.clone(),
+            name: "beach.jpg".into(),
+            extension: Some("jpg".into()),
+            rel_path_display: "vacation/beach.jpg".into(),
+            rel_path_native: b"vacation/beach.jpg".to_vec(),
+            path_key: b"vacation/beach.jpg".to_vec(),
+            size_bytes: 1024,
+            modified_at_ms: 1000,
+            created_at_ms: None,
+            file_identity: None,
+            status: FileStatus::Present,
+            scan_generation: None,
+            last_verified_at_ms: None,
+            created_in_catalog_at_ms: 1000,
+            updated_at_ms: 1000,
+        };
+        let file2 = FileRow {
+            id: FileId::new(),
+            root_id: root1.id.clone(),
+            folder_id: folder.id.clone(),
+            name: "sunset.jpg".into(),
+            extension: Some("jpg".into()),
+            rel_path_display: "vacation/sunset.jpg".into(),
+            rel_path_native: b"vacation/sunset.jpg".to_vec(),
+            path_key: b"vacation/sunset.jpg".to_vec(),
+            size_bytes: 2048,
+            modified_at_ms: 1000,
+            created_at_ms: None,
+            file_identity: None,
+            status: FileStatus::Present,
+            scan_generation: None,
+            last_verified_at_ms: None,
+            created_in_catalog_at_ms: 1000,
+            updated_at_ms: 1000,
+        };
+        insert_file(&mut conn, &file1).await.unwrap();
+        insert_file(&mut conn, &file2).await.unwrap();
+
+        let count2 = count_for_root(&mut conn, &root1.id).await.unwrap();
+        assert_eq!(count2, 2);
+
+        // find_file_by_key: Hit
+        let found_file = find_file_by_key(&mut conn, &root1.id, b"vacation/beach.jpg")
+            .await
+            .unwrap();
+        assert!(found_file.is_some());
+        assert_eq!(found_file.unwrap().id, file1.id);
+
+        // find_file_by_key: Miss (wrong key)
+        let miss_file_key = find_file_by_key(&mut conn, &root1.id, b"vacation/missing.jpg")
+            .await
+            .unwrap();
+        assert!(miss_file_key.is_none());
+
+        // find_file_by_key: Miss (wrong root)
+        let miss_file_root = find_file_by_key(&mut conn, &root2.id, b"vacation/beach.jpg")
+            .await
+            .unwrap();
+        assert!(miss_file_root.is_none());
+
+        // count_for_root after a delete
+        sqlx::query("DELETE FROM files WHERE id = ?;")
+            .bind(file1.id.as_str())
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+
+        let count_after_delete = count_for_root(&mut conn, &root1.id).await.unwrap();
+        assert_eq!(count_after_delete, 1);
+    }
+
+    // Review item 6: Pre-migration platform guard rejection
+    // Database with only 0A migration and foreign stamp is refused BEFORE migrations run,
+    // and sqlite_master has no Phase 1 tables (volumes table does NOT exist).
+    #[tokio::test]
+    async fn test_platform_guard_pre_migration_rejection() {
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let db_path = temp_dir.path().join("pre_migration_guard.db");
+
+        // 1. Create a database with only the 0A schema (app_settings table)
+        let options = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true);
+        let pool_0a = SqlitePoolOptions::new()
+            .connect_with(options)
+            .await
+            .expect("Failed to connect 0A pool");
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS app_settings (
+               key TEXT PRIMARY KEY NOT NULL,
+               value_json TEXT NOT NULL,
+               updated_at_ms INTEGER NOT NULL
+             );",
+        )
+        .execute(&pool_0a)
+        .await
+        .expect("Failed to create 0A table");
+
+        // 2. Insert a foreign platform stamp
+        let foreign_encoding = if CURRENT_PLATFORM_ENCODING == "windows-utf16le" {
+            "unix-bytes"
+        } else {
+            "windows-utf16le"
+        };
+        sqlx::query("INSERT INTO app_settings (key, value_json, updated_at_ms) VALUES (?, ?, ?);")
+            .bind("native_path_encoding")
+            .bind(serde_json::to_string(foreign_encoding).unwrap())
+            .bind(1000i64)
+            .execute(&pool_0a)
+            .await
+            .expect("Failed to insert foreign stamp");
+
+        drop(pool_0a);
+
+        // 3. Attempt to open via init_pool - must be refused before migrations run
+        let open_res = init_pool(&db_path).await;
+        assert!(matches!(
+            open_res,
+            Err(CatalogueError::PlatformMismatch { .. })
+        ));
+
+        // 4. Verify that Phase 1 migrations were NOT applied (volumes table does NOT exist)
+        let check_options = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(false);
+        let check_pool = SqlitePoolOptions::new()
+            .connect_with(check_options)
+            .await
+            .expect("Failed to connect to check db");
+
+        let volumes_table: Option<(String,)> = sqlx::query_as(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'volumes';",
+        )
+        .fetch_optional(&check_pool)
+        .await
+        .expect("Failed to query sqlite_master");
+
+        assert!(
+            volumes_table.is_none(),
+            "Phase 1 'volumes' table must NOT exist when database is refused by platform guard"
+        );
     }
 }

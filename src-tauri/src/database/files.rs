@@ -52,17 +52,20 @@ pub async fn insert_file(
     match result {
         Ok(_) => Ok(()),
         Err(err) => {
-            let s = err.to_string();
-            if s.contains("UNIQUE constraint failed")
-                && (s.contains("path_key") || s.contains("files.root_id"))
+            if err.as_database_error().map(|e| e.kind())
+                == Some(sqlx::error::ErrorKind::UniqueViolation)
             {
-                Err(CatalogueError::PathKeyCollision {
-                    root_id: file.root_id.to_string(),
-                    path_key: file.path_key.clone(),
-                })
-            } else {
-                Err(CatalogueError::Database(err))
+                if let Ok(Some(existing)) =
+                    find_file_by_key(conn, &file.root_id, &file.path_key).await
+                {
+                    return Err(CatalogueError::PathKeyCollision {
+                        root_id: file.root_id.to_string(),
+                        path_key: file.path_key.clone(),
+                        existing_id: Some(existing.id.to_string()),
+                    });
+                }
             }
+            Err(CatalogueError::Database(err))
         }
     }
 }

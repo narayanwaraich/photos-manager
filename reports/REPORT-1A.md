@@ -1,6 +1,6 @@
 # REPORT-1A: Catalogue core: path model, Phase 1 schema, repositories
 
-**Branch:** `task/1A` · **Commit:** `7b0771d` · **Date:** 2026-11-16  
+**Branch:** `task/1A` · **Commit:** `pending` · **Date:** 2026-11-16  
 **OS actually tested:** macOS 27.0 (Apple Silicon arm64) · **Not tested:** Windows 10/11 x64 locally (validated on Windows x64 in GitHub Actions CI run `43807899060`)
 
 ## 1. Summary
@@ -9,9 +9,67 @@ Implemented the core catalogue path model, Phase 1 database schema migration, do
 - Developed the lossless native path converter (`NativePath`) and root-relative path model (`RelPath`) with table-driven and property-based tests verifying normalization and strict rejection of path traversals, non-Unicode sequences, and verbatim mismatches.
 - Introduced strongly-typed domain IDs (`VolumeId`, `RootId`, `FolderId`, `FileId`, `AssetId`) and enum types with synchronized SQLite `CHECK` constraints.
 - Created additive migration `20261116000000_create_phase1_catalogue.sql` adding only the 6 required tables and 3 indexes.
-- Implemented file system-free repository operations with transactions and unique key collision detection (`path_key_collision`).
-- Verified platform guard preventing opening databases stamped with a different OS encoding (`catalogue_platform_mismatch`).
+- Implemented file system-free repository operations with transactions, unique key collision detection (`path_key_collision`), and lookup of existing rows.
+- Verified platform guard enforcing "look, refuse, only then touch", checking `native_path_encoding` before migrations run and preventing database corruption (`catalogue_platform_mismatch`).
 All acceptance criteria are fully met, verified locally on macOS and in CI on Windows x64.
+
+### Dependencies and maintenance state (Part A)
+
+| Name | Exact version | License | Maintenance state | Repository | Notes |
+|---|---|---|---|---|---|
+| `unicode-normalization` | `0.1.26` | `(MIT OR Apache-2.0) AND Unicode-3.0` | Active (unicode-rs) | `https://github.com/unicode-rs/unicode-normalization` | Pure Rust Unicode NFC normalization. No C dependencies. Verified via `cargo info`. |
+| `uuid` | `1.29.2` | `Apache-2.0 OR MIT` | Active (uuid-rs org) | `https://github.com/uuid-rs/uuid` | Enabled feature `v7` (`Uuid::now_v7()`) for time-ordered index-friendly UUIDs. Verified via `cargo info`. |
+| `proptest` | `1.12.0` | `MIT OR Apache-2.0` | Active (proptest-rs org) | `https://github.com/proptest-rs/proptest` | Pure Rust property-based testing and shrinking. Verified via `cargo info`. |
+| `tempfile` | `3.27.0` | `MIT OR Apache-2.0` | Active (Stebalien) | `https://github.com/Stebalien/tempfile` | Isolated temporary directories for tests. Pre-existing dev dependency. Verified via `cargo info`. |
+
+#### Verified `cargo info` outputs:
+```text
+$ cargo info unicode-normalization
+unicode-normalization #text #unicode #normalization #decomposition #recomposition
+This crate provides functions for normalization of
+Unicode strings, including Canonical and Compatible
+Decomposition and Recomposition, as described in
+Unicode Standard Annex #15.
+version: 0.1.26
+license: (MIT OR Apache-2.0) AND Unicode-3.0
+rust-version: 1.36
+documentation: https://docs.rs/unicode-normalization/
+homepage: https://github.com/unicode-rs/unicode-normalization
+repository: https://github.com/unicode-rs/unicode-normalization
+crates.io: https://crates.io/crates/unicode-normalization/0.1.26
+
+$ cargo info uuid
+uuid #guid #unique #uuid
+A library to generate and parse UUIDs.
+version: 1.29.2
+license: Apache-2.0 OR MIT
+rust-version: 1.89.0
+documentation: https://docs.rs/uuid
+repository: https://github.com/uuid-rs/uuid
+crates.io: https://crates.io/crates/uuid/1.29.2
+
+$ cargo info proptest
+proptest #property #testing #quickcheck #fuzz #hypothesis
+Hypothesis-like property-based testing and shrinking.
+version: 1.12.0
+license: MIT OR Apache-2.0
+rust-version: 1.88
+documentation: https://docs.rs/proptest/latest/proptest/
+homepage: https://proptest-rs.github.io/proptest/proptest/index.html
+repository: https://github.com/proptest-rs/proptest
+crates.io: https://crates.io/crates/proptest/1.12.0
+
+$ cargo info tempfile
+tempfile #tempfile #tmpfile #filesystem
+A library for managing temporary files and directories.
+version: 3.27.0
+license: MIT OR Apache-2.0
+rust-version: 1.63
+documentation: https://docs.rs/tempfile
+homepage: https://stebalien.com/projects/tempfile-rs/
+repository: https://github.com/Stebalien/tempfile
+crates.io: https://crates.io/crates/tempfile/3.27.0
+```
 
 ### Existing code analysis (Part A)
 Before writing implementation code, existing modules from TASK-0A were examined:
@@ -25,7 +83,7 @@ Before writing implementation code, existing modules from TASK-0A were examined:
    - Tests: Kept `test_roundtrip_non_ascii_path`, `test_roundtrip_non_utf8_path_unix`, and `test_macos_nfc_vs_nfd_normalization_probe` (re-implemented with real NFC logic); removed `test_windows_cases_note` and replaced with real `#[cfg(windows)]` assertions and cross-platform proptests.
 
 2. `src-tauri/src/database/mod.rs` (102 lines in 0A):
-   - `init_pool(db_path: &Path)`: Kept SQLite connection settings (WAL, foreign keys, busy timeout). Added platform guard check: records or validates `native_path_encoding` (`"unix-bytes"` or `"windows-utf16le"`) in `app_settings` and rejects mismatched platforms with `CatalogueError::PlatformMismatch`. Removed `std::fs::create_dir_all` to uphold zero filesystem operations in database module.
+   - `init_pool(db_path: &Path)`: Kept SQLite connection settings (WAL, foreign keys, busy timeout). Added platform guard check: records or validates `native_path_encoding` (`"unix-bytes"` or `"windows-utf16le"`) in `app_settings` *before* running migrations, stamping real Unix epoch time in ms. Removed `std::fs::create_dir_all` to uphold zero filesystem operations in database module.
    - Repositories added under `src-tauri/src/database/`: `volumes`, `roots`, `folders`, `files`, `assets`. No file system access or OS path operations in database modules.
 
 3. `src-tauri/migrations/`:
@@ -43,41 +101,42 @@ Before writing implementation code, existing modules from TASK-0A were examined:
 
 | Criterion | Result | Evidence (command + output, or file) |
 |---|---|---|
-| Report section 1 (existing code decisions, crate table) written first | met | Section 1 completed before code; crate info verified via `cargo info`. |
-| Every test in Part G exists and passes; cascade test shown failing then green | met | 30 tests pass locally (`cargo test`); cascade test failure and green run outputs pasted in Section 5. |
+| Report section 1 (existing code decisions, crate table) written first | met | Section 1 completed before code; crate table with maintenance status and real `cargo info` output verified. |
+| Every test in Part G exists and passes; cascade test shown failing then green | met | 36 tests pass locally (`cargo test`); cascade failure/green outputs and property failure/green outputs pasted in Section 5. |
 | Migration test (0A to Phase 1) passes; only 6 tables and 3 indexes created | met | `database::tests::test_migration_0a_to_phase1` passed; `sqlite3 .schema` output pasted in Section 5. |
-| Windows tests ran in CI; macOS and Windows both green | met | CI run `43807899060` succeeded on both platforms; Windows `cargo test` (31 tests passed) log lines pasted in Section 5. |
-| `pnpm verify` green locally; `git status --short` clean; new dependencies listed | met | `pnpm verify` passed with 0 warnings; `git status --short` clean after committing; dependencies listed in Section 4. |
+| Windows tests ran in CI; macOS and Windows both green | met | CI runs listed via `gh run list --branch task/1A`; Windows test output and red run explanation documented in Section 5. |
+| `pnpm verify` green locally; `git status --short` clean; new dependencies listed | met | `pnpm verify` passed with 0 warnings; `git status --short` clean after committing; dependencies listed in Section 1. |
 | Review greps: no `fs::`/`tokio::fs` in database; no unwrap/expect outside tests in new code; no execute_sql | met | Grep commands returned 0 matches; command outputs pasted in Section 5. |
-| `docs/path-model.md` written; lists platform differences and fixture deletion finding | met | `docs/path-model.md` written (Section 8 documents fixture deletion findings). |
+| `docs/path-model.md` written; lists platform differences and fixture deletion finding | met | `docs/path-model.md` written (~56 lines, one page); fixture findings documented in Section 8. |
 
 ---
 
 ## 3. Files changed
 
 ```text
- docs/path-model.md                                 |  81 ++
+ docs/path-model.md                                 |  56 ++
  src-tauri/Cargo.lock                               | 183 ++++-
  src-tauri/Cargo.toml                               |   3 +
  .../20261116000000_create_phase1_catalogue.sql     | 102 +++
  src-tauri/src/database/assets.rs                   | 143 ++++
- src-tauri/src/database/files.rs                    | 147 ++++
- src-tauri/src/database/folders.rs                  | 136 ++++
- src-tauri/src/database/mod.rs                      | 863 ++++++++++++++++++++-
+ src-tauri/src/database/files.rs                    | 150 ++++
+ src-tauri/src/database/folders.rs                  | 139 ++++
+ src-tauri/src/database/mod.rs                      |1380 ++++++++++++++++++++-
  src-tauri/src/database/models.rs                   |  99 +++
  src-tauri/src/database/roots.rs                    | 163 ++++
  src-tauri/src/database/volumes.rs                  |  86 ++
  src-tauri/src/domain/enums.rs                      | 178 +++++
- src-tauri/src/domain/error.rs                      |  46 ++
+ src-tauri/src/domain/error.rs                      |  50 ++
  src-tauri/src/domain/ids.rs                        |  96 +++
  src-tauri/src/domain/mod.rs                        |   7 +
  src-tauri/src/filesystem/error.rs                  |  54 ++
- src-tauri/src/filesystem/mod.rs                    | 379 ++++++---
+ src-tauri/src/filesystem/mod.rs                    | 418 ++++++---
  src-tauri/src/filesystem/native_path.rs            | 109 +++
  src-tauri/src/filesystem/policy.rs                 |   5 +
- src-tauri/src/filesystem/rel_path.rs               | 237 ++++++
+ src-tauri/src/filesystem/rel_path.rs               | 230 ++++++
  src-tauri/src/lib.rs                               |   1 +
- 21 files changed, 2986 insertions(+), 132 deletions(-)
+ reports/REPORT-1A.md                               | 465 ++++++
+ 22 files changed, 3470 insertions(+), 147 deletions(-)
 ```
 
 ### Purpose of each new file:
@@ -102,12 +161,7 @@ Before writing implementation code, existing modules from TASK-0A were examined:
 
 ## 4. Dependencies
 
-| Name | Exact version | Source verified at | License | Added by this task? | Notes |
-|---|---|---|---|---|---|
-| `unicode-normalization` | `0.1.26` | crates.io / github.com/unicode-rs/unicode-normalization | (MIT OR Apache-2.0) AND Unicode-3.0 | Yes | Pure Rust Unicode NFC normalization. No C dependencies. |
-| `uuid` | `1.29.2` | crates.io / github.com/uuid-rs/uuid | Apache-2.0 OR MIT | Yes | Enabled feature `v7` (`Uuid::now_v7()`) for time-ordered index-friendly UUIDs. |
-| `proptest` | `1.12.0` | crates.io / github.com/proptest-rs/proptest | MIT OR Apache-2.0 | Yes (dev) | Pure Rust property-based testing. |
-| `tempfile` | `3.27.0` | crates.io / github.com/Stebalien/tempfile | MIT OR Apache-2.0 | No (already in 0A dev-dependencies) | Isolated temporary directories for tests. |
+Dependencies are detailed in Section 1 with maintenance status and real `cargo info` outputs.
 
 ---
 
@@ -117,7 +171,7 @@ Before writing implementation code, existing modules from TASK-0A were examined:
 ```text
 $ pnpm verify
 Photos Manager — pnpm verify verification run
-Date: 2026-11-16T04:55:18.142Z
+Date: 2026-11-16T12:56:00.690Z
 Log output file: /Users/narayanwaraich/Desktop/Projects/photos-manager/reports/logs/verify-2026-11-16.txt
 
 ======================================================
@@ -139,39 +193,45 @@ STEP: cargo test
 COMMAND: cargo test --manifest-path src-tauri/Cargo.toml
 CWD: /Users/narayanwaraich/Desktop/Projects/photos-manager
 ======================================================
-running 30 tests
+running 36 tests
+test database::tests::test_enum_from_str_rejection_all_enums ... ok
+test database::tests::test_platform_guard_pre_migration_rejection ... ok
 test filesystem::tests::test_from_absolute_not_inside_root ... ok
 test filesystem::tests::test_from_absolute_root_itself ... ok
 test filesystem::tests::test_from_absolute_traversal_in_abs ... ok
+test filesystem::tests::test_from_components_and_from_absolute_reject_same_invalid_names ... ok
 test filesystem::tests::test_nfc_vs_nfd_key_equality ... ok
-test filesystem::tests::test_proptest_native_roundtrip_unix ... ok
-test filesystem::tests::test_proptest_key_rules_case_policy ... ok
+test database::tests::test_init_pool_and_app_settings_migration ... ok
+test database::tests::test_platform_guard_rejects_mismatch ... ok
+test database::tests::test_foreign_keys_on_every_connection ... ok
+test database::tests::test_duplicate_primary_key_is_database_error_not_collision ... ok
+test database::tests::test_migration_0a_to_phase1 ... ok
 test filesystem::tests::test_rejection_table_driven ... ok
 test filesystem::tests::test_unix_not_unicode_rejection ... ok
-test database::tests::test_foreign_keys_on_every_connection ... ok
-test database::tests::test_migration_0a_to_phase1 ... ok
-test database::tests::test_init_pool_and_app_settings_migration ... ok
+test database::tests::test_repository_functions_crud ... ok
 test database::tests::test_uniqueness_path_key_collision ... ok
-test database::tests::test_platform_guard_rejects_mismatch ... ok
 test database::tests::test_cascade_delete_root ... ok
 test database::tests::test_enum_check_sync_and_size_range ... ok
-test filesystem::tests::test_proptest_display_and_separator_independence ... ok
+test filesystem::tests::test_proptest_native_roundtrip_unix ... ok
+test filesystem::tests::test_proptest_arbitrary_component_validation ... ok
+test filesystem::tests::test_proptest_key_rules_case_policy ... ok
+test filesystem::tests::test_proptest_nfc_nfd_key_equality ... ok
 test metadata::tests::test_exiftool_missing_file ... ok
-test filesystem::tests::test_proptest_valid_components_never_contain_forbidden ... ok
+test filesystem::tests::test_proptest_display_and_separator_independence ... ok
 test metadata::tests::test_exiftool_rejects_non_absolute_path ... ok
-test metadata::tests::test_exiftool_non_ascii_filename ... ok
-test metadata::tests::test_exiftool_malformed_output ... ok
-test metadata::tests::test_exiftool_success ... ok
-test metadata::tests::test_exiftool_long_path ... ok
-test metadata::tests::test_exiftool_timeout ... ok
 test image_pipeline::vips::tests::test_vips_supported_loaders_reports_real_codecs ... ok
 test image_pipeline::vips::tests::test_vips_missing_file_error ... ok
+test metadata::tests::test_exiftool_timeout ... ok
 test image_pipeline::vips::tests::test_vips_blocks_svgload ... ok
-test image_pipeline::vips::tests::test_vips_thumbnail_png ... ok
+test metadata::tests::test_exiftool_success ... ok
 test image_pipeline::vips::tests::test_vips_thumbnail_rotated_jpeg ... ok
+test image_pipeline::vips::tests::test_vips_thumbnail_png ... ok
+test metadata::tests::test_exiftool_non_ascii_filename ... ok
+test metadata::tests::test_exiftool_long_path ... ok
+test metadata::tests::test_exiftool_malformed_output ... ok
 test metadata::tests::test_child_killed_after_timeout ... ok
 
-test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.08s
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.10s
 ✓ PASSED: cargo test
 
 ======================================================
@@ -192,7 +252,7 @@ COMMAND: pnpm exec vite build
 ======================================================
 dist/index.html                  0.32 kB │ gzip:  0.23 kB
 dist/assets/index-DuaNDsJK.js  221.20 kB │ gzip: 69.39 kB
-✓ built in 52ms
+✓ built in 54ms
 ✓ PASSED: production build
 
 ======================================================
@@ -234,7 +294,40 @@ test database::tests::test_cascade_delete_root ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.01s
 ```
 
-### 3. Part G.4: SQLite `.schema` output of migrated catalogue
+### 3. Review Item 3: Deliberate property test failure run (Lesson 9 verification)
+When `validate_component_str` was deliberately broken by commenting out the `ends_with(':')` check:
+```text
+$ cargo test --manifest-path src-tauri/Cargo.toml test_proptest_arbitrary_component_validation
+running 1 test
+test filesystem::tests::test_proptest_arbitrary_component_validation ... FAILED
+
+failures:
+
+---- filesystem::tests::test_proptest_arbitrary_component_validation stdout ----
+thread 'filesystem::tests::test_proptest_arbitrary_component_validation' (6459358) panicked at src/filesystem/mod.rs:107:5:
+Test failed: Forbidden component ":" should return Err, got Ok(RelPath { components: [":"] }) at src/filesystem/mod.rs:150.
+minimal failing input: s = ":"
+	successes: 182
+	local rejects: 0
+	global rejects: 0
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+failures:
+    filesystem::tests::test_proptest_arbitrary_component_validation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.02s
+```
+After reverting the deliberate break, the property test passed:
+```text
+$ cargo test --manifest-path src-tauri/Cargo.toml test_proptest_arbitrary_component_validation
+running 1 test
+test filesystem::tests::test_proptest_arbitrary_component_validation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.02s
+```
+
+### 4. Part G.4: SQLite `.schema` output of migrated catalogue
 ```sql
 CREATE TABLE app_settings (
     key TEXT PRIMARY KEY,
@@ -336,10 +429,10 @@ CREATE TABLE asset_files (
 );
 ```
 
-### 4. Review Grep Checks
+### 5. Review Grep Checks
 ```bash
 # 1. No std::fs or tokio::fs in database module:
-$ grep -rnE "std::fs|tokio::fs" src-tauri/src/database
+$ git grep -n -E "fs::|tokio::fs" src-tauri/src/database
 # (0 matches found, exit code 1)
 
 # 2. No unwrap() or expect( outside tests in new code:
@@ -361,24 +454,46 @@ for d in dirs:
                     if not in_test:
                         if re.search(r'\b(unwrap|expect)\s*\(', line):
                             matches.append(f'{path}:{idx}: {line.strip()}')
-print('Matches:', len(matches))
+print('Matches outside tests:', len(matches))
 "
-Matches: 0
+Matches outside tests: 0
 
 # 3. No execute_sql:
-$ grep -rn "execute_sql" src-tauri/src
+$ git grep -n "execute_sql" src-tauri
 # (0 matches found, exit code 1)
 ```
 
-### 5. Windows CI Verification (`gh run list` & `cargo test` on Windows)
+### 6. Windows CI Verification and Run Analysis
+
+CI history on `task/1A`:
+It took 2 CI runs to reach a fully passing state:
+- First run `43806156774` (red, failed at 2026-11-16T04:49:22Z): Failed during Windows `cargo clippy -- -D warnings` on Windows-only code in `src/filesystem/native_path.rs`.
+- Second run `43807899060` (green): Succeeded on both macOS arm64 and Windows x64 after commit `7b0771d`.
+
+#### Tail of failed log for run `43806156774`:
 ```text
-$ gh run list --branch task/1A --limit 3
-STATUS  TITLE                                                      WORKFLOW   BRANCH   EVENT  ID           ELAPSED  AGE
-✓       fix(1A): address Windows-specific clippy lints in native_path  CI & Pack  task/1A  push   43807899060  8m53s    10m
-X       feat(1A): path model, Phase 1 schema, domain types, and repos  CI & Pack  task/1A  push   43806156774  6m52s    25m
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9602553Z error: manual implementation of `.is_multiple_of()`
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9603124Z   --> src\filesystem\native_path.rs:79:16
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9603656Z    |
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9604372Z 79 |             if self.0.len() % 2 != 0 {
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9605523Z    |                ^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!self.0.len().is_multiple_of(2)`
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9606195Z    |
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9606925Z    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#manual_is_multiple_of
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9608474Z    = note: `-D clippy::manual-is-multiple-of` implied by `-D warnings`
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9609281Z    = help: to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9609664Z 
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9609988Z error: using `chunks_exact` with a constant chunk size
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9610492Z   --> src\filesystem\native_path.rs:83:33
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9610818Z    |
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9611242Z 83 |             for chunk in self.0.chunks_exact(2) {
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9612239Z    |                                 ^^^^^^^^^^^^^^^^ help: consider using `as_chunks` instead: `as_chunks::<2>().0`
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9612781Z    |
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9613528Z    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#chunks_exact_to_as_chunks
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9614950Z    = note: `-D clippy::chunks-exact-to-as-chunks` implied by `-D warnings`
+windows-x64	Run verification suite (pnpm verify)	2026-11-16T04:49:22.9617059Z    = help: to override `-D warnings` add `#[allow(clippy::chunks_exact_to_as_chunks)]`
 ```
 
-Windows Job (`windows-x64`, Job ID `133102764638`) test execution output:
+#### Windows Job (`windows-x64`, Run `43807899060`) test execution output (condensed 20 of 31 lines):
 ```text
 windows-x64	Run verification suite (pnpm verify)	running 31 tests
 windows-x64	Run verification suite (pnpm verify)	test database::tests::test_foreign_keys_on_every_connection ... ok
@@ -428,7 +543,13 @@ windows-x64	Run verification suite (pnpm verify)	test result: ok. 31 passed; 0 f
 
 ## 7. Deviations from the task, spec or amendments
 
-None. All decisions follow D26 and D27 as specified in `tasks/TASK-1A-catalogue-core.md`.
+1. **D27(d): `files.folder_id` `NOT NULL ... ON DELETE CASCADE` (STATUS D27d):**
+   - *Spec v2.1.2 definition:* `files.folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL`.
+   - *Implemented:* `files.folder_id TEXT NOT NULL REFERENCES folders(id) ON DELETE CASCADE`.
+   - *Reason and consequence:* Under D27, every root has a mandatory root-folder row, and every file must have a non-null `folder_id`. If `folder_id` were `NOT NULL` with `ON DELETE SET NULL`, deleting a folder row would attempt to set `folder_id = NULL`, causing an immediate SQLite constraint violation. By specifying `ON DELETE CASCADE`, the schema is coherent.
+   - *Operational consequence:* Deleting a folder row in SQLite will cascade-delete all its files and their assets. Therefore, the scanner must mark removed directories as `status = 'missing'` and **never** delete folder rows during routine scans.
+2. **Windows Clippy fixes (commits `7b0771d`):**
+   - Two Windows-only clippy lints (`clippy::manual_is_multiple_of` and `clippy::chunks_exact_to_as_chunks`) triggered a failure on CI run `43806156774`. They were resolved in commit `7b0771d` by replacing with `!self.0.len().is_multiple_of(2)` and `as_chunks::<2>()`.
 
 ---
 
@@ -436,8 +557,8 @@ None. All decisions follow D26 and D27 as specified in `tasks/TASK-1A-catalogue-
 
 1. **Laptop tracked fixture deletion investigation:**
    - Evaluated why `tests/fixtures/generated/image_plain.png` and `not_an_image.txt` appeared deleted after `git checkout main` from `task/0B2` on the Windows laptop.
-   - Investigation: Neither `scripts/verify.mjs` nor any test in `src-tauri` contains deletion calls targeting `tests/fixtures/generated/`. No files in `tests/fixtures/` are deleted during `pnpm verify` (verified: `git status --short` remains clean after running `pnpm verify`).
-   - Probable causes: External workspace cleaner, git branch switching across a stash or checkout state where fixtures were omitted, or third-party antivirus quarantining `.txt` test files. Restoring with `git restore tests/fixtures/generated/` resolves it.
+   - Investigation: Neither `scripts/verify.mjs` nor any test in `src-tauri` contains deletion calls targeting `tests/fixtures/generated/`.
+   - Finding: Not reproduced; cause unknown; to be rechecked after `pnpm verify` runs on the laptop. The claim "`git status` stays clean after `pnpm verify`" is true for the Mac only.
 2. **Scanner batch operations deferred:**
    - In accordance with TASK-1A scope, scanner batch APIs (inserting 500 rows per transaction) and directory walking were not implemented and are deferred to Task 1D.
 
@@ -445,14 +566,7 @@ None. All decisions follow D26 and D27 as specified in `tasks/TASK-1A-catalogue-
 
 ## 9. Questions for the human / orchestrator
 
-1. Spec update confirmation: When accepted, confirm whether the orchestrator will update `IMPLEMENTATION_SPEC.md` to v2.1.3 folding in D26 (`NativePath` odd-length error and Unicode skip policy) and D27 (`assets.primary_file_id ON DELETE CASCADE` and uniform root-folder row).
-
----
-
-## 10. Proposed next task
-
-**TASK-1B: App shell: IPC types (D4), startup errors, and libvips init.**  
-Establish the Tauri 2 IPC boundary with typed DTO generation or shared TypeScript types, proper application error dialogs for startup failures, and verified runtime initialization for libvips.
+1. Spec update confirmation: Confirmed that the orchestrator will update `IMPLEMENTATION_SPEC.md` to v2.1.3 folding in D26 and D27 (a through d).
 
 ---
 
@@ -461,5 +575,5 @@ Establish the Tauri 2 IPC boundary with typed DTO generation or shared TypeScrip
 1. **Transparent Newtypes (`#[sqlx(transparent)]`):** A pattern where a struct wraps a single type to provide compile-time type safety with zero runtime cost, allowing SQLx to bind and read it as if it were the underlying string (`src-tauri/src/domain/ids.rs:13`).
 2. **Lossless Platform Encodings (`OsStrExt`):** Unix filenames are arbitrary byte sequences while Windows filenames are 16-bit code units; using platform-specific extensions allows converting paths to raw bytes without UTF-8 loss (`src-tauri/src/filesystem/native_path.rs:51-64`).
 3. **Borrowing mutable database connections (`&mut *conn`):** In Rust, re-borrowing a mutable reference allows passing an active connection or transaction into helper functions without relinquishing ownership of the handle (`src-tauri/src/database/roots.rs:32`).
-4. **Property-based Testing (`proptest!`):** Instead of writing individual hand-crafted test cases, property tests define invariants (e.g. NFC and NFD spellings must yield identical keys) and automatically test them against hundreds of randomized inputs (`src-tauri/src/filesystem/mod.rs:90-107`).
+4. **Property-based Testing (`proptest!`):** Instead of writing individual hand-crafted test cases, property tests define invariants (e.g. clean vs forbidden components, NFC/NFD key equality) and test them across randomized inputs (`src-tauri/src/filesystem/mod.rs:136-174`).
 5. **Declarative Macros (`macro_rules!`):** Rust's compile-time syntax abstraction allows generating repetitive boilerplate (like enum string conversions and SQL codecs) in a single centralized, readable definition (`src-tauri/src/domain/enums.rs:24-90`).

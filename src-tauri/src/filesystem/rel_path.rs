@@ -59,16 +59,14 @@ impl RelPath {
     pub fn from_absolute(root: &Path, abs: &Path) -> Result<Self, PathError> {
         check_verbatim_compatibility(root, abs)?;
 
-        // Ensure root contains no relative traversal or non-Unicode components
+        // Ensure root contains no relative traversal or invalid components
         for comp in root.components() {
             match comp {
                 Component::ParentDir => return Err(PathError::ParentComponent),
                 Component::CurDir => return Err(PathError::CurrentDirComponent),
                 Component::Normal(os_str) => {
                     let s = os_str.to_str().ok_or(PathError::NotUnicode)?;
-                    if s.contains('\0') {
-                        return Err(PathError::NulByte);
-                    }
+                    validate_component_str(s)?;
                 }
                 _ => {}
             }
@@ -100,12 +98,7 @@ impl RelPath {
                 }
                 Component::Normal(os_str) => {
                     let s = os_str.to_str().ok_or(PathError::NotUnicode)?;
-                    if s.is_empty() {
-                        return Err(PathError::EmptyComponent);
-                    }
-                    if s.contains('\0') {
-                        return Err(PathError::NulByte);
-                    }
+                    validate_component_str(s)?;
                     components.push(s.to_string());
                 }
             }
@@ -170,7 +163,7 @@ impl RelPath {
 }
 
 /// Helper to validate an individual component string.
-fn validate_component_str(s: &str) -> Result<(), PathError> {
+pub(crate) fn validate_component_str(s: &str) -> Result<(), PathError> {
     if s.is_empty() {
         return Err(PathError::EmptyComponent);
     }
