@@ -74,7 +74,7 @@ mod tests {
 
         #[test]
         fn test_windows_odd_byte_length_rejected(mut bytes in proptest::collection::vec(any::<u8>(), 0..255)) {
-            if bytes.len() % 2 == 0 {
+            if bytes.len().is_multiple_of(2) {
                 bytes.push(0x42);
             }
             let native = NativePath::from_bytes(bytes);

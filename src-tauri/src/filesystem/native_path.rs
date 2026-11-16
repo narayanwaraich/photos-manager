@@ -76,12 +76,13 @@ impl NativePath {
         }
         #[cfg(windows)]
         {
-            if self.0.len() % 2 != 0 {
+            if !self.0.len().is_multiple_of(2) {
                 return Err(PathError::InvalidNativeLength);
             }
-            let mut wide = Vec::with_capacity(self.0.len() / 2);
-            for chunk in self.0.chunks_exact(2) {
-                let word = u16::from_le_bytes([chunk[0], chunk[1]]);
+            let (chunks, _) = self.0.as_chunks::<2>();
+            let mut wide = Vec::with_capacity(chunks.len());
+            for &[b0, b1] in chunks {
+                let word = u16::from_le_bytes([b0, b1]);
                 wide.push(word);
             }
             Ok(OsString::from_wide(&wide))
