@@ -111,7 +111,14 @@ runStep("frontend lint", "pnpm", ["exec", "eslint", "src/"]);
 // 6. Production build
 runStep("production build", "pnpm", ["exec", "vite", "build"]);
 
-// 7. AGENTS.md length check (< 12000 chars)
+// 7. ExifTool version check unit tests
+runStep(
+  "exiftool version check unit tests",
+  "node",
+  ["--test", "scripts/test-exiftool-version.mjs"]
+);
+
+// 8. AGENTS.md length check (< 12000 chars)
 log(`\n======================================================`);
 log(`STEP: AGENTS.md length check (< 12,000 characters)`);
 log(`======================================================\n`);

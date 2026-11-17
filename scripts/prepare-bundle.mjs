@@ -3,6 +3,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkExifToolVersion, PINNED_EXIFTOOL_VERSION } from "./exiftool-version.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -150,7 +151,6 @@ if (isWindows) {
           dynamicBrewLib,
           "/opt/homebrew/opt/exiftool/libexec/lib/perl5",
           "/usr/local/opt/exiftool/libexec/lib/perl5",
-          "/opt/homebrew/Cellar/exiftool/13.55_1/libexec/lib/perl5",
           "/usr/local/Cellar/exiftool",
         ].filter(Boolean);
 
@@ -175,6 +175,47 @@ if (isWindows) {
 
   if (!found) {
     console.warn("⚠️ macOS ExifTool not found in candidate paths.");
+  }
+}
+
+// 3. Verify staged ExifTool version
+const stagedExe = isWindows
+  ? path.join(exiftoolTargetDir, "exiftool.exe")
+  : path.join(exiftoolTargetDir, "exiftool");
+
+if (fs.existsSync(stagedExe)) {
+  try {
+    const verOutput = execSync(`"${stagedExe}" -ver`, {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+
+    const check = checkExifToolVersion(verOutput);
+    if (!check.ok) {
+      if (check.shouldFail) {
+        console.error(`\n❌ CI FAILURE: ${check.message}\n`);
+        process.exit(1);
+      } else {
+        console.warn(`\n${check.message}\n`);
+      }
+    } else {
+      console.log(`✓ Staged ExifTool version verified: ${verOutput} (matches pinned ${PINNED_EXIFTOOL_VERSION})`);
+    }
+  } catch (err) {
+    const check = checkExifToolVersion(null);
+    if (check.shouldFail) {
+      console.error(`\n❌ CI FAILURE: Failed to execute staged ExifTool at ${stagedExe}: ${err.message}\n`);
+      process.exit(1);
+    } else {
+      console.warn(`\n⚠️ Warning: Could not execute staged ExifTool: ${err.message}\n`);
+    }
+  }
+} else {
+  if (process.env.CI) {
+    console.error(`\n❌ CI FAILURE: Staged ExifTool not found at ${stagedExe}\n`);
+    process.exit(1);
+  } else {
+    console.warn(`\n⚠️ Warning: Staged ExifTool not found at ${stagedExe}\n`);
   }
 }
 
