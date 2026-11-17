@@ -1,6 +1,6 @@
 # REPORT-1B: App shell: IPC proof (D4), startup errors, libvips init, housekeeping
 
-**Branch:** `task/1B` · **Commit:** (pending) · **Date:** 2026-11-17
+**Branch:** `task/1B` · **Commit:** `d245783` · **Date:** 2026-11-17
 **OS actually tested:** macOS 15.3 (arm64) · **Not tested:** Windows x64 (CI only)
 
 ## 1. Summary (pre-code: existing code audit, crate table, decisions)
@@ -67,7 +67,7 @@ TASK-1B implementation is complete. All acceptance criteria have been met:
 | libvips `init()` returns Result; SVG/magick blocking proven; error helper + SAFETY comment exist | met | `test_vips_blocks_svgload`, `test_vips_error_buffer_no_stale_text` pass; `read_vips_error()` has `// SAFETY:` |
 | `packageManager` set; CI shows same pnpm on both OSes | met | `"packageManager": "pnpm@12.8.1"` in `package.json`; setup-pnpm logs verify 12.8.1 |
 | ExifTool check: node tests pass, deliberate-failure pasted, hardcoded Cellar path removed | met | 5 tests pass in `scripts/test-exiftool-version.mjs`; failure output pasted below; `prepare-bundle.mjs` uses `brew --prefix` |
-| `pnpm verify` green locally; `git status --short` empty afterwards | met | Output pasted below; all 8 checks passed |
+| `pnpm verify` green locally; `git status --short` empty afterwards; `gh run list` pasted with both OSes green | met | Local verify passed; `git status --short` empty; CI run `44086061888` passed on both macOS and Windows |
 | Review greps pasted | met | All greps clean; only 2 `unwrap` in Phase 0 spike protocol handler |
 | Section 7 (deviations) is honest | met | Documented in Section 7 |
 
@@ -335,6 +335,62 @@ Only the two unwrap calls in `src-tauri/src/lib.rs` inside the Phase 0 spike pro
 - `src-tauri/src/lib.rs:149`: Fallback empty HTTP 500 body builder unwrap.
 - `src-tauri/src/lib.rs:159`: HTTP 404 response builder unwrap.
 Both are inside the Phase 0 spike handler, scheduled to be replaced in Phase 2. Zero `unwrap()` or `expect()` calls exist on the startup path.
+
+### 5. CI run verification (`gh run list --branch task/1B --limit 3`)
+```text
+$ gh run list --branch task/1B --limit 3
+STATUS  TITLE        WORKFLOW               BRANCH   EVENT  ID           ELAPSED  AGE
+✓       docs(1B)...  CI & Packaging Matrix  task/1B  push   44086061888  15m44s   about 15 minutes ago
+```
+
+JSON run details:
+```json
+[
+  {
+    "conclusion": "success",
+    "databaseId": 44086061888,
+    "headSha": "d2457833e6e4915f6d4f55bbdbe20d0aa1fd1288",
+    "name": "CI & Packaging Matrix",
+    "status": "completed",
+    "updatedAt": "2026-11-17T13:00:47Z"
+  }
+]
+```
+
+Jobs in run `44086061888`:
+- `✓ macos-arm64 in 13m6s (ID 134048683431)`: green
+- `✓ windows-x64 in 15m39s (ID 134048683955)`: green
+- `✓ Security & License check (cargo deny) in 41s (ID 134048683995)`: green
+
+### 6. pnpm pin verification (STATUS risk 51)
+
+Local Mac version:
+```text
+$ pnpm -v
+12.8.1
+```
+
+Local git status:
+```text
+$ git status --short
+(empty)
+```
+
+CI macOS runner log (`gh run view --job 134048683431 --log`):
+```text
+macos-arm64  Setup pnpm  dependencies:
+macos-arm64  Setup pnpm  + pnpm 12.8.1 (12.21.0 is available)
+macos-arm64  Setup pnpm  Done in 3s
+macos-arm64  Setup pnpm  Installation Completed!
+```
+
+CI Windows runner log (`gh run view --job 134048683955 --log`):
+```text
+windows-x64  Setup pnpm  dependencies:
+windows-x64  Setup pnpm  + pnpm 12.8.1 (12.21.0 is available)
+windows-x64  Setup pnpm  Done in 8s
+windows-x64  Setup pnpm  Installation Completed!
+```
 
 ## 6. Decisions made
 
