@@ -206,7 +206,14 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
     };
 
     // 2. Test libvips initialization & loaders
-    let processor = VipsImageProcessor::new();
+    let processor_res = VipsImageProcessor::new();
+    let processor = match processor_res {
+        Ok(ref p) => Some(p),
+        Err(ref e) => {
+            errors.push(format!("libvips initialization failed: {:?}", e));
+            None
+        }
+    };
     let vips_ver = unsafe {
         let major = libvips::bindings::vips_version(0);
         let minor = libvips::bindings::vips_version(1);
@@ -223,17 +230,23 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
         false
     };
 
-    let supported_loaders = processor.query_supported_loaders();
-    let has_magickload = processor.is_loader_supported("magickload");
-    let has_svgload = processor.is_loader_supported("svgload");
+    let (supported_loaders, has_magickload, has_svgload) = if let Some(p) = processor {
+        (
+            p.query_supported_loaders(),
+            p.is_loader_supported("magickload"),
+            p.is_loader_supported("svgload"),
+        )
+    } else {
+        (Vec::new(), false, false)
+    };
 
     // Probe SVG loading: must fail because svgload and untrusted loaders are blocked at startup.
     // The fixture must exist in the bundle resources; no temporary fallback is permitted.
     let svg_fixture_opt = find_fixture("fixture_blocked.svg");
-    let (blocked_untrusted_svg_load_verified, svg_err_detail) = match svg_fixture_opt {
-        Some(ref svg_fixture) if svg_fixture.exists() => {
+    let (blocked_untrusted_svg_load_verified, svg_err_detail) = match (processor, svg_fixture_opt) {
+        (Some(p), Some(ref svg_fixture)) if svg_fixture.exists() => {
             let temp_svg_out = std::env::temp_dir().join("photos_manager_smoke_svg_out.webp");
-            let svg_load_attempt = processor.generate_thumbnail(svg_fixture, &temp_svg_out, 100);
+            let svg_load_attempt = p.generate_thumbnail(svg_fixture, &temp_svg_out, 100);
             let _ = std::fs::remove_file(&temp_svg_out);
             match svg_load_attempt {
                 Err(ref e) => {
@@ -248,6 +261,7 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
                 ),
             }
         }
+        (None, _) => (false, Some("libvips not initialized".to_string())),
         _ => {
             errors.push("CRITICAL ERROR: fixture_blocked.svg was not found in application bundle or resources".to_string());
             (false, None)
@@ -306,28 +320,32 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
         let temp_out = std::env::temp_dir().join("photos_manager_smoke_thumb.webp");
         thumb_info.output_path = temp_out.to_string_lossy().to_string();
 
-        match processor.generate_thumbnail(&fixture_path, &temp_out, 320) {
-            Ok(res) => {
-                thumb_info.width = res.width;
-                thumb_info.height = res.height;
-                if let Ok(meta) = std::fs::metadata(&temp_out) {
-                    thumb_info.byte_size = meta.len();
-                    // Orientation 6 source 640x480 -> upright 480x640 -> max edge 320 -> 240x320
-                    if res.width == 240 && res.height == 320 && meta.len() > 0 {
-                        thumb_info.success = true;
-                    } else {
-                        errors.push(format!(
-                            "Thumbnail dimensions or size mismatch: got {}x{}, bytes={}",
-                            res.width,
-                            res.height,
-                            meta.len()
-                        ));
+        if let Some(p) = processor {
+            match p.generate_thumbnail(&fixture_path, &temp_out, 320) {
+                Ok(res) => {
+                    thumb_info.width = res.width;
+                    thumb_info.height = res.height;
+                    if let Ok(meta) = std::fs::metadata(&temp_out) {
+                        thumb_info.byte_size = meta.len();
+                        // Orientation 6 source 640x480 -> upright 480x640 -> max edge 320 -> 240x320
+                        if res.width == 240 && res.height == 320 && meta.len() > 0 {
+                            thumb_info.success = true;
+                        } else {
+                            errors.push(format!(
+                                "Thumbnail dimensions or size mismatch: got {}x{}, bytes={}",
+                                res.width,
+                                res.height,
+                                meta.len()
+                            ));
+                        }
                     }
                 }
+                Err(e) => {
+                    errors.push(format!("Thumbnail generation failed: {:?}", e));
+                }
             }
-            Err(e) => {
-                errors.push(format!("Thumbnail generation failed: {:?}", e));
-            }
+        } else {
+            errors.push("libvips processor not available for thumbnail generation".to_string());
         }
     }
 
@@ -424,7 +442,9 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
     let require_heic = std::env::var("REQUIRE_HEIC")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
-    let heif_supported = processor.is_loader_supported("heifload");
+    let heif_supported = processor
+        .map(|p| p.is_loader_supported("heifload"))
+        .unwrap_or(false);
 
     let (heic_decode_verified, heic_note) = if !require_heic {
         (false, "no deps token (fork)".to_string())
@@ -436,11 +456,11 @@ pub fn run_smoke_test(output_path: Option<&Path>) -> i32 {
         )
     } else {
         let heic_fixture_opt = find_fixture("image_orientation_6.heic");
-        match heic_fixture_opt {
-            Some(ref heic_path) if heic_path.is_file() => {
+        match (processor, heic_fixture_opt) {
+            (Some(p), Some(ref heic_path)) if heic_path.is_file() => {
                 let temp_heic_out =
                     std::env::temp_dir().join("photos_manager_smoke_heic_thumb.webp");
-                match processor.generate_thumbnail(heic_path, &temp_heic_out, 320) {
+                match p.generate_thumbnail(heic_path, &temp_heic_out, 320) {
                     Ok(heic_res) => {
                         let mut heic_ok = true;
                         if heic_res.width != 240 || heic_res.height != 320 {

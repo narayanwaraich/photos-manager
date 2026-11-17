@@ -2,6 +2,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // Single-threaded startup statement before any threads or runtimes exist (spec §3.3)
+    std::env::set_var("VIPS_BLOCK_UNTRUSTED", "1");
+
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--smoke-test") {
         #[cfg(windows)]
