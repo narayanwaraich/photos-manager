@@ -1,0 +1,29 @@
+/**
+ * Stable IPC error codes shared between Rust domain/catalogue errors and frontend.
+ * Sync is enforced bidirectionally by a Rust unit test.
+ */
+export const KNOWN_IPC_ERROR_CODES = [
+  "path_key_collision",
+  "catalogue_platform_mismatch",
+  "not_found",
+  "size_out_of_range",
+  "database",
+  "database_migration",
+  "path_not_unicode",
+  "path_not_inside_root",
+  "path_parent_component",
+  "path_current_dir_component",
+  "path_absolute_component",
+  "path_empty_component",
+  "path_nul_byte",
+  "path_invalid_separator",
+  "path_verbatim_mismatch",
+  "path_invalid_native_length",
+  "invalid_enum",
+  "app_data_dir_not_usable",
+  "catalogue_open_failed",
+  "libvips_init_failed",
+  "internal",
+] as const;
+
+export type KnownIpcErrorCode = (typeof KNOWN_IPC_ERROR_CODES)[number];

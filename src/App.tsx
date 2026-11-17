@@ -1,8 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { getAppInfo, type AppInfoDto } from "./lib/tauri";
 
 export default function App() {
   const [thumbLoaded, setThumbLoaded] = useState(false);
   const [thumbError, setThumbError] = useState<string | null>(null);
+
+  const [appInfo, setAppInfo] = useState<AppInfoDto | null>(null);
+  const [appInfoError, setAppInfoError] = useState<string | null>(null);
 
   // URL shape differs between macOS (WKWebView) and Windows (WebView2):
   // macOS / WebKit: asset-thumb://localhost/<id>
@@ -12,12 +16,42 @@ export default function App() {
     ? "http://asset-thumb.localhost/test-thumb"
     : "asset-thumb://localhost/test-thumb";
 
+  useEffect(() => {
+    let active = true;
+    void getAppInfo().then((res) => {
+      if (!active) return;
+      if (res.status === "ok") {
+        setAppInfo(res.data);
+      } else {
+        setAppInfoError(`${res.error.code}: ${res.error.message}`);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   return (
     <main style={{ padding: "2rem", fontFamily: "system-ui, sans-serif" }}>
       <h1>Photos Manager</h1>
       <p style={{ color: "#666" }}>
         Phase 0 Spike · Tauri 2 + React + TypeScript + Vite
       </p>
+
+      <section style={{ marginTop: "1.5rem", padding: "1rem", border: "1px solid #ccc", borderRadius: "8px" }}>
+        <h2>App Info (IPC Proof)</h2>
+        {appInfo && (
+          <div>
+            <p><strong>App Version:</strong> {appInfo.appVersion}</p>
+            <p><strong>Platform Encoding:</strong> {appInfo.platformEncoding}</p>
+            <p><strong>Migrations Applied:</strong> {appInfo.migrationsApplied}</p>
+          </div>
+        )}
+        {appInfoError && (
+          <p style={{ color: "red" }}>Error loading app info: {appInfoError}</p>
+        )}
+        {!appInfo && !appInfoError && <p>Loading application info...</p>}
+      </section>
 
       <section style={{ marginTop: "1.5rem", padding: "1rem", border: "1px solid #ccc", borderRadius: "8px" }}>
         <h2>Custom Protocol &amp; CSP Spike</h2>
