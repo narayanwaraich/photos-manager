@@ -72,4 +72,23 @@ mod tests {
         assert_eq!(info.platform_encoding, "unix-bytes");
         assert!(info.migrations_applied >= 1, "Must have applied migrations");
     }
+
+    #[tokio::test]
+    async fn test_app_info_closed_pool_returns_database_error() {
+        let temp_dir = tempdir().expect("tempdir");
+        let db_path = temp_dir.path().join("app_info_closed_pool.db");
+
+        let pool = init_pool(&db_path).await.expect("init_pool");
+        pool.close().await;
+
+        let err = app_info(&pool)
+            .await
+            .expect_err("app_info on closed pool must return an error");
+
+        assert_eq!(err.code, "database");
+        assert_eq!(
+            err.message,
+            crate::commands::error::fixed_message_for_code("database")
+        );
+    }
 }

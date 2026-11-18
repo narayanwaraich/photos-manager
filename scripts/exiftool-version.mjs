@@ -45,9 +45,16 @@ Fix for local development:
     tar -xzf /tmp/exiftool.tar.gz -C deps/exiftool --strip-components=1
 
   Windows:
+    New-Item -ItemType Directory -Path deps\\exiftool -Force
     curl.exe -fL -o exiftool.zip https://downloads.sourceforge.net/project/exiftool/exiftool-${PINNED_EXIFTOOL_VERSION}_64.zip
-    # Verify SHA-256: ${PINNED_EXIFTOOL_SHA256_WIN}
-    tar.exe -xf exiftool.zip -C deps/exiftool --strip-components=1
+    $exifHash = (Get-FileHash exiftool.zip -Algorithm SHA256).Hash
+    if ($exifHash -ne "${PINNED_EXIFTOOL_SHA256_WIN}") {
+      throw "Checksum mismatch for exiftool.zip: expected ${PINNED_EXIFTOOL_SHA256_WIN}, got $exifHash"
+    }
+    tar.exe -xf exiftool.zip -C deps\\exiftool --strip-components=1
+    if (Test-Path "deps\\exiftool\\exiftool(-k).exe") {
+      Move-Item "deps\\exiftool\\exiftool(-k).exe" "deps\\exiftool\\exiftool.exe" -Force
+    }
 ================================================================================
 `.trim();
 

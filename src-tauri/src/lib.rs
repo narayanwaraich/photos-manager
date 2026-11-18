@@ -178,6 +178,7 @@ pub fn run() {
                     Ok(())
                 }
                 Err(startup_err) => {
+                    eprintln!("startup failed [{}]: {}", startup_err.code(), startup_err);
                     show_startup_error_dialog(&startup_err);
                     std::process::exit(1);
                 }
@@ -185,11 +186,15 @@ pub fn run() {
         });
 
     if let Err(err) = builder.run(tauri::generate_context!()) {
-        let msg = format!("Application runtime error: {err}");
+        eprintln!("runtime error [internal]: {err}");
+        let description = format!(
+            "{}\n\nError code: internal",
+            commands::error::fixed_message_for_code("internal")
+        );
         let _ = rfd::MessageDialog::new()
             .set_level(rfd::MessageLevel::Error)
             .set_title("Photos Manager — Error")
-            .set_description(msg)
+            .set_description(description)
             .set_buttons(rfd::MessageButtons::Ok)
             .show();
         std::process::exit(1);

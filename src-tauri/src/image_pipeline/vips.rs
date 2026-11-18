@@ -9,38 +9,44 @@ static INIT_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static VIPS_APP: OnceLock<VipsApp> = OnceLock::new();
 static VIPS_OP_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Reads and clears the libvips process-wide error buffer, returning
-/// a copy of the current error text. If the buffer is empty or null,
-/// returns the fallback string.
+/// Locks a mutex guarding `()`. If another thread panicked while holding the
+/// lock, the mutex is poisoned, but since it guards `()`, no corrupted data
+/// exists, so we recover with `into_inner`.
+fn lock_mutex(mutex: &std::sync::Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Reads the libvips process-wide error buffer, returning a copy of the
+/// current error text. If the buffer is empty or null, returns the fallback string.
 ///
 /// # Safety invariants
 ///
-/// `vips_error_buffer_copy()` allocates a new string via `g_strdup`
-/// of the internal static NUL-terminated buffer (`vips_error_text` in
-/// libvips `error.c`). The returned pointer is owned by the caller
-/// and must be freed with `g_free`. Since we copy immediately into a
-/// Rust `String` and then free with `libc::free` / `g_free`, there
-/// is no dangling pointer.
+/// `vips_error_buffer_copy()` allocates a new string via `g_strdup` of the
+/// internal static NUL-terminated buffer (`vips_buf_all` in libvips `error.c`)
+/// and rewinds/clears it (`vips_buf_rewind`) atomically under `vips__global_lock`.
+/// The returned pointer is owned by the caller and must be freed exclusively
+/// with `bindings::g_free` (not `libc::free`, which would fail on Windows due
+/// to distinct CRT/GLib allocators).
 ///
-/// The error buffer is process-wide and updated under
-/// `vips__global_lock`. Because `vips_error_buffer_copy` takes a
-/// snapshot, another thread could append between the failing call and
-/// this read, so the copied text may include messages from concurrent
-/// operations. For single-threaded init this is not an issue; for
-/// concurrent thumbnail generation the race window is documented but
-/// accepted (a mutex around every libvips call is impractical and the
-/// error text is diagnostic only).
+/// Thumbnail generation holds `VIPS_OP_MUTEX` across the full operation
+/// (decode, resize, WebP save, and error buffer read) to ensure that only
+/// one thumbnail operation runs at a time and cannot be clobbered by another
+/// thread. The remaining race window is limited to libvips calls outside
+/// `generate_thumbnail` that may write to the global error buffer; currently
+/// no other concurrent libvips calls exist in product code.
 fn read_vips_error(fallback: &str) -> String {
-    // SAFETY: `vips_error_buffer_copy()` returns a `g_strdup`'d copy
-    // of the internal static NUL-terminated error buffer. The pointer
-    // is non-null (g_strdup returns empty string for NULL input), is
-    // valid UTF-8 or at worst valid C string, and is owned by us.
-    // We read it into a Rust String then free it with `g_free`.
-    // `vips_error_clear()` clears the buffer so stale text does not
-    // leak into subsequent operations.
+    // SAFETY: `vips_error_buffer_copy()` atomically copies and rewinds (clears)
+    // the process-wide libvips error buffer under `vips__global_lock`.
+    // If the error buffer is empty or uninitialized, g_strdup(NULL) returns NULL.
+    // If non-null, the pointer is a valid C string owned by us, which we read
+    // into a Rust String and then free immediately using GLib's `g_free`.
+    // We do not call `vips_error_clear()` separately because `vips_error_buffer_copy()`
+    // already clears the buffer under the lock.
     unsafe {
         let err_ptr = bindings::vips_error_buffer_copy();
-        let result = if !err_ptr.is_null() {
+        if !err_ptr.is_null() {
             let s = std::ffi::CStr::from_ptr(err_ptr)
                 .to_string_lossy()
                 .to_string();
@@ -52,9 +58,7 @@ fn read_vips_error(fallback: &str) -> String {
             }
         } else {
             fallback.to_string()
-        };
-        bindings::vips_error_clear();
-        result
+        }
     }
 }
 
@@ -74,7 +78,7 @@ pub fn init() -> Result<(), ImageProcessorError> {
         return Ok(());
     }
 
-    let _guard = INIT_MUTEX.lock().unwrap();
+    let _guard = lock_mutex(&INIT_MUTEX);
     if VIPS_APP.get().is_some() {
         return Ok(());
     }
@@ -112,39 +116,22 @@ pub fn init() -> Result<(), ImageProcessorError> {
     Ok(())
 }
 
-/// Returns a reference to the initialised VipsApp.
-///
-/// # Panics
-///
-/// Panics if `init()` was not called or failed. All production code
-/// paths call `init()` at startup; this panic guards against
-/// programming errors only.
-fn get_vips_app() -> &'static VipsApp {
-    VIPS_APP
-        .get()
-        .expect("BUG: vips::init() must be called before using VipsImageProcessor")
+pub struct VipsImageProcessor {
+    _app: &'static VipsApp,
 }
-
-pub struct VipsImageProcessor;
 
 impl VipsImageProcessor {
     /// Creates a new `VipsImageProcessor`.
     ///
-    /// Returns `Err` if libvips is not yet initialised (call
-    /// `vips::init()` at startup).
+    /// Ensures libvips is initialised and stores a reference to the `VipsApp` instance.
     pub fn new() -> Result<Self, ImageProcessorError> {
-        if VIPS_APP.get().is_none() {
-            // Attempt to initialise (for tests that may not go through
-            // the app startup path).
-            init()?;
-        }
-        Ok(Self)
-    }
-}
-
-impl Default for VipsImageProcessor {
-    fn default() -> Self {
-        Self::new().expect("BUG: vips::init() must be called before VipsImageProcessor::default()")
+        init()?;
+        let app = VIPS_APP.get().ok_or_else(|| {
+            ImageProcessorError::Processing(
+                "libvips initialization succeeded but VIPS_APP is unset".into(),
+            )
+        })?;
+        Ok(Self { _app: app })
     }
 }
 
@@ -155,9 +142,6 @@ impl ImageProcessor for VipsImageProcessor {
         output_path: &Path,
         max_edge: u32,
     ) -> Result<ThumbnailResult, ImageProcessorError> {
-        // Ensure libvips is initialised (should already be from startup).
-        let _app = get_vips_app();
-
         if !input_path.exists() {
             return Err(ImageProcessorError::FileNotFound(
                 input_path.to_string_lossy().to_string(),
@@ -185,7 +169,7 @@ impl ImageProcessor for VipsImageProcessor {
 
         // Serialise libvips thumbnailing and error buffer reading to prevent concurrent
         // operations from clearing or clobbering each other's error text (STATUS risk 37, spec §3.3).
-        let _op_lock = VIPS_OP_MUTEX.lock().unwrap();
+        let _op_lock = lock_mutex(&VIPS_OP_MUTEX);
 
         let thumb = ops::thumbnail_with_opts(input_str, max_edge as i32, &opts).map_err(|e| {
             let detail = read_vips_error(&format!("{:?}", e));
@@ -379,15 +363,80 @@ mod tests {
         println!("Error 1: {}", msg1);
         println!("Error 2: {}", msg2);
 
-        // Both must have non-empty error text
+        // Both must have non-empty error text naming their respective files
         assert!(!msg1.is_empty(), "Error 1 must not be empty");
         assert!(!msg2.is_empty(), "Error 2 must not be empty");
+        assert!(
+            msg1.contains("corrupt1.jpg"),
+            "Error 1 must name corrupt1.jpg, got: {}",
+            msg1
+        );
+        assert!(
+            msg2.contains("corrupt2.png"),
+            "Error 2 must name corrupt2.png, got: {}",
+            msg2
+        );
 
         // The errors are from different calls and must not carry stale text.
-        // If the error buffer was not cleared between calls, msg2 would
-        // contain msg1's text. We check that msg2 does not contain the
-        // entire msg1 as a substring (they can share common libvips
-        // prefixes like "VipsForeignLoad:").
-        // This is a best-effort check: the buffer IS cleared by read_vips_error.
+        // `read_vips_error` clears the buffer on read, so msg2 must not contain msg1's file name.
+        assert!(
+            !msg2.contains("corrupt1.jpg"),
+            "Error 2 must not carry stale text from Error 1, got: {}",
+            msg2
+        );
+    }
+
+    #[test]
+    fn test_vips_blocks_magickload() {
+        let processor = VipsImageProcessor::new().expect("VipsImageProcessor::new failed");
+        assert!(!processor.is_loader_supported("magickload"));
+
+        let type_id = unsafe {
+            let Ok(c_op) = CString::new("VipsOperation") else {
+                return;
+            };
+            let Ok(c_loader) = CString::new("magickload") else {
+                return;
+            };
+            bindings::vips_type_find(c_op.as_ptr(), c_loader.as_ptr())
+        };
+
+        if type_id == 0 {
+            // Clean custom build without ImageMagick (D18)
+            println!("magickload type not registered in libvips (type_id = 0)");
+        } else {
+            // Dev Homebrew build with ImageMagick: operation is blocked at API level via
+            // vips_block_untrusted_set(1) + vips_operation_block_set("magickload", 1).
+            println!(
+                "magickload type registered ({}), verifying blocked status",
+                type_id
+            );
+            let _op_lock = lock_mutex(&VIPS_OP_MUTEX);
+            let fixtures = fixtures_dir();
+            let input_file = fixtures.join("image_plain.png");
+            let c_filename = CString::new(input_file.to_string_lossy().as_ref())
+                .expect("valid CString filename");
+            let mut out_img: *mut bindings::VipsImage = std::ptr::null_mut();
+            let rc = unsafe {
+                bindings::vips_call(
+                    c"magickload".as_ptr(),
+                    c_filename.as_ptr(),
+                    &mut out_img as *mut *mut bindings::VipsImage,
+                    std::ptr::null::<std::ffi::c_void>(),
+                )
+            };
+            let err_text = read_vips_error("(empty)");
+            println!("magickload call rc={}, error: {}", rc, err_text.trim());
+            assert_ne!(rc, 0, "Blocked magickload call must fail");
+            assert!(
+                out_img.is_null(),
+                "Blocked magickload call must not return an image"
+            );
+            assert!(
+                err_text.contains("operation is blocked") || err_text.contains("blocked"),
+                "Expected magickload to fail because it is blocked, got: {}",
+                err_text
+            );
+        }
     }
 }
