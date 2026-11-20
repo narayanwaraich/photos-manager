@@ -1,7 +1,7 @@
 # REPORT-1B: App shell: IPC proof (D4), startup errors, libvips init, housekeeping
 
-**Branch:** `task/1B` · **Review Round:** 1 (fixed) · **Date:** 2026-11-18
-**OS actually tested:** macOS 15.3 (arm64) · **Not tested:** Windows x64 (CI only)
+**Branch:** `task/1B` · **Commit:** `1a41d28` · **CI Run:** `44366078946` · **Date:** 2026-11-18
+**OS actually tested:** macOS 15.3 (arm64) · **Not tested:** Windows x64 (CI run `44366078946`)
 
 ## 1. Summary (pre-code: existing code audit, crate table, decisions)
 
@@ -335,7 +335,7 @@ ALL VERIFICATION CHECKS PASSED SUCCESSFULLY!
 ```
 
 ### 5.2 Deliberate drift test failure
-Demonstrating that altering an error code in `src/lib/tauri/errorCodes.ts` (e.g. changing `"internal"` to `"internal_drift_test"`) causes the Rust test `test_error_codes_sync_with_typescript` to fail immediately:
+Demonstrating that altering an error code in `src/lib/tauri/errorCodes.ts` (e.g. changing `"internal"` to `"internal_drift_test"`) causes the Rust test `test_error_codes_sync_with_typescript` to fail immediately. To produce this deliberate failure, `"internal"` was temporarily changed to `"internal_drift_test"` in `src/lib/tauri/errorCodes.ts`; the panic line number (`error.rs:398`) reflects that earlier test revision prior to adding the closed-pool test (final line is 404):
 ```text
 $ cargo test --manifest-path src-tauri/Cargo.toml --lib commands::error::tests::test_error_codes_sync_with_typescript
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
@@ -388,7 +388,7 @@ test at scripts/test-exiftool-version.mjs:17:1
 ```
 
 ### 5.4 Deliberate libvips error buffer stale text failure
-Demonstrating that if `read_vips_error` fails to clear the buffer between operations, `test_vips_error_buffer_no_stale_text` catches the contamination and fails:
+Demonstrating that if `read_vips_error` fails to clear the buffer between operations, `test_vips_error_buffer_no_stale_text` catches the contamination and fails. To produce this deliberate failure, `read_vips_error` was temporarily mutated to append `format!(" [stale leaked text: {msg1}]")` to simulate buffer contamination; the panic line number (`vips.rs:381`) reflects that earlier test revision prior to formatting adjustments (final line is 382):
 ```text
 $ cargo test --manifest-path src-tauri/Cargo.toml test_vips_error_buffer_no_stale_text -- --nocapture
    Compiling photos-manager v0.1.0 (/Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri)
@@ -498,9 +498,12 @@ test image_pipeline::vips::tests::test_vips_blocks_magickload ... ok
 ```
 
 ### 5.8 Part F: `pnpm/action-setup@v4` version conflict behavior
-When `version:` is specified in `ci.yml` while `packageManager` is also specified in `package.json` with differing versions, `pnpm/action-setup@v4` aborts with a fatal configuration conflict:
+When `version:` is specified in `ci.yml` while `packageManager` is also specified in `package.json`, `pnpm/action-setup@v4` throws an error when versions conflict (from the action's source, not run):
 ```text
-Error: Multiple versions of pnpm specified: 12.8.1 (from workflow) and ... (from package.json). Please remove the version input from the workflow.
+Multiple versions of pnpm specified:
+  - version <value> in the GitHub Action config with the key "version"
+  - version <value> in the package.json with the key "packageManager"
+Remove one of these versions to avoid version mismatch errors like ERR_PNPM_BAD_PM_VERSION
 ```
 Omitting `version:` from `ci.yml` allows the action to read `"packageManager": "pnpm@12.8.1"` cleanly from `package.json` across both OS runners.
 
@@ -599,6 +602,7 @@ To manually test that a startup error displays a native modal dialog and exits n
    ```
 
 #### Output verified on scratch database copy:
+*(Note: this scratch database copy was made by hand, not copied from a real catalogue, which is why `unix-bytes` appeared without quotes on the initial SELECT; the real proof is the owner's run on 2026-11-18).*
 ```text
 ╭──────────────────────┬────────────╮
 │         key          │ value_json │
@@ -622,13 +626,11 @@ To manually test that a startup error displays a native modal dialog and exits n
    `"$env:APPDATA\com.narayanwaraich.photosmanager\catalogue.db"`
 2. Verify initial encoding (PowerShell or Python):
    ```powershell
-   python -c "import sqlite3, os; p = os.path.expandvars(r'%APPDATA%\com.narayanwaraich.photosmanager\catalogue.db'); conn = sqlite3.connect(p); print(conn.execute(\"SELECT key, value_json FROM app_settings WHERE key = 'native_path_encoding'\").fetchall())"
+   python -c "import sqlite3, os; c = sqlite3.connect(os.path.expandvars(r'%APPDATA%\com.narayanwaraich.photosmanager\catalogue.db')); print(c.execute('SELECT key, value_json FROM app_settings WHERE key = ?', ('native_path_encoding',)).fetchall())"
    ```
 3. Tamper the encoding to simulate a database created on macOS/Linux:
    ```powershell
-   python -c "import sqlite3, os; p = os.path.expandvars(r'%APPDATA%\com.narayanwaraich.photosmanager\catalogue.db'); conn = sqlite3.connect(p); conn.execute(\"UPDATE app_settings SET value_json = '\"\"unix-bytes\"\"' WHERE key = 'native_path_encoding'\"); conn.commit()"
-   # Or using sqlite3.exe if installed:
-   # sqlite3 "$env:APPDATA\com.narayanwaraich.photosmanager\catalogue.db" "UPDATE app_settings SET value_json = json_quote('unix-bytes') WHERE key = 'native_path_encoding';"
+   python -c "import sqlite3, os; c = sqlite3.connect(os.path.expandvars(r'%APPDATA%\com.narayanwaraich.photosmanager\catalogue.db')); c.execute('UPDATE app_settings SET value_json = json_quote(?) WHERE key = ?', ('unix-bytes', 'native_path_encoding')); c.commit(); print(c.execute('SELECT key, value_json FROM app_settings WHERE key = ?', ('native_path_encoding',)).fetchall())"
    ```
 4. Launch the application:
    ```powershell
@@ -637,13 +639,13 @@ To manually test that a startup error displays a native modal dialog and exits n
 5. **Expected appearance:** A native Win32 modal dialog titled `"Photos Manager — Startup Error"` appears with the same message and code. The app exits with code 1.
 6. Restore database:
    ```powershell
-   python -c "import sqlite3, os; p = os.path.expandvars(r'%APPDATA%\com.narayanwaraich.photosmanager\catalogue.db'); conn = sqlite3.connect(p); conn.execute(\"UPDATE app_settings SET value_json = '\"\"windows-utf16le\"\"' WHERE key = 'native_path_encoding'\"); conn.commit()"
+   python -c "import sqlite3, os; c = sqlite3.connect(os.path.expandvars(r'%APPDATA%\com.narayanwaraich.photosmanager\catalogue.db')); c.execute('UPDATE app_settings SET value_json = json_quote(?) WHERE key = ?', ('windows-utf16le', 'native_path_encoding')); c.commit(); print(c.execute('SELECT key, value_json FROM app_settings WHERE key = ?', ('native_path_encoding',)).fetchall())"
    ```
 
 ## Concepts used (for the owner, a React developer learning Rust and Git)
 
-1. **`rfd::MessageDialog` modal alert on main thread**: Native modal alerts are shown via `rfd` on the main thread during Tauri's `setup` hook, blocking until the user acknowledges before exiting non-zero (`src-tauri/src/lib.rs:96` and `src-tauri/src/lib.rs:188`).
-2. **`Mutex` poisoning recovery via `into_inner`**: When a mutex guards `()`, a panic in another thread poisons the lock but leaves no corrupted shared data; `unwrap_or_else(PoisonError::into_inner)` safely recovers the lock without panicking (`src-tauri/src/image_pipeline/vips.rs:14`).
+1. **`rfd::MessageDialog` modal alert on main thread**: Native modal alerts are shown via `rfd` on the main thread during Tauri's `setup` hook, blocking until the user acknowledges before exiting non-zero (`src-tauri/src/lib.rs:94` and `src-tauri/src/lib.rs:188`).
+2. **`Mutex` poisoning recovery via `into_inner`**: When a mutex guards `()`, a panic in another thread poisons the lock but leaves no corrupted shared data; `unwrap_or_else(PoisonError::into_inner)` safely recovers the lock without panicking (`src-tauri/src/image_pipeline/vips.rs:15-19`).
 3. **`thiserror` automatic error conversion via `#[from]`**: Declaring `#[from]` on an enum variant automatically implements `From<SourceError> for TargetError`, enabling clean and ergonomic propagation with `?` (`src-tauri/src/domain/error.rs:24-30`).
 4. **Managed state injection in Tauri commands via `tauri::State`**: Shared runtime resources (like the `SqlitePool`) are registered with `app.manage(pool)` at startup and automatically injected into command parameters via `tauri::State<'_, SqlitePool>` (`src-tauri/src/commands/app_info.rs:50`).
-5. **Bidirectional drift guards and exhaustive variant matching**: Matching every enum variant without a wildcard (`_`) in test helpers ensures that any added error variant breaks compilation until covered, while reading TypeScript constants ensures frontend/backend error codes cannot diverge (`src-tauri/src/commands/error.rs:260-380`).
+5. **Bidirectional drift guards and exhaustive variant matching**: Matching every enum variant without a wildcard (`_`) in test helpers ensures that any added error variant breaks compilation until covered, while reading TypeScript constants ensures frontend/backend error codes cannot diverge (`src-tauri/src/commands/error.rs:113` and `src-tauri/src/commands/error.rs:228`).
