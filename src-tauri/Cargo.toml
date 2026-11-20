@@ -24,6 +24,7 @@ libvips = "1.7.2"
 thiserror = "2"
 anyhow = "1"
 http = "1"
+rfd = { version = "0.18.0", default-features = false }
 unicode-normalization = "0.1.26"
 uuid = { version = "1.29.2", features = ["v7"] }
 

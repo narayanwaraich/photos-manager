@@ -219,6 +219,30 @@ Per TASK-0B and TASK-0B2 parity validation (`docs/embedding-runtime.md`):
   1. A minimal standalone Perl interpreter is bundled alongside ExifTool (analogous to the Strawberry Perl runtime in Windows `exiftool_files/`), or
   2. Metadata extraction is transitioned to a pure-Rust parser (e.g. `kamadak-exif` or in-tree parser) for core EXIF/IPTC/XMP extraction.
 
+### 5.3 Getting the pinned ExifTool for local development
+
+To ensure local development matches the pinned ExifTool `13.61` used in CI and packaging without relying on system or Homebrew versions:
+- **macOS:** Download the official distribution archive and verify its SHA-256 before unpacking into `deps/exiftool`:
+  ```bash
+  curl -fL -o /tmp/exiftool.tar.gz https://downloads.sourceforge.net/project/exiftool/Image-ExifTool-13.61.tar.gz
+  echo "df7f42c14b4f58a60bec39feae0ee9593000ee27e44920d2b0a21c6627de0baa  /tmp/exiftool.tar.gz" | shasum -a 256 -c -
+  mkdir -p deps/exiftool
+  tar -xzf /tmp/exiftool.tar.gz -C deps/exiftool --strip-components=1
+  ```
+- **Windows:** Download the standalone Windows zip distribution and verify its SHA-256:
+  ```powershell
+  New-Item -ItemType Directory -Path deps\exiftool -Force
+  curl.exe -fL -o exiftool.zip https://downloads.sourceforge.net/project/exiftool/exiftool-13.61_64.zip
+  $exifHash = (Get-FileHash exiftool.zip -Algorithm SHA256).Hash
+  if ($exifHash -ne "AB75B37515385A753AA60A58F68FFFFE1FF81E43B319DF9540978FB19E0580E5") {
+    throw "Checksum mismatch for exiftool.zip: expected AB75B37515385A753AA60A58F68FFFFE1FF81E43B319DF9540978FB19E0580E5, got $exifHash"
+  }
+  tar.exe -xf exiftool.zip -C deps\exiftool --strip-components=1
+  if (Test-Path "deps\exiftool\exiftool(-k).exe") {
+    Move-Item "deps\exiftool\exiftool(-k).exe" "deps\exiftool\exiftool.exe" -Force
+  }
+  ```
+
 ---
 
 ## 6. libvips Windows Binding Fork Audit
