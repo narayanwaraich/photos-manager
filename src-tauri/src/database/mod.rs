@@ -59,6 +59,16 @@ pub async fn check_or_set_platform_guard(
     Ok(())
 }
 
+/// Returns the current Unix epoch timestamp in milliseconds (spec §5.1, §5.2).
+pub fn now_ms() -> Result<i64, CatalogueError> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| CatalogueError::Database(sqlx::Error::Decode(Box::new(e))))?
+        .as_millis()
+        .try_into()
+        .map_err(|_| CatalogueError::SizeOutOfRange { size: u64::MAX })
+}
+
 /// Creates a SQLite connection pool configured according to spec §5.1:
 /// - WAL journal mode
 /// - Foreign keys enabled on every connection
@@ -78,12 +88,7 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool, CatalogueError> {
         .connect_with(options)
         .await?;
 
-    let now_ms: i64 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| CatalogueError::Database(sqlx::Error::Decode(Box::new(e))))?
-        .as_millis()
-        .try_into()
-        .map_err(|_| CatalogueError::SizeOutOfRange { size: u64::MAX })?;
+    let now_ms = now_ms()?;
 
     // Check if app_settings table exists before running migrations (look, refuse, only then touch)
     let mut conn = pool.acquire().await?;
@@ -1374,5 +1379,103 @@ mod tests {
             volumes_table.is_none(),
             "Phase 1 'volumes' table must NOT exist when database is refused by platform guard"
         );
+    }
+
+    #[tokio::test]
+    async fn test_migration_one_root_folder_per_root_invariant() {
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let db_path = temp_dir.path().join("migration_3_test.db");
+
+        // 1. Set up database with migrations 1 & 2 applied manually
+        let options = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true)
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .connect_with(options)
+            .await
+            .expect("Failed to connect");
+
+        let m1 = include_str!("../../migrations/20261102000000_create_app_settings.sql");
+        let m2 = include_str!("../../migrations/20261116000000_create_phase1_catalogue.sql");
+        sqlx::raw_sql(m1).execute(&pool).await.expect("Run m1");
+        sqlx::raw_sql(m2).execute(&pool).await.expect("Run m2");
+
+        // Insert root 1 and its initial root-folder row (parent_id IS NULL)
+        let root1_id = "root_test_001";
+        sqlx::query(
+            "INSERT INTO library_roots (
+                id, label, path_display, path_native, status,
+                follow_symlinks, include_hidden, created_at_ms, updated_at_ms
+             ) VALUES (?, 'Root 1', '/photos1', X'2f70686f746f7331', 'active', 0, 0, 1000, 1000);",
+        )
+        .bind(root1_id)
+        .execute(&pool)
+        .await
+        .expect("Insert root 1");
+
+        let folder1_id = "folder_root_001";
+        sqlx::query(
+            "INSERT INTO folders (
+                id, root_id, parent_id, name, rel_path_display, rel_path_native, path_key, status
+             ) VALUES (?, ?, NULL, '', '', X'', X'', 'present');",
+        )
+        .bind(folder1_id)
+        .bind(root1_id)
+        .execute(&pool)
+        .await
+        .expect("Insert root-folder 1");
+
+        // 2. Apply migration 3 on top of the populated database
+        let m3 = include_str!("../../migrations/20261121000000_one_root_folder_per_root.sql");
+        sqlx::raw_sql(m3)
+            .execute(&pool)
+            .await
+            .expect("Run m3 on existing catalogue");
+
+        // 3. Attempt to insert a second root-folder row (parent_id IS NULL) for root 1
+        let second_folder_for_root1 = "folder_root_001_dupe";
+        let dupe_res = sqlx::query(
+            "INSERT INTO folders (
+                id, root_id, parent_id, name, rel_path_display, rel_path_native, path_key, status
+             ) VALUES (?, ?, NULL, 'dupe', 'dupe', X'64757065', X'64757065', 'present');",
+        )
+        .bind(second_folder_for_root1)
+        .bind(root1_id)
+        .execute(&pool)
+        .await;
+
+        assert!(
+            dupe_res.is_err(),
+            "A second parentless folder for the same root must fail unique constraint"
+        );
+        let err = dupe_res.unwrap_err();
+        let db_err = err.as_database_error().expect("Must be database error");
+        assert_eq!(db_err.kind(), sqlx::error::ErrorKind::UniqueViolation);
+
+        // 4. Insert root 2 and its own root-folder row (parent_id IS NULL) - must succeed
+        let root2_id = "root_test_002";
+        sqlx::query(
+            "INSERT INTO library_roots (
+                id, label, path_display, path_native, status,
+                follow_symlinks, include_hidden, created_at_ms, updated_at_ms
+             ) VALUES (?, 'Root 2', '/photos2', X'2f70686f746f7332', 'active', 0, 0, 2000, 2000);",
+        )
+        .bind(root2_id)
+        .execute(&pool)
+        .await
+        .expect("Insert root 2");
+
+        let folder2_id = "folder_root_002";
+        sqlx::query(
+            "INSERT INTO folders (
+                id, root_id, parent_id, name, rel_path_display, rel_path_native, path_key, status
+             ) VALUES (?, ?, NULL, '', '', X'', X'', 'present');",
+        )
+        .bind(folder2_id)
+        .bind(root2_id)
+        .execute(&pool)
+        .await
+        .expect("A second root's own root-folder row must succeed");
     }
 }

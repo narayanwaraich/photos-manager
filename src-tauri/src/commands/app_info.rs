@@ -70,7 +70,10 @@ mod tests {
         assert_eq!(info.platform_encoding, "windows-utf16le");
         #[cfg(not(windows))]
         assert_eq!(info.platform_encoding, "unix-bytes");
-        assert!(info.migrations_applied >= 1, "Must have applied migrations");
+        assert_eq!(
+            info.migrations_applied, 3,
+            "All 3 migrations must be applied"
+        );
     }
 
     #[tokio::test]
