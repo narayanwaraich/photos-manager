@@ -591,6 +591,15 @@ mod tests {
         std::fs::create_dir_all(&app_data).expect("create app data");
 
         let ctx = ProtectedContext::from_environment(&app_data);
+        println!("=== ProtectedContext on runner ===");
+        println!("App data: {:?}", ctx.app_data_dir);
+        println!("User home: {:?}", ctx.home_dir);
+        println!("User home parent: {:?}", ctx.home_parent);
+        println!("System folders count: {}", ctx.system_folders.len());
+        for f in &ctx.system_folders {
+            println!("  Protected system folder: {:?}", f);
+        }
+        println!("=================================");
         assert!(
             !ctx.app_data_dir.is_empty(),
             "App data components must not be empty"
