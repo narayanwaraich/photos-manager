@@ -23,6 +23,14 @@ export const KNOWN_IPC_ERROR_CODES = [
   "app_data_dir_not_usable",
   "catalogue_open_failed",
   "libvips_init_failed",
+  "root_path_invalid",
+  "root_not_unicode",
+  "root_overlaps",
+  "root_protected",
+  "root_label_invalid",
+  "root_not_found",
+  "root_changed_since_preview",
+  "volume_unavailable",
   "internal",
 ] as const;
 

@@ -1,4 +1,4 @@
-use crate::domain::CatalogueError;
+use crate::domain::{CatalogueError, RootError};
 use crate::StartupError;
 use serde::{Deserialize, Serialize};
 
@@ -46,6 +46,14 @@ pub const ALL_CODES: &[&str] = &[
     "app_data_dir_not_usable",
     "catalogue_open_failed",
     "libvips_init_failed",
+    "root_path_invalid",
+    "root_not_unicode",
+    "root_overlaps",
+    "root_protected",
+    "root_label_invalid",
+    "root_not_found",
+    "root_changed_since_preview",
+    "volume_unavailable",
     "internal",
 ];
 
@@ -81,6 +89,22 @@ pub fn fixed_message_for_code(code: &str) -> &'static str {
         "libvips_init_failed" => {
             "The image processing engine (libvips) failed to initialize."
         }
+        "root_path_invalid" => {
+            "The specified folder path is invalid, relative, or not a directory."
+        }
+        "root_not_unicode" => "The folder path contains invalid Unicode characters.",
+        "root_overlaps" => "This folder overlaps a folder that is already in your library.",
+        "root_protected" => "This folder is protected by the operating system and cannot be added.",
+        "root_label_invalid" => {
+            "The library folder label is invalid or exceeds the maximum length."
+        }
+        "root_not_found" => "The specified library folder was not found.",
+        "root_changed_since_preview" => {
+            "The library contents changed since the removal was previewed. Please review and try again."
+        }
+        "volume_unavailable" => {
+            "Storage volume details could not be retrieved for this folder."
+        }
         _ => "An internal application error occurred.",
     }
 }
@@ -97,6 +121,14 @@ impl From<StartupError> for IpcError {
     fn from(err: StartupError) -> Self {
         let code = err.code().to_string();
         let message = err.user_message().to_string();
+        Self { code, message }
+    }
+}
+
+impl From<RootError> for IpcError {
+    fn from(err: RootError) -> Self {
+        let code = err.code().to_string();
+        let message = fixed_message_for_code(&code).to_string();
         Self { code, message }
     }
 }
@@ -265,6 +297,97 @@ mod tests {
         templates.iter().map(startup_error_sample).collect()
     }
 
+    /// Exhaustive match over every `RootError` variant (no `_` arm).
+    fn root_error_sample(template: &RootError) -> (RootError, Vec<&'static str>) {
+        match template {
+            RootError::PathNotAbsolute(_) => (
+                RootError::PathNotAbsolute(PathBuf::from("relative/secret/path")),
+                vec!["relative/secret/path"],
+            ),
+            RootError::PathNotFound(_) => (
+                RootError::PathNotFound(PathBuf::from("/Users/alice/missing_dir")),
+                vec!["/Users/alice/missing_dir", "missing_dir"],
+            ),
+            RootError::PathNotDirectory(_) => (
+                RootError::PathNotDirectory(PathBuf::from("/Users/alice/secret_file.txt")),
+                vec!["/Users/alice/secret_file.txt", "secret_file.txt"],
+            ),
+            RootError::PathNotUnicode => (RootError::PathNotUnicode, vec![]),
+            RootError::Overlaps { .. } => (
+                RootError::Overlaps {
+                    path: "/Users/alice/photos".to_string(),
+                    existing: "/Users/alice/photos_backup".to_string(),
+                },
+                vec!["/Users/alice/photos", "/Users/alice/photos_backup"],
+            ),
+            RootError::Protected { .. } => (
+                RootError::Protected {
+                    path: "/System/secret_folder".to_string(),
+                    reason: "macOS system folder".to_string(),
+                },
+                vec!["/System/secret_folder", "macOS system folder"],
+            ),
+            RootError::LabelInvalid { .. } => (
+                RootError::LabelInvalid {
+                    label: "super_secret_long_label".to_string(),
+                    reason: "too long",
+                },
+                vec!["super_secret_long_label"],
+            ),
+            RootError::NotFound { .. } => (
+                RootError::NotFound {
+                    id: "secret_root_uuid_12345".to_string(),
+                },
+                vec!["secret_root_uuid_12345"],
+            ),
+            RootError::ChangedSincePreview { .. } => (
+                RootError::ChangedSincePreview {
+                    expected: 5555,
+                    actual: 9999,
+                },
+                vec!["5555", "9999"],
+            ),
+            RootError::VolumeUnavailable(_) => (
+                RootError::VolumeUnavailable("statfs failed for /Volumes/SecretDrive".to_string()),
+                vec!["statfs failed", "/Volumes/SecretDrive"],
+            ),
+            RootError::Catalogue(c) => {
+                let (sample, secrets) = catalogue_error_sample(c);
+                (RootError::Catalogue(sample), secrets)
+            }
+        }
+    }
+
+    fn all_root_error_samples() -> Vec<(RootError, Vec<&'static str>)> {
+        let templates = [
+            RootError::PathNotAbsolute(PathBuf::new()),
+            RootError::PathNotFound(PathBuf::new()),
+            RootError::PathNotDirectory(PathBuf::new()),
+            RootError::PathNotUnicode,
+            RootError::Overlaps {
+                path: String::new(),
+                existing: String::new(),
+            },
+            RootError::Protected {
+                path: String::new(),
+                reason: String::new(),
+            },
+            RootError::LabelInvalid {
+                label: String::new(),
+                reason: "",
+            },
+            RootError::NotFound { id: String::new() },
+            RootError::ChangedSincePreview {
+                expected: 0,
+                actual: 0,
+            },
+            RootError::VolumeUnavailable(String::new()),
+            RootError::Catalogue(CatalogueError::Database(sqlx::Error::RowNotFound)),
+        ];
+
+        templates.iter().map(root_error_sample).collect()
+    }
+
     #[test]
     fn test_ipc_error_mappings_leak_no_data() {
         let internal_msg = fixed_message_for_code("internal");
@@ -334,6 +457,41 @@ mod tests {
     }
 
     #[test]
+    fn test_ipc_error_from_root_error() {
+        let internal_msg = fixed_message_for_code("internal");
+
+        for (err, forbidden_substrings) in all_root_error_samples() {
+            let code = err.code().to_string();
+            let raw_display = err.to_string();
+            let ipc_err: IpcError = err.into();
+
+            assert_eq!(ipc_err.code, code);
+            assert!(
+                !ipc_err.message.is_empty(),
+                "Error message for '{code}' must not be empty"
+            );
+            assert_ne!(
+                ipc_err.message, internal_msg,
+                "RootError code '{code}' fell back to the generic internal message"
+            );
+
+            for secret in forbidden_substrings {
+                assert!(
+                    raw_display.contains(secret)
+                        || code == "path_key_collision"
+                        || code == "database_migration",
+                    "Test bug: root Display '{raw_display}' did not contain '{secret}'"
+                );
+                assert!(
+                    !ipc_err.message.contains(secret),
+                    "RootError message for '{code}' leaked '{secret}': '{}'",
+                    ipc_err.message
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_error_codes_sync_with_typescript() {
         let ts_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -370,7 +528,7 @@ mod tests {
             }
         }
 
-        // Verify every CatalogueError and StartupError variant code is present in ALL_CODES
+        // Verify every CatalogueError, StartupError, and RootError variant code is present in ALL_CODES
         let mut emitted_codes = HashSet::new();
         for (cat_err, _) in all_catalogue_error_samples() {
             let code = cat_err.code();
@@ -385,6 +543,14 @@ mod tests {
             assert!(
                 ALL_CODES.contains(&code),
                 "StartupError code '{code}' is missing from ALL_CODES"
+            );
+            emitted_codes.insert(code);
+        }
+        for (root_err, _) in all_root_error_samples() {
+            let code = root_err.code();
+            assert!(
+                ALL_CODES.contains(&code),
+                "RootError code '{code}' is missing from ALL_CODES"
             );
             emitted_codes.insert(code);
         }
