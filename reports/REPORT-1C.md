@@ -1,6 +1,6 @@
 # REPORT-1C: Roots and volumes (backend only)
 
-**Branch:** `task/1C` · **Commit:** 575fcebcab831d6450cdc41b451ececd26faa971 · **Date:** 2026-11-21
+**Branch:** `task/1C` · **Commit:** 985fdd1ba81f88202c3ef32e827703775a41d186 · **CI Run ID:** 44935233670 · **Date:** 2026-11-21
 **OS actually tested:** macOS 15.3 (arm64, Apple Silicon), Windows Server 2022 x64 (GitHub Actions CI runner) · **Not tested:** Linux (no native desktop tier for Photos Manager)
 
 ## 1. Summary
