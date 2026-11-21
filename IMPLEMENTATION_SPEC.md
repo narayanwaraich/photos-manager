@@ -1,6 +1,6 @@
 # Photos Manager — Product and Technical Specification
 
-**Version:** 2.1.2 (merged rewrite, updated after Phase 0 findings and TASK-0B2) · **Date:** 2026-11-15
+**Version:** 2.1.3 (merged rewrite, updated after Phase 0 findings, TASK-0B2, TASK-1A and TASK-1B) · **Date:** 2026-11-20
 **Targets:** Windows 10/11 x64 and macOS (Apple Silicon first). Primary development on macOS; a Windows laptop is available for validation.
 **Model:** local-first, single-user desktop app; many library roots; optional AI.
 **Stack:** Tauri 2 · Rust · React + TypeScript · SQLite · libvips · ExifTool · optional local embeddings (EmbeddingGemma 2) · optional cloud AI providers.
@@ -165,7 +165,7 @@ Before any feature depends on a native dependency (libvips, ExifTool, ONNX Runti
 | D1 | Tauri 2 + Rust + React/TS. Electron + `sharp` is the fallback only if the §3.3 ladder is exhausted; needs human approval | Accepted |
 | D2 | libvips + ExifTool, ladder in §3.3 | Accepted; binding provisional (Windows uses a git fork) |
 | D3 | Local embeddings first (EmbeddingGemma 2), cloud providers second and opt-in | Accepted; runtime chosen by TASK-0B (ONNX Runtime via `ort`, Q8, 256 d, vision budget 140), Rust parity measured by TASK-0B2 (macOS arm64 and Windows CI, 2026-11-13; owner-laptop run pending) |
-| D4 | IPC types: hand-written DTOs + Zod, or generate from Rust (`tauri-specta` candidate). Agent verifies Tauri 2 support, then the owner decides | Open, decide at start of Phase 1 |
+| D4 | IPC types: hand-written DTOs + Zod, or generated from Rust (`tauri-specta`). **Decided by the owner 2026-11-16: try the generator first, behind a proof in 1B, with exact pins; fall back to hand-written DTOs + Zod if the proof fails.** Outcome (TASK-1B, accepted 2026-11-19): the proof failed (`tauri-specta =2.0.0-rc.29` with `specta =2.0.0-rc.28`, `specta-typescript =0.0.15`: under `Throw` the generated call returns `Promise<T>` with no error type, gate (c); under `Result` the generator emits an `any` and two unused names that strict `tsc` and ESLint reject, gate (b)). **Fallback taken:** hand-written DTOs, Zod schemas in `src/lib/tauri/`, and a Rust test that the error codes equal the list the TypeScript side exports. Revisit only if `tauri-specta` reaches a stable 2.0 | Accepted (fallback in force) |
 | D5 | EmbeddingGemma 2 is Apache 2.0 (owner and Google's announcement). Ship the license text and notices with the app and any redistributed weights; link Google's acceptable-use note in the licenses screen | Accepted |
 | D6 | Model weights are downloaded on consent from a pinned source with a pinned SHA-256; never bundled or committed | Accepted |
 | D7 | UI language is English in v1; keep strings in one place so localisation is possible | Accepted |
@@ -187,6 +187,10 @@ Before any feature depends on a native dependency (libvips, ExifTool, ONNX Runti
 | D23 | ONNX Runtime is the official Microsoft release **1.31.1**, loaded at run time through the `ort` crate's `load-dynamic` feature from an explicit, checksum-verified path; the build never downloads a binary from a third-party CDN; the library is bundled and signed with the app (§3.4, §9.1) | Accepted with 0B2 |
 | D24 | CPU execution provider on both OSes. CoreML on the vision encoder was 37 % slower than CPU on the M4; official ORT 1.31.1 for Windows has no DirectML (not supported in that build). GPU paths are revisited only with a measured gain (§9.1) | Accepted with 0B2 |
 | D25 | One process-wide ONNX Runtime environment (ORT allows one per process), shared by all sessions (§9.1) | Accepted with 0B2 |
+| D26 | **Path model for the catalogue** (task 1A). Native BLOB encoding: Unix raw name bytes, Windows UTF-16LE (both lossless). A path that is not valid Unicode is skipped and reported (`path_not_unicode`), never stored lossily. `path_key` = root-relative components, each NFC-normalised **on every volume**, lower-cased when the volume is case-insensitive, joined by `/`, UTF-8 bytes. A second row with the same `(root_id, path_key)` is a normal `path_key_collision` outcome (reported, not merged). The catalogue stamps `native_path_encoding` in `app_settings` and refuses to open on the other kind of OS (`catalogue_platform_mismatch`), so a database copied between Mac and laptop cannot be misread. One NFC rule on both OSes means the same photo never gets two keys; the cost is that two names differing only in normalisation form collide | Accepted with 1A (2026-11-17) |
+| D27 | **Schema corrections found by reviewing v2.1.2 before implementing it** (task 1A). (a) `assets.primary_file_id` is `ON DELETE CASCADE` (otherwise deleting a root cascades to its files and then fails on the foreign key from `assets`; v1 has one asset per file, and RAW+JPEG pairs will re-point the primary first). (b) Every root has exactly one root-folder row (empty relative path, empty key, no parent) and every file has a non-NULL `folder_id`. (c) A volume's case sensitivity is never probed by writing a file into a root or the app-data folder; the probe is read-only (D29). (d) `files.folder_id` is `NOT NULL REFERENCES folders(id) ON DELETE CASCADE`. Consequence: deleting a folder row deletes its files and their assets, so **the scanner marks folders `missing` and never deletes them** | Accepted with 1A (2026-11-17) |
+| D28 | **Start-up and IPC error policy** (task 1B). (a) `IpcError { code, message }`: the message is fixed text per code and never contains a path, an id taken from user data, SQL text or an OS error string; every error enum maps to a stable code, unknown cases to `internal`; the Rust code list and `src/lib/tauri/errorCodes.ts` are kept equal by a test. (b) Any start-up failure (app-data folder, opening or migrating the catalogue, the platform guard, libvips initialisation) shows one native dialog (`rfd`), writes the detail to stderr and exits with status 1; no panic, no retry. The dialog and `init()` run inside Tauri's `setup` (accepted deviation). (c) libvips is initialised once at start and returns a `Result`; `VIPS_BLOCK_UNTRUSTED` is set as the first statement of `main()`; the libvips error text is read in one helper through `vips_error_buffer_copy` while a process-wide operation mutex is held (cost: one thumbnail at a time; Phase 2 revisits, §19.1 risk 14) | Accepted with 1B (2026-11-19) |
+| D29 | **Roots and volumes** (task 1C). (a) A root is stored canonical (absolute, symlinks resolved; Windows keeps the `\\?\` form in `path_native` and strips it for `path_display` only). (b) Roots must not be equal, nested or containing one another; compared by component, NFC and lower-cased on every volume (over-rejects on a case-sensitive volume, never under-rejects), against every stored root whatever its status. (c) Protected folders are refused (`root_protected`): a filesystem root, the home folder itself, `/Users`, `C:\Users`, `/Volumes`, the app-data folder and anything inside or containing it, OS system folders, and on macOS anything inside a `*.photoslibrary` package. (d) Case sensitivity is probed read-only by asking the OS for the identity of a path component and of its case-swapped name; no cased component or a failing lookup gives `Unknown`, stored as case-insensitive with a warning. (e) Volumes are described by OS calls, not by parsing command output; a volume row is reused when the non-NULL `fs_uuid` matches. (f) `add_root` (overlap check, volume, root, root-folder row) is one write transaction. (g) Removal is count-and-confirm and the count is re-checked at removal (`root_changed_since_preview`); only catalogue rows are deleted, never a file. (h) Offline roots are detected, not acted on, until 1F. (i) The folder dialog runs in Rust, so no path comes from the WebView (planned for 1C2) | Proposed (orchestrator, 2026-11-20); accepted with 1C |
 
 ---
 
@@ -234,7 +238,7 @@ Create a module only in the phase that needs it.
 - SQLite via SQLx in Rust. `PRAGMA foreign_keys = ON` per connection, WAL, busy timeout, bounded pool, short write transactions.
 - **Migrations are additive per phase.** The schema below is the target. Each phase's migration creates only the tables that phase uses.
 - No image bytes in SQLite. Timestamps are UTC Unix milliseconds in `*_ms` columns; keep the original EXIF date string and offset separately. Never assume UTC when the photo has no offset.
-- **Paths:** store a native-path BLOB (`rel_path_native`) plus a display string, relative to the library root, so remounting a drive means updating one root row. Non-UTF-8 or unrepresentable paths are skipped and reported, never lossily converted. Do not lowercase paths blindly; derive `path_key` from the volume's case-sensitivity and Unicode-normalisation policy.
+- **Paths (D26):** store a native-path BLOB (`rel_path_native`) plus a display string, relative to the library root, so remounting a drive means updating one root row. Native encoding is the raw name bytes on Unix and UTF-16LE on Windows. Non-UTF-8 or unrepresentable paths are skipped and reported, never lossily converted; so is a name that cannot round-trip between the two OSes (for example one containing a backslash, which Windows reads as a separator, or a trailing colon). Derive `path_key` from the root-relative components, **NFC-normalised on every volume**, lower-cased only when the volume is case-insensitive. A second row with the same `(root_id, path_key)` is a reported collision, not a merge. The catalogue records its native encoding and refuses to open on the other OS (`catalogue_platform_mismatch`).
 - Deleting a catalogue row never deletes a file.
 - Hashes are `BLOB`; sizes are checked to fit signed INTEGER.
 
@@ -263,19 +267,21 @@ CREATE TABLE library_roots (
 CREATE TABLE folders (
   id TEXT PRIMARY KEY,
   root_id TEXT NOT NULL REFERENCES library_roots(id) ON DELETE CASCADE,
-  parent_id TEXT REFERENCES folders(id) ON DELETE CASCADE,
+  parent_id TEXT REFERENCES folders(id) ON DELETE CASCADE,   -- NULL only for the root-folder row (D27b)
   name TEXT NOT NULL,
   rel_path_display TEXT NOT NULL, rel_path_native BLOB NOT NULL, path_key BLOB NOT NULL,
   status TEXT NOT NULL DEFAULT 'present' CHECK (status IN ('present','missing','inaccessible')),
   modified_at_ms INTEGER, last_seen_generation TEXT,
   UNIQUE (root_id, path_key)
 );
+-- Task 1C migration: exactly one root-folder row per root
+CREATE UNIQUE INDEX idx_folders_one_root_folder ON folders(root_id) WHERE parent_id IS NULL;
 
 -- Physical files (what operations, hashes and backups act on)
 CREATE TABLE files (
   id TEXT PRIMARY KEY,
   root_id TEXT NOT NULL REFERENCES library_roots(id) ON DELETE CASCADE,
-  folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL,
+  folder_id TEXT NOT NULL REFERENCES folders(id) ON DELETE CASCADE,   -- D27d: folders are marked missing, never deleted
   name TEXT NOT NULL, extension TEXT,
   rel_path_display TEXT NOT NULL, rel_path_native BLOB NOT NULL, path_key BLOB NOT NULL,
   size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
@@ -294,7 +300,7 @@ CREATE INDEX idx_files_identity ON files(file_identity);
 CREATE TABLE assets (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL DEFAULT 'image' CHECK (kind IN ('image','video')),
-  primary_file_id TEXT NOT NULL REFERENCES files(id),
+  primary_file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,   -- D27a
   format TEXT,                              -- jpeg, png, heic, dng, ...
   width INTEGER, height INTEGER, orientation INTEGER,
   date_taken_ms INTEGER, date_taken_source TEXT, date_taken_raw TEXT, tz_offset_min INTEGER,
@@ -452,6 +458,7 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(
 ### 5.3 Notes
 
 - **Why files and assets are separate:** exact-duplicate review, move/copy/trash, backup and import act on files; browsing, search, embeddings and faces act on assets. v1 creates exactly one asset per image file with one `primary` asset_file row. Pairing and sidecars (§13) then need no schema rework.
+- **Root-folder row and cascades (D27):** every root has exactly one root-folder row; deleting a root removes its folders, files, assets and asset_files by cascade, and never a file on disk. Because a deleted folder row deletes its files, the scanner only marks folders `missing`.
 - **Fingerprint** = size + modified time + file identity. A changed fingerprint invalidates hashes, derivatives, signatures and embeddings for that file. A full BLAKE3 hash is the only equality proof.
 - `scan_generation` ensures nothing is marked missing after an interrupted scan (§6).
 - FTS5 is text search only. Keep it in sync in repository code or explicit triggers.
@@ -464,9 +471,9 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(
 
 ### 6.1 Roots and volumes
 
-- Adding a root records its volume (label, filesystem UUID/type where the OS exposes them, case-sensitivity probed by test file in the app data dir, not in the root). Roots are canonicalised; **overlapping roots are rejected** (one inside another).
+- Adding a root (D29) records its volume (kind, label, filesystem UUID and type from OS calls; case-sensitivity probed **read-only**: the OS is asked for the identity of a path component and of its case-swapped name, nothing is written anywhere). Roots are stored canonical. **Overlapping roots are rejected** (equal, nested or containing, compared by component, NFC and lower-cased). Protected folders are rejected (filesystem roots, the home folder itself, the app-data folder and anything inside or containing it, OS system folders, `*.photoslibrary` packages on macOS). The root, its volume and its root-folder row are created in one transaction.
 - A root whose path is unreachable becomes `offline`, never `removed`. Its files become `inaccessible`, not `missing`, so a disconnected drive never produces a mass-deletion illusion. When the volume returns (matched by filesystem UUID, else by user confirmation), update `path_native` once; all file rows stay valid.
-- Removing a root deletes catalogue rows only, after a count-and-confirm prompt. Never touches files.
+- Removing a root deletes catalogue rows only, after a count-and-confirm prompt; the count is checked again when the removal runs. Never touches files.
 - Network volumes: supported read-only for browsing and scanning, with a warning; no watcher guarantee; the DB never lives there.
 
 ### 6.2 Scan algorithm (idempotent, resumable)
@@ -477,7 +484,7 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(
 4. Compare fingerprint (size + mtime + file identity) to the existing row. Unchanged: stamp `scan_generation`, nothing else. New or changed: upsert the `files` row, create or refresh its `assets` row, invalidate dependent derivatives/hashes/signatures/embeddings for that file, enqueue metadata and thumbnail jobs.
 5. Write in bounded batches (about 500 rows per transaction) so UI reads never wait long. Persist progress after every batch.
 6. **Only after the walk completes successfully**, mark rows of this root whose `scan_generation` differs as `missing`. A cancelled, crashed or errored walk never marks anything missing.
-7. Detect moves: a `missing` file whose identity or (size + BLAKE3) matches a new file in the same scan is treated as a move: keep the file id, tags, albums and favorites. Without a hash match it is a new file.
+7. Detect moves: a `missing` file whose identity matches a new file in the same scan is treated as a move: keep the file id, tags, albums and favorites. Hash-based move detection (size + BLAKE3) waits for Phase 4, when the hash pipeline exists; until then a moved file without a matching identity is a new file plus a missing one. (Proposed with task 1D; the owner may veto.)
 8. Unreadable entries produce a warning with a stable code and do not abort the scan.
 
 ### 6.3 Watching
@@ -575,7 +582,7 @@ AI is advisory, opt-in, isolated behind traits, and never touches files (AGENTS.
 4. **Vision token budget: default 140** (2.5× faster than 280, no loss on the 0B fixtures); 280 is an optional quality setting. **A different budget is a different embedding** (mean cosine 0.9872, minimum 0.9308 between 140 and 280): budgets are never mixed in one index, and the budget is part of `model_revision`. Image input is the orientation-corrected preview derivative used elsewhere. Embedding a preview instead of the original costs some fidelity (0B2 stand-in test: JPEG quality 80, longest edge 1024, 256 d: mean cosine 0.993 and minimum 0.968 against the vector of the original image); Phase 4B re-measures this with the real libvips preview and decides the preview size used for embedding. Preprocessing (resize, normalisation, patching, position ids, tokenisation) must match the reference implementation exactly; a mismatch silently degrades quality (wrong normalisation measured: image cosine 0.75, retrieval 45%), so parity against the Python reference is a gate (TASK-0B2).
 5. **Cosine only:** with normalised vectors, cosine = dot product. Unit tests cover normalisation, truncation and ordering.
 6. **Versioning:** each vector row carries `model_id`, `model_revision` (weights + quantisation + budget + preprocessing version, written `<format>-<quant>-<weights_sha7>-b<budget>-<prep_version>`, for example `onnx-q8-daa72c5-b140-v1`, as defined in `docs/embedding-runtime.md`) and `dim`. A revision change marks vectors stale and queues re-embedding in the background; old rows remain usable until replaced.
-7. **Memory:** text-only mode is the default; load the vision encoder on demand when embedding images or running image-based queries, and unload it after an idle timeout. Measured by 0B2 in a clean process (Rust, 4 threads, budget 140): macOS M4 text-only peak RSS 566 MiB (private footprint 324 MiB), with the vision encoder 938 MiB (footprint 367 MiB); Windows CI text-only peak working set 361 MiB, with the vision encoder 580 MiB. The planning figure is therefore about 0.4 to 0.6 GB for text-only and about 0.6 to 0.9 GB with the vision encoder, not 200 MB. **Whether unloading the vision encoder returns memory to the OS is unproven:** the 0B2 probes record only peaks (a peak cannot fall), and on the Mac the peak after the drop was not lower. Phase 4B must measure current memory after the drop before relying on it; the alternative is a separate worker process that exits. Embedding jobs are lowest priority, battery/power aware where the OS allows, and pause on user activity.
+7. **Memory:** text-only mode is the default; load the vision encoder on demand when embedding images or running image-based queries, and unload it after an idle timeout. Measured by 0B2 in a clean process (Rust, 4 threads, budget 140): macOS M4 text-only peak RSS 566 MiB (private footprint 324 MiB), with the vision encoder 938 MiB (footprint 367 MiB); Windows CI text-only peak working set 361 MiB, with the vision encoder 580 MiB; the owner's Windows laptop (Ryzen 7 5700U, 8 GB) measured 361.93 MiB text-only and 581.07 MiB with the vision encoder, within 1 MiB of the CI server. The planning figure is therefore about 0.4 to 0.6 GB for text-only and about 0.6 to 0.9 GB with the vision encoder, not 200 MB. **Whether unloading the vision encoder returns memory to the OS is unproven:** the 0B2 probes record only peaks (a peak cannot fall), and on the Mac the peak after the drop was not lower. Phase 4B must measure current memory after the drop before relying on it; the alternative is a separate worker process that exits. Embedding jobs are lowest priority, battery/power aware where the OS allows, and pause on user activity.
 8. **License:** Apache 2.0. Neither model repository ships a LICENSE file (the licence is declared in the README front matter), so the app ships the Apache 2.0 text plus a NOTICE naming the model, the converted-weights repository and its pinned commit; link Google's usage notice in the app's licences screen. Redistributing converted weights stays the owner's decision (D5/D6); default is download-on-consent.
 
 **Runtime (decided by TASK-0B, accepted 2026-11-05):** R2, ONNX Runtime in-process through `ort` (pinned exactly; it is a release candidate), with the `onnx-community` Q8 export: about 485 MiB for the text graph plus the vision encoder, no audio encoder. CPU execution provider (D24): CoreML failed on the zero-length video/audio inputs of the backbone; TASK-0B2 measured CoreML on the vision encoder alone at 37 % slower than CPU on the M4, and DirectML is not part of the official ORT 1.31.1 Windows build. The `ort` crate is pinned `=2.0.0-rc.15` with `load-dynamic`, the library is ONNX Runtime 1.31.1 (D23). The ONNX Runtime library is bundled inside the signed app, never downloaded with the weights (hardened-runtime macOS apps cannot load unsigned libraries fetched later); it is a native dependency under §3.4. Alternatives, kept for the record:
@@ -671,9 +678,9 @@ Locked files (antivirus, indexers) retry with bounded backoff and then report; h
 - Commands are thin: validate (Zod on the frontend, typed DTO + checks in Rust), authorise, delegate to a service. Business logic lives in services.
 - **Every list command is paginated with a hard maximum page size** (default 200, max 1000). Queries use keyset pagination for large sets. No command returns "all photos".
 - Errors cross the boundary as `{ code, message, details? }` with stable codes; no raw `anyhow` strings or paths with user data in logs by default.
-- IDs, not paths, identify items across the boundary. The only commands that accept a path are "add root" (via the native folder dialog result), "choose destination" (same), and import/backup source selection later.
+- IDs, not paths, identify items across the boundary. A list that is bounded by construction (the roots list) needs no pagination. The only commands that accept a path are "add root" (the native folder dialog runs in Rust, so the path never comes from the WebView), "choose destination" (same), and import/backup source selection later.
 - Long operations return a job or operation id immediately; progress arrives through Channels.
-- Hand-written DTOs + Zod is the baseline. Generating types from Rust (D4) may replace it at the start of Phase 1.
+- Hand-written DTOs + Zod in `src/lib/tauri/` is the method (D4: the generator proof failed in 1B). Error `message` text is fixed per code (D28).
 
 ### 12.2 Command groups (illustrative; exact set evolves per phase)
 
@@ -896,6 +903,7 @@ Phase ordering note: Phase 5 (file operations) is deliberately after browsing, s
 11. **Public repository hygiene.** What is public stays public (forks, caches, history). Mitigation: D13 rules, gitleaks pre-flight, synthetic fixtures only, short artifact retention, no personal photos anywhere in the repository.
 12. **Gate scripts that fail open.** Mitigation: D19 and regression tests for every gate.
 13. **Embedding time on the low-end machine.** About 24 hours per 100,000 photos on the Mac and about 96 hours on a 4-vCPU Windows server and about 52 to 68 hours on the 8 GB laptop. Mitigation: opt-in per root, resumable, pausable, ETA (§9.1).
+14. **libvips error buffer is process-wide (D28c).** Thumbnails are serialised by one process-wide mutex, so Phase 2's worker pool gets no parallelism from libvips operations. Mitigation: Phase 2 revisits (narrower lock with per-operation error capture, a worker process per thumbnail, or a libvips version with a per-thread error buffer).
 
 ### 19.2 Open questions for the owner (defaults in brackets; the plan proceeds on the defaults)
 
@@ -906,7 +914,7 @@ Phase ordering note: Phase 5 (file operations) is deliberately after browsing, s
 5. Hardware for local AI: [answered: Mac M4 16 GB, Windows laptop Ryzen 7 5700U 8 GB, CPU only]
 6. Cloud providers and budget? [answered: not a priority; bring-your-own-key and local OpenAI-compatible endpoint first]
 7. App name and bundle identifier? [answered: working name "Photos Manager", `com.narayanwaraich.photosmanager`]
-8. D4: generated IPC types vs hand-written DTOs? [decide in Phase 1 after 0A]
+8. D4: generated IPC types vs hand-written DTOs? [answered: generator tried in 1B and failed its proof; hand-written DTOs + Zod]
 9. D15: RAW Tier 1 (embedded previews) in Phases 1 and 2? [yes unless the owner objects]
 
 ---
@@ -924,3 +932,4 @@ Phase ordering note: Phase 5 (file operations) is deliberately after browsing, s
 
 - 2026-11-14 — v2.1.1: numbers and decisions from TASK-0B2 (reviewed, not yet merged). §3.5 D3 state; new decisions D21 to D25 (pure-Rust tokenizer, preprocessing rules and negative gate, ONNX Runtime 1.31.1 via `load-dynamic`, CPU execution provider, one ORT environment per process); §9.1 cost paragraph (Rust throughput and the Windows CI figure), rule 4 (preview fidelity), **rule 7 corrected** (memory: the "about 200 MB" text-only figure was wrong, measured 361 to 566 MiB peak; unloading the vision encoder is unproven), runtime paragraph (CoreML and DirectML results); §15 and risk 13 numbers. The agent's report numbered its own decisions D18 to D22, which collide with existing IDs; they are D21 to D25 here.
 - 2026-11-15 — v2.1.2: TASK-0B2 accepted; owner's laptop numbers (Ryzen 7 5700U, 8 GB) added to §9.1 and §15 and risk 13; laptop memory still unmeasured (probe script bug, rerun pending). Phase 0 exit checks are complete (Mac and Windows real iPhone HEIC).
+- 2026-11-20 — v2.1.3: TASK-1A and TASK-1B accepted and merged. §3.5: D4 outcome (generator proof failed in 1B, fallback in force) and new D26 to D29 (path model, schema corrections, start-up and IPC error policy, roots and volumes; D29 is proposed and is accepted with 1C). §5.1 path rule (native encoding, NFC on every volume, platform guard, names that cannot round-trip); §5.2 schema fixes (`assets.primary_file_id` cascade, non-NULL `folder_id` with `ON DELETE CASCADE`, root-folder row, the 1C partial unique index); §5.3 root-folder note; §6.1 (read-only case probe, canonical roots, overlap and protected folders, one transaction, count re-checked on removal); §6.2 step 7 (hash-based move detection waits for Phase 4; proposed, the owner may veto); §9.1 rule 7 (laptop memory 361.93 and 581.07 MiB); §12.1 (bounded lists, the dialog runs in Rust, fixed error text); §19.1 risk 14 (libvips error buffer and the operation mutex); §19.2 item 8 answered.
