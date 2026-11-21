@@ -1,0 +1,306 @@
+use std::path::Path;
+
+use crate::domain::CaseProbe;
+
+/// Unique filesystem identity for a file or directory (dev+ino on Unix, serial+index on Windows).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileIdentity {
+    pub dev_or_serial: u64,
+    pub ino_or_index: u64,
+}
+
+/// Trait abstracting OS file identity lookup to allow injection in unit tests (D29d).
+pub trait FileIdentityLookup {
+    fn get_identity(&self, path: &Path) -> Result<Option<FileIdentity>, std::io::Error>;
+}
+
+/// Real OS filesystem identity lookup using standard library metadata (read-only).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RealFileIdentityLookup;
+
+impl FileIdentityLookup for RealFileIdentityLookup {
+    fn get_identity(&self, path: &Path) -> Result<Option<FileIdentity>, std::io::Error> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            match std::fs::metadata(path) {
+                Ok(meta) => Ok(Some(FileIdentity {
+                    dev_or_serial: meta.dev(),
+                    ino_or_index: meta.ino(),
+                })),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(e),
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            match std::fs::metadata(path) {
+                Ok(meta) => {
+                    let serial = meta.volume_serial_number().unwrap_or(0) as u64;
+                    let index = meta.file_index().unwrap_or(0);
+                    Ok(Some(FileIdentity {
+                        dev_or_serial: serial,
+                        ino_or_index: index,
+                    }))
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(e),
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = path;
+            Ok(None)
+        }
+    }
+}
+
+/// Returns true if the string contains at least one cased character.
+pub fn has_cased_char(s: &str) -> bool {
+    s.chars().any(|c| c.is_lowercase() || c.is_uppercase())
+}
+
+/// Swaps the casing of all cased characters in a string (e.g. `Photos` -> `pHOTOS`).
+pub fn swap_case(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_lowercase() {
+                c.to_uppercase().collect::<String>()
+            } else if c.is_uppercase() {
+                c.to_lowercase().collect::<String>()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
+/// Probes volume case sensitivity completely read-only (decision d, D27c, D29d).
+///
+/// Method:
+/// 1. Walks the canonical path upwards from the candidate root to find the first component
+///    with a cased character.
+/// 2. Builds a candidate path with the component's case swapped.
+/// 3. Queries the injected file identity lookup for both paths.
+///
+/// Outcomes:
+/// - Same identity: the volume folds case (`CaseProbe::CaseInsensitive`).
+/// - Swapped name is absent or has a different identity: does not fold (`CaseProbe::CaseSensitive`).
+/// - No cased component found, or lookup fails unexpectedly: `CaseProbe::Unknown`.
+pub fn probe_case_sensitivity(path: &Path, lookup: &impl FileIdentityLookup) -> CaseProbe {
+    for ancestor in path.ancestors() {
+        if let Some(file_name) = ancestor.file_name() {
+            if let Some(name_str) = file_name.to_str() {
+                if has_cased_char(name_str) {
+                    let swapped_name = swap_case(name_str);
+                    let swapped_path = ancestor.with_file_name(swapped_name);
+
+                    let orig_id = match lookup.get_identity(ancestor) {
+                        Ok(Some(id)) => id,
+                        _ => return CaseProbe::Unknown,
+                    };
+
+                    return match lookup.get_identity(&swapped_path) {
+                        Ok(Some(swapped_id)) if swapped_id == orig_id => CaseProbe::CaseInsensitive,
+                        Ok(None) => CaseProbe::CaseSensitive,
+                        Ok(Some(_different_id)) => CaseProbe::CaseSensitive,
+                        Err(_) => CaseProbe::Unknown,
+                    };
+                }
+            }
+        }
+    }
+
+    CaseProbe::Unknown
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    struct FakeLookup {
+        entries: HashMap<PathBuf, Option<FileIdentity>>,
+        should_fail: bool,
+    }
+
+    impl FakeLookup {
+        fn new() -> Self {
+            Self {
+                entries: HashMap::new(),
+                should_fail: false,
+            }
+        }
+
+        fn with_identity(mut self, path: &str, identity: FileIdentity) -> Self {
+            self.entries.insert(PathBuf::from(path), Some(identity));
+            self
+        }
+
+        fn with_missing(mut self, path: &str) -> Self {
+            self.entries.insert(PathBuf::from(path), None);
+            self
+        }
+
+        fn with_failure(mut self) -> Self {
+            self.should_fail = true;
+            self
+        }
+    }
+
+    impl FileIdentityLookup for FakeLookup {
+        fn get_identity(&self, path: &Path) -> Result<Option<FileIdentity>, std::io::Error> {
+            if self.should_fail {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "simulated lookup error",
+                ));
+            }
+            Ok(self.entries.get(path).copied().unwrap_or(None))
+        }
+    }
+
+    #[test]
+    fn test_case_probe_folds_case() {
+        let lookup = FakeLookup::new()
+            .with_identity(
+                "/a/Photos",
+                FileIdentity {
+                    dev_or_serial: 1,
+                    ino_or_index: 100,
+                },
+            )
+            .with_identity(
+                "/a/pHOTOS",
+                FileIdentity {
+                    dev_or_serial: 1,
+                    ino_or_index: 100,
+                },
+            );
+
+        let probe = probe_case_sensitivity(Path::new("/a/Photos"), &lookup);
+        assert_eq!(probe, CaseProbe::CaseInsensitive);
+    }
+
+    #[test]
+    fn test_case_probe_does_not_fold_case_swapped_is_absent() {
+        let lookup = FakeLookup::new()
+            .with_identity(
+                "/a/Photos",
+                FileIdentity {
+                    dev_or_serial: 1,
+                    ino_or_index: 100,
+                },
+            )
+            .with_missing("/a/pHOTOS");
+
+        let probe = probe_case_sensitivity(Path::new("/a/Photos"), &lookup);
+        assert_eq!(probe, CaseProbe::CaseSensitive);
+    }
+
+    #[test]
+    fn test_case_probe_does_not_fold_case_swapped_has_different_identity() {
+        let lookup = FakeLookup::new()
+            .with_identity(
+                "/a/Photos",
+                FileIdentity {
+                    dev_or_serial: 1,
+                    ino_or_index: 100,
+                },
+            )
+            .with_identity(
+                "/a/pHOTOS",
+                FileIdentity {
+                    dev_or_serial: 1,
+                    ino_or_index: 200,
+                },
+            );
+
+        let probe = probe_case_sensitivity(Path::new("/a/Photos"), &lookup);
+        assert_eq!(probe, CaseProbe::CaseSensitive);
+    }
+
+    #[test]
+    fn test_case_probe_no_cased_component_returns_unknown() {
+        let lookup = FakeLookup::new().with_identity(
+            "/123/456",
+            FileIdentity {
+                dev_or_serial: 1,
+                ino_or_index: 100,
+            },
+        );
+
+        let probe = probe_case_sensitivity(Path::new("/123/456"), &lookup);
+        assert_eq!(probe, CaseProbe::Unknown);
+    }
+
+    #[test]
+    fn test_case_probe_lookup_failure_returns_unknown() {
+        let lookup = FakeLookup::new().with_failure();
+        let probe = probe_case_sensitivity(Path::new("/a/Photos"), &lookup);
+        assert_eq!(probe, CaseProbe::Unknown);
+    }
+
+    #[test]
+    fn test_case_probe_real_filesystem_read_only_and_correctness() {
+        let temp = tempdir().expect("tempdir");
+        let test_dir = temp.path().join("ProbeFolder");
+        std::fs::create_dir_all(&test_dir).expect("create dir");
+
+        // 1. Snapshot directory state before probe
+        let read_snapshot = |dir: &Path| -> Vec<(String, u64, std::time::SystemTime)> {
+            let mut entries = Vec::new();
+            for entry in std::fs::read_dir(dir).expect("read_dir") {
+                let entry = entry.expect("dir entry");
+                let meta = entry.metadata().expect("metadata");
+                let mtime = meta.modified().expect("mtime");
+                entries.push((
+                    entry.file_name().to_string_lossy().to_string(),
+                    meta.len(),
+                    mtime,
+                ));
+            }
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            entries
+        };
+
+        let before_snapshot = read_snapshot(temp.path());
+        let before_dir_mtime = std::fs::metadata(&test_dir)
+            .expect("meta")
+            .modified()
+            .expect("mtime");
+
+        // 2. Execute read-only probe
+        let probe = probe_case_sensitivity(&test_dir, &RealFileIdentityLookup);
+
+        // 3. Snapshot directory state after probe
+        let after_snapshot = read_snapshot(temp.path());
+        let after_dir_mtime = std::fs::metadata(&test_dir)
+            .expect("meta")
+            .modified()
+            .expect("mtime");
+
+        // 4. Assert complete read-only invariance (zero files created or modified)
+        assert_eq!(
+            before_snapshot, after_snapshot,
+            "Directory contents must be identical"
+        );
+        assert_eq!(
+            before_dir_mtime, after_dir_mtime,
+            "Directory modification time must not change"
+        );
+
+        // 5. On macOS default APFS and Windows default NTFS, runners fold case
+        println!("Real filesystem case probe result: {:?}", probe);
+        assert_eq!(
+            probe,
+            CaseProbe::CaseInsensitive,
+            "Default macOS/Windows volume folds case"
+        );
+    }
+}
