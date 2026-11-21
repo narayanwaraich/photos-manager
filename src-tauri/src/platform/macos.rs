@@ -1,8 +1,13 @@
+#[cfg(target_os = "macos")]
 use std::ffi::{CStr, CString};
+#[cfg(target_os = "macos")]
 use std::mem::MaybeUninit;
+#[cfg(target_os = "macos")]
 use std::path::Path;
 
-use crate::domain::{RootError, VolumeInfo, VolumeKind};
+use crate::domain::VolumeKind;
+#[cfg(target_os = "macos")]
+use crate::domain::{RootError, VolumeInfo};
 
 /// Pure mapping from macOS mount flags to VolumeKind (spec §5.2, D29e).
 pub fn parse_statfs_kind(flags: u32) -> VolumeKind {
@@ -18,6 +23,7 @@ pub fn parse_statfs_kind(flags: u32) -> VolumeKind {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[repr(C, packed(4))]
 struct VolAttrBuf {
     length: u32,
@@ -27,6 +33,7 @@ struct VolAttrBuf {
 }
 
 /// Inspects a filesystem path on macOS using native libc statfs and getattrlist system calls (D29e).
+#[cfg(target_os = "macos")]
 pub fn describe_volume_macos(path: &Path) -> Result<VolumeInfo, RootError> {
     let c_path = CString::new(path.as_os_str().as_encoded_bytes())
         .map_err(|e| RootError::VolumeUnavailable(e.to_string()))?;

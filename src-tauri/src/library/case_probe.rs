@@ -35,19 +35,56 @@ impl FileIdentityLookup for RealFileIdentityLookup {
 
         #[cfg(windows)]
         {
-            use std::os::windows::fs::MetadataExt;
-            match std::fs::metadata(path) {
-                Ok(meta) => {
-                    let serial = meta.volume_serial_number().unwrap_or(0) as u64;
-                    let index = meta.file_index().unwrap_or(0);
-                    Ok(Some(FileIdentity {
-                        dev_or_serial: serial,
-                        ino_or_index: index,
-                    }))
+            use std::os::windows::ffi::OsStrExt;
+            use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+            use windows_sys::Win32::Storage::FileSystem::{
+                CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+                OPEN_EXISTING,
+            };
+
+            let wide_path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            // SAFETY: CreateFileW receives a valid null-terminated wide string.
+            // Opening with 0 desired access and FILE_FLAG_BACKUP_SEMANTICS allows querying metadata on files and directories.
+            let handle = unsafe {
+                CreateFileW(
+                    wide_path.as_ptr(),
+                    0,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    std::ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS,
+                    std::ptr::null_mut(),
+                )
+            };
+
+            if handle == INVALID_HANDLE_VALUE {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(None);
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                Err(e) => Err(e),
+                return Err(err);
             }
+
+            let mut info: std::mem::MaybeUninit<BY_HANDLE_FILE_INFORMATION> =
+                std::mem::MaybeUninit::uninit();
+            // SAFETY: handle is valid and info is properly allocated to hold BY_HANDLE_FILE_INFORMATION.
+            let ok = unsafe { GetFileInformationByHandle(handle, info.as_mut_ptr()) };
+            // SAFETY: handle was returned by CreateFileW and is closed here.
+            unsafe { CloseHandle(handle) };
+
+            if ok == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+
+            // SAFETY: GetFileInformationByHandle succeeded (ok != 0), so info is initialized.
+            let info = unsafe { info.assume_init() };
+            let serial = info.dwVolumeSerialNumber as u64;
+            let index = ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64);
+            Ok(Some(FileIdentity {
+                dev_or_serial: serial,
+                ino_or_index: index,
+            }))
         }
 
         #[cfg(not(any(unix, windows)))]
