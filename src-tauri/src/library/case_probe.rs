@@ -120,8 +120,10 @@ pub fn swap_case(s: &str) -> String {
 /// Method:
 /// 1. Walks the canonical path upwards from the candidate root to find the first component
 ///    with a cased character.
-/// 2. Builds a candidate path with the component's case swapped.
-/// 3. Queries the injected file identity lookup for both paths.
+/// 2. If no ancestor has a cased name (e.g. drive roots like `C:\` or `D:\`), takes the first
+///    entry inside the path with a cased character (read-only `read_dir`, at most 64 entries).
+/// 3. Builds a candidate path with that component's case swapped.
+/// 4. Queries the injected file identity lookup for both paths.
 ///
 /// Outcomes:
 /// - Same identity: the volume folds case (`CaseProbe::CaseInsensitive`).
@@ -132,26 +134,56 @@ pub fn probe_case_sensitivity(path: &Path, lookup: &impl FileIdentityLookup) -> 
         if let Some(file_name) = ancestor.file_name() {
             if let Some(name_str) = file_name.to_str() {
                 if has_cased_char(name_str) {
-                    let swapped_name = swap_case(name_str);
-                    let swapped_path = ancestor.with_file_name(swapped_name);
-
-                    let orig_id = match lookup.get_identity(ancestor) {
-                        Ok(Some(id)) => id,
-                        _ => return CaseProbe::Unknown,
-                    };
-
-                    return match lookup.get_identity(&swapped_path) {
-                        Ok(Some(swapped_id)) if swapped_id == orig_id => CaseProbe::CaseInsensitive,
-                        Ok(None) => CaseProbe::CaseSensitive,
-                        Ok(Some(_different_id)) => CaseProbe::CaseSensitive,
-                        Err(_) => CaseProbe::Unknown,
-                    };
+                    return test_cased_target(ancestor, name_str, lookup);
                 }
             }
         }
     }
 
+    // When no ancestor has a cased name (e.g. drive roots like `C:\` or `D:\`),
+    // inspect the first cased entry directly inside the root (amended D29d).
+    if let Some((child_path, child_name)) = find_cased_child_entry(path) {
+        return test_cased_target(&child_path, &child_name, lookup);
+    }
+
     CaseProbe::Unknown
+}
+
+/// Finds the first entry directly inside `dir` (bounded to at most 64 entries)
+/// whose file name contains at least one cased character (spec §3.5, amended D29d).
+///
+/// Read-only directory listing. Returns `None` if listing fails, the directory is empty,
+/// or no cased entry is encountered within the first 64 entries.
+pub fn find_cased_child_entry(dir: &Path) -> Option<(std::path::PathBuf, String)> {
+    let read_dir = std::fs::read_dir(dir).ok()?;
+    for entry in read_dir.take(64) {
+        if let Ok(entry) = entry {
+            let file_name = entry.file_name();
+            if let Some(name_str) = file_name.to_str() {
+                if has_cased_char(name_str) {
+                    return Some((entry.path(), name_str.to_string()));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn test_cased_target(target: &Path, name_str: &str, lookup: &impl FileIdentityLookup) -> CaseProbe {
+    let swapped_name = swap_case(name_str);
+    let swapped_path = target.with_file_name(swapped_name);
+
+    let orig_id = match lookup.get_identity(target) {
+        Ok(Some(id)) => id,
+        _ => return CaseProbe::Unknown,
+    };
+
+    match lookup.get_identity(&swapped_path) {
+        Ok(Some(swapped_id)) if swapped_id == orig_id => CaseProbe::CaseInsensitive,
+        Ok(None) => CaseProbe::CaseSensitive,
+        Ok(Some(_different_id)) => CaseProbe::CaseSensitive,
+        Err(_) => CaseProbe::Unknown,
+    }
 }
 
 #[cfg(test)]
@@ -338,6 +370,40 @@ mod tests {
             probe,
             CaseProbe::CaseInsensitive,
             "Default macOS/Windows volume folds case"
+        );
+    }
+
+    #[test]
+    fn test_find_cased_child_entry_on_temp_directory() {
+        let temp = tempdir().expect("tempdir");
+
+        // Empty directory returns None
+        assert_eq!(find_cased_child_entry(temp.path()), None);
+
+        // Directory with non-cased file returns None
+        let uncased_file = temp.path().join("12345");
+        std::fs::write(&uncased_file, b"content").expect("write file");
+        assert_eq!(find_cased_child_entry(temp.path()), None);
+
+        // Directory with cased file returns Some((path, name))
+        let cased_file = temp.path().join("TestFile.jpg");
+        std::fs::write(&cased_file, b"photo").expect("write cased");
+        let found = find_cased_child_entry(temp.path());
+        assert!(found.is_some(), "Must find cased child entry");
+        let (found_path, found_name) = found.unwrap();
+        assert_eq!(found_name, "TestFile.jpg");
+        assert_eq!(found_path, cased_file);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_case_probe_c_drive_on_windows_runner() {
+        let lookup = RealFileIdentityLookup;
+        let probe = probe_case_sensitivity(Path::new(r"C:\"), &lookup);
+        assert_eq!(
+            probe,
+            CaseProbe::CaseInsensitive,
+            "C:\\ on Windows runner must probe as CaseInsensitive via child entry fallback"
         );
     }
 }
