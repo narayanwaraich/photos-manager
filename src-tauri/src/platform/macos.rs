@@ -52,11 +52,13 @@ pub fn describe_volume_macos(path: &Path) -> Result<VolumeInfo, RootError> {
     // SAFETY: statfs succeeded (returned 0), so stat buffer is initialized.
     let stat = unsafe { stat.assume_init() };
 
+    // SAFETY: statfs succeeded and f_fstypename is a valid null-terminated C string in the statfs struct.
     let fstype_raw = unsafe { CStr::from_ptr(stat.f_fstypename.as_ptr()) };
     let fs_type = Some(fstype_raw.to_string_lossy().to_string());
     let kind = parse_statfs_kind(stat.f_flags);
 
     // 2. Query getattrlist for ATTR_VOL_NAME and ATTR_VOL_UUID
+    // SAFETY: attrlist is a plain C struct of integer/bitfield fields; zeroing is valid initialisation.
     let mut attr_list: libc::attrlist = unsafe { std::mem::zeroed() };
     attr_list.bitmapcount = libc::ATTR_BIT_MAP_COUNT;
     attr_list.volattr = libc::ATTR_VOL_NAME | libc::ATTR_VOL_UUID;
@@ -81,17 +83,33 @@ pub fn describe_volume_macos(path: &Path) -> Result<VolumeInfo, RootError> {
         let uuid = uuid::Uuid::from_bytes(buf.vol_uuid);
         let fs_uuid_str = uuid.hyphenated().to_string();
 
-        let name_ptr = (buf.vol_name_ref.attr_dataoffset as isize
-            + &buf.vol_name_ref as *const _ as isize) as *const u8;
+        let offset = buf.vol_name_ref.attr_dataoffset;
         let name_len = buf.vol_name_ref.attr_length as usize;
-        let name_bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
-        let vol_name = String::from_utf8_lossy(name_bytes)
-            .trim_matches('\0')
-            .to_string();
-        let label = if vol_name.is_empty() {
-            None
+
+        let label = if offset >= 0 {
+            let ref_offset = (&buf.vol_name_ref as *const _ as usize)
+                .wrapping_sub(&buf as *const _ as usize);
+            let total_offset = ref_offset.saturating_add(offset as usize);
+            if total_offset.saturating_add(name_len) <= std::mem::size_of::<VolAttrBuf>() {
+                let name_ptr = (offset as isize
+                    + &buf.vol_name_ref as *const _ as isize) as *const u8;
+                // SAFETY: The struct layout (volume name before UUID, packed 4) matches the order the kernel
+                // writes volume attributes. name_ptr points to the UTF-8 volume name within attr_buf.
+                // We checked that offset is non-negative and total_offset + name_len is strictly inside the buffer.
+                let name_bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
+                let vol_name = String::from_utf8_lossy(name_bytes)
+                    .trim_matches('\0')
+                    .to_string();
+                if vol_name.is_empty() {
+                    None
+                } else {
+                    Some(vol_name)
+                }
+            } else {
+                None
+            }
         } else {
-            Some(vol_name)
+            None
         };
         (label, Some(fs_uuid_str))
     } else {
