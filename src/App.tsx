@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getAppInfo, type AppInfoDto } from "./lib/tauri";
+import { LibraryFolders } from "./components/LibraryFolders";
 
 export default function App() {
   const [thumbLoaded, setThumbLoaded] = useState(false);
@@ -52,6 +53,8 @@ export default function App() {
         )}
         {!appInfo && !appInfoError && <p>Loading application info...</p>}
       </section>
+
+      <LibraryFolders />
 
       <section style={{ marginTop: "1.5rem", padding: "1rem", border: "1px solid #ccc", borderRadius: "8px" }}>
         <h2>Custom Protocol &amp; CSP Spike</h2>
