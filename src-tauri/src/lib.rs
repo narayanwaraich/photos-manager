@@ -113,7 +113,13 @@ fn get_fixtures_dir() -> PathBuf {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![commands::get_app_info])
+        .invoke_handler(tauri::generate_handler![
+            commands::get_app_info,
+            commands::list_roots,
+            commands::add_root,
+            commands::preview_remove_root,
+            commands::remove_root,
+        ])
         // Register custom URI scheme protocol for thumbnail serving (spec §7.2)
         // macOS: asset-thumb://localhost/<id>
         // Windows: http://asset-thumb.localhost/<id>
@@ -181,6 +187,8 @@ pub fn run() {
                     let protected_ctx = library::ProtectedContext::from_environment(&app_data_dir);
                     app.manage(protected_ctx);
                     app.manage(pool);
+                    app.manage(commands::ActiveReachableChecks::default());
+                    app.manage(commands::DialogGuard::default());
                     Ok(())
                 }
                 Err(startup_err) => {
