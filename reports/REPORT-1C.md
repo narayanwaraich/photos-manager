@@ -1,6 +1,6 @@
 # REPORT-1C: Roots and volumes (backend only)
 
-**Branch:** `task/1C` · **Commit:** `PENDING` · **CI Run ID:** PENDING · **Date:** 2026-11-22
+**Branch:** `task/1C` · **Commit:** `515242f` · **CI Run ID:** 44989685964 · **Date:** 2026-11-22
 **OS actually tested:** macOS 27.0 (Build 26A428, arm64, Apple Silicon, from `sw_vers`), Windows Server 2022 x64 (GitHub Actions CI runner) · **Not tested:** Linux (no native desktop tier for Photos Manager)
 
 ## 1. Summary
@@ -453,9 +453,26 @@ ALL VERIFICATION CHECKS PASSED SUCCESSFULLY!
 ```
 *(Clean working directory before report modification)*
 
-### GitHub Actions CI runs (`gh run list --branch task/1C --json`)
+### GitHub Actions CI runs (`gh run list --branch task/1C --limit 4`)
+```text
+STATUS  TITLE        WORKFLOW    BRANCH   EVENT  ID           ELAPSED  AGE       
+✓       docs(1C)...  CI & Pa...  task/1C  push   44989685964  6m23s    about 7m ago
+✓       test(1C)...  CI & Pa...  task/1C  push   44935233670  5m4s     about 11h ago
+✓       fix(1C):...  CI & Pa...  task/1C  push   44934383719  6m23s    about 11h ago
+X       docs(1C)...  CI & Pa...  task/1C  push   44933354630  9m7s     about 11h ago
+```
+
+#### JSON Output (`gh run list --branch task/1C --limit 4 --json databaseId,status,conclusion,headSha,displayTitle,createdAt`):
 ```json
 [
+  {
+    "conclusion": "success",
+    "createdAt": "2026-11-22T05:30:21Z",
+    "databaseId": 44989685964,
+    "displayTitle": "docs(1C): update report with review round 1 corrections (R1-R7)",
+    "headSha": "515242ff29827999f07a10aecd1e0bfffb53b67d",
+    "status": "completed"
+  },
   {
     "conclusion": "success",
     "createdAt": "2026-11-21T18:23:09Z",
@@ -493,6 +510,12 @@ ALL VERIFICATION CHECKS PASSED SUCCESSFULLY!
 3. **Run 44935233670 (PASSED):**
    - Head commit: `575fceb`
    - Added environment details printing to `test_protected_context_from_environment` for report documentation. Passed 100% on both macOS and Windows.
+4. **Run 44989685964 (PASSED):**
+   - Head commit: `515242f` (includes C1-C5 fixes: `1eb8e4c`, `9af04a2`, `eda26b6`, `2cfc77e`, `335bda2`, `74dc485`, `8811955`).
+   - macOS arm64 in 4m14s (ID 137107815222): 98 tests (97 passed, 1 ignored `volume_report`).
+   - Windows x64 in 6m19s (ID 137107815462): 98 tests (97 passed, 1 ignored `volume_report`).
+   - Security & License check (cargo deny) in 45s (ID 137107815390).
+   - 100% green across all platforms.
 
 ---
 
