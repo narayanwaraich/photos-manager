@@ -23,11 +23,12 @@ pub const MAX_LABEL_LENGTH: usize = 255;
 /// Execution is fully atomic within a single write transaction (BEGIN IMMEDIATE):
 /// 1. Path is canonicalized, resolved, and verified as Unicode.
 /// 2. Protected folder rules are checked.
-/// 3. Overlap is checked against all stored roots under the transaction lock.
-/// 4. Volume details are obtained and case sensitivity is probed.
-/// 5. Volume row is reused if a matching non-null `fs_uuid` exists, or inserted.
-/// 6. The `library_roots` entry is created with default status (`active`).
-/// 7. The corresponding root-folder row (`parent_id = NULL`) is created.
+/// 3. Volume details are obtained and case sensitivity is probed.
+/// 4. Atomic write transaction begins (`BEGIN IMMEDIATE`), acquiring the SQLite write lock upfront.
+/// 5. Overlap is checked against all stored roots under the transaction write lock.
+/// 6. Volume row is reused if a matching non-null `fs_uuid` exists, or inserted.
+/// 7. The `library_roots` entry is created with default status (`active`).
+/// 8. The corresponding root-folder row (`parent_id = NULL`) is created.
 ///
 /// Any failure rolls back completely, leaving zero rows behind.
 pub async fn add_root(
@@ -103,7 +104,10 @@ where
     }
 
     // 5. Atomic write transaction (BEGIN IMMEDIATE)
-    let mut tx = pool.begin().await.map_err(CatalogueError::Database)?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(CatalogueError::Database)?;
 
     // Check overlap under the transaction lock
     let stored_roots = database::roots::list_roots_for_overlap(&mut tx).await?;
@@ -251,6 +255,8 @@ pub async fn preview_remove_root(
 
 /// Deletes a library root from the catalogue after verifying current file count (decision g, D29g).
 ///
+/// Takes the SQLite write lock immediately (`BEGIN IMMEDIATE`) so that count verification
+/// and deletion are strictly serialised against concurrent modifications.
 /// Removes catalogue rows only via SQLite CASCADE. Never touches user files on disk.
 /// The associated volume row is preserved for future reuse.
 pub async fn remove_root(
@@ -258,7 +264,10 @@ pub async fn remove_root(
     root_id: &RootId,
     expected_files: i64,
 ) -> Result<(), RootError> {
-    let mut tx = pool.begin().await.map_err(CatalogueError::Database)?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(CatalogueError::Database)?;
 
     let root_opt = database::roots::get_root(&mut tx, root_id).await?;
     if root_opt.is_none() {
@@ -524,6 +533,11 @@ mod tests {
         assert_eq!(roots.len(), 0, "Roots must be rolled back");
         let volumes = database::volumes::list_volumes(&mut *conn).await.unwrap();
         assert_eq!(volumes.len(), 0, "Volumes must be rolled back");
+        let folders: (i64,) = sqlx::query_as("SELECT count(*) FROM folders;")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        assert_eq!(folders.0, 0, "Folders must be rolled back");
     }
 
     #[tokio::test]
@@ -700,5 +714,75 @@ mod tests {
         let unknown = RootId::new();
         let unknown_res = remove_root(&pool, &unknown, 0).await;
         assert!(matches!(unknown_res, Err(RootError::NotFound { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_add_root_concurrent_race_serialises_overlap() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("catalogue.db");
+        let pool = init_pool(&db_path).await.expect("init_pool");
+
+        let dir = temp.path().join("RaceDir");
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        let ctx = test_context(temp.path());
+
+        let (res1, res2) = tokio::join!(
+            add_root(&pool, &ctx, &dir, None),
+            add_root(&pool, &ctx, &dir, None),
+        );
+
+        match (res1, res2) {
+            (Ok(_), Err(RootError::Overlaps { .. })) | (Err(RootError::Overlaps { .. }), Ok(_)) => {}
+            (r1, r2) => {
+                panic!(
+                    "Expected exactly one Ok and one Overlaps error, never Catalogue error. Got:\nr1: {:?}\nr2: {:?}",
+                    r1, r2
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_add_root_waits_for_held_immediate_transaction() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("catalogue.db");
+        let pool = init_pool(&db_path).await.expect("init_pool");
+
+        let dir = temp.path().join("DelayedPhotos");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let ctx = test_context(temp.path());
+
+        // On another connection, hold a BEGIN IMMEDIATE transaction for 300 ms
+        let pool_holder = pool.clone();
+        let holder = tokio::spawn(async move {
+            let tx = pool_holder
+                .begin_with("BEGIN IMMEDIATE")
+                .await
+                .expect("holder begin");
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            tx.commit().await.expect("holder commit");
+        });
+
+        // Ensure holder task starts and acquires the write lock first
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let start = std::time::Instant::now();
+        let outcome = add_root(&pool, &ctx, &dir, None)
+            .await
+            .expect("add_root should wait and succeed");
+        let elapsed = start.elapsed();
+
+        holder.await.expect("holder task");
+
+        assert!(
+            elapsed >= std::time::Duration::from_millis(200),
+            "Expected add_root to wait for held lock, elapsed: {:?}",
+            elapsed
+        );
+
+        let roots = list_roots(&pool).await.expect("list_roots");
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].id, outcome.root_id);
     }
 }
