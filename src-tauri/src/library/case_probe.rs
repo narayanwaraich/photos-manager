@@ -156,13 +156,11 @@ pub fn probe_case_sensitivity(path: &Path, lookup: &impl FileIdentityLookup) -> 
 /// or no cased entry is encountered within the first 64 entries.
 pub fn find_cased_child_entry(dir: &Path) -> Option<(std::path::PathBuf, String)> {
     let read_dir = std::fs::read_dir(dir).ok()?;
-    for entry in read_dir.take(64) {
-        if let Ok(entry) = entry {
-            let file_name = entry.file_name();
-            if let Some(name_str) = file_name.to_str() {
-                if has_cased_char(name_str) {
-                    return Some((entry.path(), name_str.to_string()));
-                }
+    for entry in read_dir.take(64).flatten() {
+        let file_name = entry.file_name();
+        if let Some(name_str) = file_name.to_str() {
+            if has_cased_char(name_str) {
+                return Some((entry.path(), name_str.to_string()));
             }
         }
     }
