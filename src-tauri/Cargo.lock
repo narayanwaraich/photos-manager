@@ -2603,6 +2603,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "http",
+ "libc",
  "libvips",
  "proptest",
  "rfd",
@@ -2616,6 +2617,7 @@ dependencies = [
  "tokio",
  "unicode-normalization",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

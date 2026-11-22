@@ -129,6 +129,142 @@ pub async fn count_files(conn: &mut SqliteConnection, id: &RootId) -> Result<i64
     Ok(row.0)
 }
 
+/// Counts total non-root folder rows belonging to a library root.
+pub async fn count_folders(
+    conn: &mut SqliteConnection,
+    id: &RootId,
+) -> Result<i64, CatalogueError> {
+    let row: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM folders WHERE root_id = ? AND parent_id IS NOT NULL;")
+            .bind(id.as_str())
+            .fetch_one(&mut *conn)
+            .await?;
+
+    Ok(row.0)
+}
+
+/// Counts total asset rows associated with files in a library root.
+pub async fn count_assets(conn: &mut SqliteConnection, id: &RootId) -> Result<i64, CatalogueError> {
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COUNT(DISTINCT a.id)
+         FROM assets a
+         JOIN asset_files af ON a.id = af.asset_id
+         JOIN files f ON af.file_id = f.id
+         WHERE f.root_id = ?;",
+    )
+    .bind(id.as_str())
+    .fetch_one(&mut *conn)
+    .await?;
+
+    Ok(row.0)
+}
+
+/// Database record summarizing a root with volume details and item counts (spec §12.1).
+pub struct RootSummaryRecord {
+    pub id: RootId,
+    pub label: String,
+    pub path_display: String,
+    pub path_native: Vec<u8>,
+    pub status: RootStatus,
+    pub volume_kind: crate::domain::VolumeKind,
+    pub volume_label: Option<String>,
+    pub volume_case_sensitive: bool,
+    pub file_count: i64,
+    pub folder_count: i64,
+}
+
+/// Lists all library roots with joined volume details and counts of files and folders in a single query (D29).
+pub async fn list_roots_summaries(
+    conn: &mut SqliteConnection,
+) -> Result<Vec<RootSummaryRecord>, CatalogueError> {
+    let rows: Vec<SqliteRow> = sqlx::query(
+        "SELECT r.id, r.label, r.path_display, r.path_native, r.status,
+                v.kind as volume_kind, v.label as volume_label, v.case_sensitive as volume_case_sensitive,
+                COALESCE(fc.file_count, 0) as file_count,
+                COALESCE(fdc.folder_count, 0) as folder_count
+         FROM library_roots r
+         LEFT JOIN volumes v ON r.volume_id = v.id
+         LEFT JOIN (SELECT root_id, COUNT(*) as file_count FROM files GROUP BY root_id) fc ON fc.root_id = r.id
+         LEFT JOIN (SELECT root_id, COUNT(*) as folder_count FROM folders WHERE parent_id IS NOT NULL GROUP BY root_id) fdc ON fdc.root_id = r.id
+         ORDER BY r.created_at_ms ASC, r.id ASC;",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    let mut summaries = Vec::with_capacity(rows.len());
+    for r in rows {
+        let id_str: String = r.try_get("id")?;
+        let label: String = r.try_get("label")?;
+        let path_display: String = r.try_get("path_display")?;
+        let path_native: Vec<u8> = r.try_get("path_native")?;
+        let status_str: String = r.try_get("status")?;
+        let vol_kind_str: Option<String> = r.try_get("volume_kind")?;
+        let volume_label: Option<String> = r.try_get("volume_label")?;
+        let vol_cs_int: Option<i32> = r.try_get("volume_case_sensitive")?;
+        let file_count: i64 = r.try_get("file_count")?;
+        let folder_count: i64 = r.try_get("folder_count")?;
+
+        let status = RootStatus::from_str(&status_str)
+            .map_err(|e| CatalogueError::InvalidEnum(e.to_string()))?;
+        let volume_kind = if let Some(vk) = vol_kind_str {
+            crate::domain::VolumeKind::from_str(&vk)
+                .map_err(|e| CatalogueError::InvalidEnum(e.to_string()))?
+        } else {
+            crate::domain::VolumeKind::Unknown
+        };
+
+        summaries.push(RootSummaryRecord {
+            id: RootId::from(id_str),
+            label,
+            path_display,
+            path_native,
+            status,
+            volume_kind,
+            volume_label,
+            volume_case_sensitive: vol_cs_int.unwrap_or(0) != 0,
+            file_count,
+            folder_count,
+        });
+    }
+
+    Ok(summaries)
+}
+
+/// Retrieves stored library roots with their component lists for overlap checking (D29b).
+pub async fn list_roots_for_overlap(
+    conn: &mut SqliteConnection,
+) -> Result<Vec<crate::library::overlap::StoredRootPath>, CatalogueError> {
+    let rows: Vec<SqliteRow> = sqlx::query(
+        "SELECT id, path_display, path_native, status
+         FROM library_roots ORDER BY created_at_ms;",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    let mut stored = Vec::with_capacity(rows.len());
+    for r in rows {
+        let id_str: String = r.try_get("id")?;
+        let path_display: String = r.try_get("path_display")?;
+        let path_native: Vec<u8> = r.try_get("path_native")?;
+        let status_str: String = r.try_get("status")?;
+
+        let status = RootStatus::from_str(&status_str)
+            .map_err(|e| CatalogueError::InvalidEnum(e.to_string()))?;
+
+        let path = crate::filesystem::blob_to_native(&path_native);
+        let components = crate::library::canonical::extract_components(&path);
+
+        stored.push(crate::library::overlap::StoredRootPath {
+            id: RootId::from(id_str),
+            path_display,
+            components,
+            status,
+        });
+    }
+
+    Ok(stored)
+}
+
 fn row_to_root(row: &SqliteRow) -> Result<RootRow, CatalogueError> {
     let id_str: String = row.try_get("id")?;
     let volume_id_str: Option<String> = row.try_get("volume_id")?;

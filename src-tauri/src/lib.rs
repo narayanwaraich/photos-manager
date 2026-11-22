@@ -3,7 +3,9 @@ pub mod database;
 pub mod domain;
 pub mod filesystem;
 pub mod image_pipeline;
+pub mod library;
 pub mod metadata;
+pub mod platform;
 pub mod smoke;
 
 use image_pipeline::ImageProcessor;
@@ -159,21 +161,25 @@ pub fn run() {
                 .unwrap()
         })
         .setup(|app| {
-            let app_data_dir_res = app.path().app_data_dir().map_err(|e| {
-                StartupError::AppDataDirNotUsable(format!(
-                    "Failed to resolve app data directory: {e}"
-                ))
-            });
-
-            let startup_res = match app_data_dir_res {
-                Ok(app_data_dir) => {
-                    tauri::async_runtime::block_on(async { startup_with_path(&app_data_dir).await })
+            let app_data_dir = match app.path().app_data_dir() {
+                Ok(dir) => dir,
+                Err(e) => {
+                    let err = StartupError::AppDataDirNotUsable(format!(
+                        "Failed to resolve app data directory: {e}"
+                    ));
+                    eprintln!("startup failed [{}]: {}", err.code(), err);
+                    show_startup_error_dialog(&err);
+                    std::process::exit(1);
                 }
-                Err(e) => Err(e),
             };
+
+            let startup_res =
+                tauri::async_runtime::block_on(async { startup_with_path(&app_data_dir).await });
 
             match startup_res {
                 Ok(pool) => {
+                    let protected_ctx = library::ProtectedContext::from_environment(&app_data_dir);
+                    app.manage(protected_ctx);
                     app.manage(pool);
                     Ok(())
                 }

@@ -62,6 +62,42 @@ pub async fn list_volumes(conn: &mut SqliteConnection) -> Result<Vec<VolumeRow>,
     Ok(volumes)
 }
 
+/// Finds an existing volume record by its non-null filesystem UUID (spec §5.2, D29e).
+pub async fn find_volume_by_uuid(
+    conn: &mut SqliteConnection,
+    fs_uuid: &str,
+) -> Result<Option<VolumeRow>, CatalogueError> {
+    let row: Option<SqliteRow> = sqlx::query(
+        "SELECT id, kind, label, fs_uuid, fs_type, case_sensitive, last_seen_at_ms
+         FROM volumes WHERE fs_uuid = ? LIMIT 1;",
+    )
+    .bind(fs_uuid)
+    .fetch_optional(&mut *conn)
+    .await?;
+
+    match row {
+        Some(r) => Ok(Some(row_to_volume(&r)?)),
+        None => Ok(None),
+    }
+}
+
+/// Refreshes the label and last_seen_at_ms of an existing volume (spec §5.2, D29e).
+pub async fn update_volume_label_and_seen(
+    conn: &mut SqliteConnection,
+    id: &VolumeId,
+    label: Option<&str>,
+    last_seen_at_ms: i64,
+) -> Result<(), CatalogueError> {
+    sqlx::query("UPDATE volumes SET label = COALESCE(?, label), last_seen_at_ms = ? WHERE id = ?;")
+        .bind(label)
+        .bind(last_seen_at_ms)
+        .bind(id.as_str())
+        .execute(&mut *conn)
+        .await?;
+
+    Ok(())
+}
+
 fn row_to_volume(row: &SqliteRow) -> Result<VolumeRow, CatalogueError> {
     let id_str: String = row.try_get("id")?;
     let kind_str: String = row.try_get("kind")?;

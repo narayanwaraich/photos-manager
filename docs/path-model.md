@@ -54,3 +54,21 @@ Because macOS and Windows store native paths in different byte encodings, openin
 When opening a database, `init_pool` follows **look, refuse, only then touch**:
 - If `app_settings` exists, `native_path_encoding` is validated *before* any migration runs. A mismatched OS returns `CatalogueError::PlatformMismatch`, leaving tables untouched.
 - On a fresh database, migrations run first, then the platform guard stamps the current timestamp.
+
+---
+
+## 6. Library Roots (D29)
+
+A library root represents a top-level user folder registered for indexing.
+
+### Canonical Form
+Roots are stored in canonical form via `std::fs::canonicalize`, with all symlinks resolved:
+- **Existence & containment:** The target must exist, be an absolute path, and reference a directory.
+- **Unicode enforcement:** The path must be valid UTF-8. (Portability rules on backslashes and trailing colons apply to file and directory names under a root, not to the root's own path, D29j).
+- **Windows verbatim prefixes:** The verbatim prefix (`\\?\` or `\\?\UNC\`) is preserved in `path_native` so paths exceeding the legacy 260-character `MAX_PATH` limit function correctly. For UI presentation, the prefix is stripped in `path_display` (`\\?\C:\x` -> `C:\x`, `\\?\UNC\srv\share` -> `\\srv\share`).
+
+### Overlap Rule
+Two roots must not be equal, nested within each other, or contain each other. Overlap comparison is performed component-wise over canonical paths, with each component NFC-normalized and lowercased (`to_lowercase()`), regardless of volume case-sensitivity:
+- **Component-wise:** Sibling folders sharing a string prefix (e.g. `/photos` and `/photos2`) do not overlap and are permitted.
+- **Status independence:** Overlap checks evaluate against all registered roots regardless of status (`active`, `paused`, `offline`).
+- **Protected folders:** Roots cannot point to protected locations (the root of the system volume containing home or app-data, home directories, `/Users`, `C:\Users`, `/Volumes`, OS system folders, or the application data directory and anything inside or containing it; non-system drives like `D:\` or `/Volumes/Photos` and UNC shares are allowed as long as they do not contain a protected folder).
