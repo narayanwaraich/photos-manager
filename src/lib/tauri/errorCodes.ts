@@ -31,6 +31,7 @@ export const KNOWN_IPC_ERROR_CODES = [
   "root_not_found",
   "root_changed_since_preview",
   "volume_unavailable",
+  "dialog_busy",
   "internal",
 ] as const;
 
