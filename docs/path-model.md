@@ -71,4 +71,4 @@ Roots are stored in canonical form via `std::fs::canonicalize`, with all symlink
 Two roots must not be equal, nested within each other, or contain each other. Overlap comparison is performed component-wise over canonical paths, with each component NFC-normalized and lowercased (`to_lowercase()`), regardless of volume case-sensitivity:
 - **Component-wise:** Sibling folders sharing a string prefix (e.g. `/photos` and `/photos2`) do not overlap and are permitted.
 - **Status independence:** Overlap checks evaluate against all registered roots regardless of status (`active`, `paused`, `offline`).
-- **Protected folders:** Roots cannot point to filesystem roots, home directories, OS system folders, or the application data directory.
+- **Protected folders:** Roots cannot point to protected locations (the root of the system volume containing home or app-data, home directories, `/Users`, `C:\Users`, `/Volumes`, OS system folders, or the application data directory and anything inside or containing it; non-system drives like `D:\` or `/Volumes/Photos` and UNC shares are allowed as long as they do not contain a protected folder).

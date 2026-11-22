@@ -137,33 +137,20 @@ fn home_to_vec(slice: &[&str]) -> Vec<String> {
 
 /// Checks whether a candidate root violates protected folder rules (decision c, D29).
 ///
-/// Rejection criteria:
-/// 1. Filesystem root (`/`, `C:\`, UNC share root).
-/// 2. User home folder itself (subfolders like `Pictures` are allowed).
-/// 3. Parent of home (`/Users`, `C:\Users`) and `/Volumes`.
-/// 4. Application data folder (equal to it, inside it, or containing it).
-/// 5. OS system folders or subfolders.
-/// 6. Windows: any component matching `System Volume Information` or `$RECYCLE.BIN`.
-/// 7. macOS: any folder equal to or inside a `*.photoslibrary` package.
+/// Rejection criteria (spec §3.5, amended D29c):
+/// 1. User home folder itself (subfolders like `Pictures` are allowed).
+/// 2. Parent of home (`/Users`, `C:\Users`) and `/Volumes`.
+/// 3. Application data folder (equal to it, inside it, or containing it).
+///    - Note: System volume roots (`/` and `C:\`) contain the app-data folder, so they are
+///      refused by containment. Non-system volume roots (e.g. `D:\`, `/Volumes/Photos`)
+///      and UNC shares are allowed as long as they do not contain a protected folder.
+/// 4. OS system folders or subfolders.
+/// 5. Windows: any component matching `System Volume Information` or `$RECYCLE.BIN`.
+/// 6. macOS: any folder equal to or inside a `*.photoslibrary` package.
 pub fn check_protected(new: &CanonicalRoot, ctx: &ProtectedContext) -> Result<(), RootError> {
     let new_norm = normalize_components(&new.components);
 
-    // 1. Filesystem root:
-    // On Unix, root "/" has 0 components.
-    // On Windows, root "C:\" has 1 component ("c:").
-    let is_fs_root = if ctx.is_windows {
-        new_norm.len() <= 1
-    } else {
-        new_norm.is_empty()
-    };
-    if is_fs_root {
-        return Err(RootError::Protected {
-            path: new.path_display.clone(),
-            reason: "Filesystem root folder cannot be added as a library root".to_string(),
-        });
-    }
-
-    // 2. User home folder itself:
+    // 1. User home folder itself:
     if let Some(ref home) = ctx.home_dir {
         if new_norm == *home {
             return Err(RootError::Protected {
@@ -264,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn test_protected_unix_filesystem_root_rejected() {
+    fn test_protected_unix_system_root_and_volumes_photos() {
         let ctx = ProtectedContext::synthetic_unix(
             &[
                 "users",
@@ -279,15 +266,20 @@ mod tests {
             &[&["system"], &["library"], &["usr"]],
         );
 
+        // / contains app data -> root_protected
         let root = make_root("/", &[]);
         assert!(matches!(
             check_protected(&root, &ctx),
             Err(RootError::Protected { .. })
         ));
+
+        // /Volumes/Photos is allowed (non-system external volume)
+        let vol_photos = make_root("/Volumes/Photos", &["Volumes", "Photos"]);
+        assert!(check_protected(&vol_photos, &ctx).is_ok());
     }
 
     #[test]
-    fn test_protected_windows_filesystem_root_rejected() {
+    fn test_protected_windows_c_drive_d_drive_and_unc_share() {
         let ctx = ProtectedContext::synthetic_windows(
             &[
                 "c:",
@@ -302,9 +294,30 @@ mod tests {
             &[&["c:", "windows"], &["c:", "program files"]],
         );
 
-        let root = make_root(r"C:\", &["C:"]);
+        // C:\ contains app data -> root_protected
+        let c_drive = make_root(r"C:\", &["C:"]);
         assert!(matches!(
-            check_protected(&root, &ctx),
+            check_protected(&c_drive, &ctx),
+            Err(RootError::Protected { .. })
+        ));
+
+        // D:\ is allowed (non-system drive root)
+        let d_drive = make_root(r"D:\", &["D:"]);
+        assert!(check_protected(&d_drive, &ctx).is_ok());
+
+        // A UNC share root such as \\srv\share is allowed
+        let unc_root = make_root(r"\\srv\share", &[r"\\srv\share"]);
+        assert!(check_protected(&unc_root, &ctx).is_ok());
+
+        // Unless the UNC share root contains a protected folder (e.g. app data)
+        let ctx_unc = ProtectedContext::synthetic_windows(
+            &[r"\\srv\share", "photos-manager", "data"],
+            &["c:", "users", "alice"],
+            &["c:", "users"],
+            &[],
+        );
+        assert!(matches!(
+            check_protected(&unc_root, &ctx_unc),
             Err(RootError::Protected { .. })
         ));
     }
