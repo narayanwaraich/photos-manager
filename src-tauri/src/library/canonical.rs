@@ -67,28 +67,16 @@ pub fn canonicalize_root(path: &Path) -> Result<CanonicalRoot, RootError> {
         return Err(RootError::PathNotAbsolute(path.to_path_buf()));
     }
 
-    let canonical = std::fs::canonicalize(path).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => RootError::PathNotFound(path.to_path_buf()),
-        _ => RootError::PathNotFound(path.to_path_buf()),
-    })?;
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|_| RootError::PathNotFound(path.to_path_buf()))?;
 
     if !canonical.is_dir() {
         return Err(RootError::PathNotDirectory(canonical));
     }
 
-    // Validate Unicode and D26 skip rules
+    // Validate Unicode
     if canonical.to_str().is_none() {
         return Err(RootError::PathNotUnicode);
-    }
-
-    #[cfg(unix)]
-    for comp in canonical.components() {
-        if let Component::Normal(os_name) = comp {
-            let s = os_name.to_str().ok_or(RootError::PathNotUnicode)?;
-            if s.contains('\\') || s.ends_with(':') {
-                return Err(RootError::PathNotUnicode);
-            }
-        }
     }
 
     let raw_display = canonical.to_string_lossy().to_string();
@@ -206,5 +194,16 @@ mod tests {
         // Attempting canonicalize on non-unicode path: either rejected during validation or not found
         let res = canonicalize_root(&bad_path);
         assert!(res.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_canonicalize_root_accepts_trailing_colon_directory() {
+        let temp = tempdir().expect("tempdir");
+        let dir = temp.path().join("Trip: 2024");
+        std::fs::create_dir_all(&dir).expect("create dir with colon");
+
+        let root = canonicalize_root(&dir).expect("directory named 'Trip: 2024' must be accepted");
+        assert_eq!(root.last_component(), "Trip: 2024");
     }
 }

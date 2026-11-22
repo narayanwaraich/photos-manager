@@ -64,7 +64,7 @@ A library root represents a top-level user folder registered for indexing.
 ### Canonical Form
 Roots are stored in canonical form via `std::fs::canonicalize`, with all symlinks resolved:
 - **Existence & containment:** The target must exist, be an absolute path, and reference a directory.
-- **Unicode enforcement:** The path must be valid UTF-8. On Unix, backslashes and trailing colons in components are rejected.
+- **Unicode enforcement:** The path must be valid UTF-8. (Portability rules on backslashes and trailing colons apply to file and directory names under a root, not to the root's own path, D29j).
 - **Windows verbatim prefixes:** The verbatim prefix (`\\?\` or `\\?\UNC\`) is preserved in `path_native` so paths exceeding the legacy 260-character `MAX_PATH` limit function correctly. For UI presentation, the prefix is stripped in `path_display` (`\\?\C:\x` -> `C:\x`, `\\?\UNC\srv\share` -> `\\srv\share`).
 
 ### Overlap Rule
