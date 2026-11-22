@@ -198,17 +198,114 @@ where
     })
 }
 
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// Default timeout for live reachable status checks (Decision d: 2 seconds).
+pub const DEFAULT_REACHABLE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// RAII guard that removes a `RootId` from the active in-flight set when the blocking
+/// inspection thread exits (or panics).
+struct InFlightCheckGuard {
+    set: Arc<Mutex<HashSet<RootId>>>,
+    id: RootId,
+}
+
+impl Drop for InFlightCheckGuard {
+    fn drop(&mut self) {
+        if let Ok(mut set) = self.set.lock() {
+            set.remove(&self.id);
+        }
+    }
+}
+
 /// Lists all registered library roots with volume summaries, live reachable status, and counts (D29).
 ///
 /// Bounded by construction (user library folders); not paginated (spec §12.1).
+/// Uses a process-wide default in-flight tracker and the 2-second timeout.
 pub async fn list_roots(pool: &SqlitePool) -> Result<Vec<RootSummary>, RootError> {
+    static DEFAULT_IN_FLIGHT: std::sync::OnceLock<Arc<Mutex<HashSet<RootId>>>> =
+        std::sync::OnceLock::new();
+    let in_flight = DEFAULT_IN_FLIGHT.get_or_init(|| Arc::new(Mutex::new(HashSet::new())));
+    list_roots_with_in_flight(pool, in_flight).await
+}
+
+/// Variant of `list_roots` that accepts the shared in-flight check set (e.g. from Tauri managed state).
+pub async fn list_roots_with_in_flight(
+    pool: &SqlitePool,
+    in_flight: &Arc<Mutex<HashSet<RootId>>>,
+) -> Result<Vec<RootSummary>, RootError> {
+    list_roots_with_checker_and_timeout(pool, in_flight, DEFAULT_REACHABLE_TIMEOUT, |p| p.is_dir())
+        .await
+}
+
+/// Fully parameterized version of `list_roots` allowing custom in-flight set, timeout,
+/// and checker function for unit tests and failure injection (Decision d).
+pub async fn list_roots_with_checker_and_timeout<F>(
+    pool: &SqlitePool,
+    in_flight: &Arc<Mutex<HashSet<RootId>>>,
+    timeout: Duration,
+    check_fn: F,
+) -> Result<Vec<RootSummary>, RootError>
+where
+    F: Fn(&Path) -> bool + Send + Sync + Clone + 'static,
+{
     let mut conn = pool.acquire().await.map_err(CatalogueError::Database)?;
     let records = database::roots::list_roots_summaries(&mut conn).await?;
 
-    let mut summaries = Vec::with_capacity(records.len());
-    for r in records {
+    let mut check_tasks = Vec::with_capacity(records.len());
+
+    for r in &records {
+        let root_id = r.id.clone();
         let native_path = crate::filesystem::blob_to_native(&r.path_native);
-        let reachable = native_path.is_dir();
+
+        let already_in_flight = {
+            let mut set = in_flight.lock().map_err(|_| {
+                CatalogueError::Database(sqlx::Error::Configuration(
+                    "Active reachable checks mutex poisoned".into(),
+                ))
+            })?;
+            if set.contains(&root_id) {
+                true
+            } else {
+                set.insert(root_id.clone());
+                false
+            }
+        };
+
+        if already_in_flight {
+            // Check is already running for this root; do not spawn a second thread.
+            // Reports false without starting another blocking thread (Decision d).
+            check_tasks.push(tokio::spawn(async move { false }));
+        } else {
+            let set_clone = Arc::clone(in_flight);
+            let id_clone = root_id.clone();
+            let checker = check_fn.clone();
+            let timeout_dur = timeout;
+
+            let task = tokio::spawn(async move {
+                let blocking_handle = tokio::task::spawn_blocking(move || {
+                    let _guard = InFlightCheckGuard {
+                        set: set_clone,
+                        id: id_clone,
+                    };
+                    checker(&native_path)
+                });
+
+                match tokio::time::timeout(timeout_dur, blocking_handle).await {
+                    Ok(Ok(is_dir)) => is_dir,
+                    _ => false, // timeout, panic, or JoinError
+                }
+            });
+
+            check_tasks.push(task);
+        }
+    }
+
+    let mut summaries = Vec::with_capacity(records.len());
+    for (r, task) in records.into_iter().zip(check_tasks) {
+        let reachable = task.await.unwrap_or(false);
 
         summaries.push(RootSummary {
             id: r.id,
