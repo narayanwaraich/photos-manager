@@ -67,8 +67,8 @@ pub fn canonicalize_root(path: &Path) -> Result<CanonicalRoot, RootError> {
         return Err(RootError::PathNotAbsolute(path.to_path_buf()));
     }
 
-    let canonical = std::fs::canonicalize(path)
-        .map_err(|_| RootError::PathNotFound(path.to_path_buf()))?;
+    let canonical =
+        std::fs::canonicalize(path).map_err(|_| RootError::PathNotFound(path.to_path_buf()))?;
 
     if !canonical.is_dir() {
         return Err(RootError::PathNotDirectory(canonical));

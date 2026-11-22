@@ -87,12 +87,12 @@ pub fn describe_volume_macos(path: &Path) -> Result<VolumeInfo, RootError> {
         let name_len = buf.vol_name_ref.attr_length as usize;
 
         let label = if offset >= 0 {
-            let ref_offset = (&buf.vol_name_ref as *const _ as usize)
-                .wrapping_sub(&buf as *const _ as usize);
+            let ref_offset =
+                (&buf.vol_name_ref as *const _ as usize).wrapping_sub(&buf as *const _ as usize);
             let total_offset = ref_offset.saturating_add(offset as usize);
             if total_offset.saturating_add(name_len) <= std::mem::size_of::<VolAttrBuf>() {
-                let name_ptr = (offset as isize
-                    + &buf.vol_name_ref as *const _ as isize) as *const u8;
+                let name_ptr =
+                    (offset as isize + &buf.vol_name_ref as *const _ as isize) as *const u8;
                 // SAFETY: The struct layout (volume name before UUID, packed 4) matches the order the kernel
                 // writes volume attributes. name_ptr points to the UTF-8 volume name within attr_buf.
                 // We checked that offset is non-negative and total_offset + name_len is strictly inside the buffer.

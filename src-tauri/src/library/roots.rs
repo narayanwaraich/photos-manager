@@ -733,7 +733,8 @@ mod tests {
         );
 
         match (res1, res2) {
-            (Ok(_), Err(RootError::Overlaps { .. })) | (Err(RootError::Overlaps { .. }), Ok(_)) => {}
+            (Ok(_), Err(RootError::Overlaps { .. })) | (Err(RootError::Overlaps { .. }), Ok(_)) => {
+            }
             (r1, r2) => {
                 panic!(
                     "Expected exactly one Ok and one Overlaps error, never Catalogue error. Got:\nr1: {:?}\nr2: {:?}",
