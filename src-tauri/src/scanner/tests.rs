@@ -8,7 +8,7 @@ use tempfile::{tempdir, TempDir};
 
 use crate::commands::{add_root_with_picker, DialogGuard};
 use crate::database::{self, count_for_root, init_pool};
-use crate::domain::{CatalogueError, FileStatus, FolderId, FolderStatus, RootId};
+use crate::domain::{CatalogueError, FileStatus, FolderId, RootId};
 use crate::filesystem::{PathKeyPolicy, RelPath};
 use crate::library::protected::ProtectedContext;
 use crate::scanner::{
@@ -738,10 +738,96 @@ async fn test_interrupted_scans_leave_nothing_wrongly_missing_and_rescan_equals_
     );
 }
 
+#[tokio::test]
+async fn test_walk_failure_returns_scan_walk_failed_leaves_zero_missing_and_releases_guard() {
+    let fix = setup_fixture().await;
+
+    // Create multiple files in the root
+    fs::write(fix.root_path.join("file_a.jpg"), b"image a").expect("write a");
+    fs::write(fix.root_path.join("file_b.jpg"), b"image b").expect("write b");
+    fs::write(fix.root_path.join("file_c.jpg"), b"image c").expect("write c");
+
+    // First scan: index the complete tree
+    let outcome1 = scan_root(
+        &fix.pool,
+        &fix.root_id,
+        ScanOptions::default(),
+        ScanCancel::new(),
+        |_| {},
+    )
+    .await
+    .expect("first complete scan must succeed");
+    assert_eq!(outcome1.report().counts.new, 3);
+
+    // Delete one file on disk
+    fs::remove_file(fix.root_path.join("file_c.jpg")).expect("remove file_c.jpg");
+
+    // Configure second scan with small batch size and walker panic hook after the first batch
+    let mut panic_opts = ScanOptions::default();
+    panic_opts.batch_size = 1;
+    panic_opts.panic_in_walker_after_batch = Some(1);
+
+    let res = scan_root(
+        &fix.pool,
+        &fix.root_id,
+        panic_opts,
+        ScanCancel::new(),
+        |_| {},
+    )
+    .await;
+
+    // 1. Assert scan returns scan_walk_failed (fixed code, no path)
+    match res {
+        Err(ScanError::WalkFailed) => {}
+        other => panic!("Expected Err(ScanError::WalkFailed), got {:?}", other),
+    }
+
+    // 2. Assert no row is marked missing (Decision i: never mark missing unless walk completed)
+    let mut conn = fix.pool.acquire().await.unwrap();
+    let missing_files: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE root_id = ? AND status = 'missing'")
+            .bind(&fix.root_id)
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+    let missing_folders: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM folders WHERE root_id = ? AND status = 'missing'")
+            .bind(&fix.root_id)
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+    assert_eq!(
+        missing_files, 0,
+        "No file row must be marked missing after a panicked walk"
+    );
+    assert_eq!(
+        missing_folders, 0,
+        "No folder row must be marked missing after a panicked walk"
+    );
+
+    // 3. Assert guard was released: a second scan starts and completes normally
+    let res2 = scan_root(
+        &fix.pool,
+        &fix.root_id,
+        ScanOptions::default(),
+        ScanCancel::new(),
+        |_| {},
+    )
+    .await;
+    assert!(
+        res2.is_ok(),
+        "Second scan must succeed, proving ScanGuard was cleanly released"
+    );
+    let report2 = res2.unwrap();
+    // In this clean scan, file_c is now properly marked missing
+    assert_eq!(report2.report().counts.marked_missing, 1);
+}
+
 // 7. Unreadable directory handling (carried over as inaccessible, never missing)
 #[tokio::test]
 #[cfg(unix)]
 async fn test_unreadable_directory_carried_over_as_inaccessible_and_restored() {
+    use crate::domain::FolderStatus;
     use std::os::unix::fs::PermissionsExt;
 
     let fix = setup_fixture().await;

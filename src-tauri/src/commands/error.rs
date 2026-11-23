@@ -58,6 +58,7 @@ pub const ALL_CODES: &[&str] = &[
     "scan_already_running",
     "scan_root_unreachable",
     "scan_root_option_unsupported",
+    "scan_walk_failed",
     "internal",
 ];
 
@@ -118,6 +119,9 @@ pub fn fixed_message_for_code(code: &str) -> &'static str {
         }
         "scan_root_option_unsupported" => {
             "The requested scan option is not supported."
+        }
+        "scan_walk_failed" => {
+            "The filesystem walk encountered an unrecoverable error."
         }
         _ => "An internal application error occurred.",
     }
@@ -493,6 +497,7 @@ mod tests {
             crate::scanner::ScanError::AlreadyRunning(_) => {}
             crate::scanner::ScanError::RootUnreachable { .. } => {}
             crate::scanner::ScanError::OptionUnsupported { .. } => {}
+            crate::scanner::ScanError::WalkFailed => {}
             crate::scanner::ScanError::Catalogue(_) => {}
         }
     }
@@ -517,6 +522,7 @@ mod tests {
                 },
                 vec!["secret_symlinks_unsupported"],
             ),
+            (crate::scanner::ScanError::WalkFailed, vec![]),
             (
                 crate::scanner::ScanError::Catalogue(CatalogueError::Database(
                     sqlx::Error::Configuration("secret_scan_db_error".into()),

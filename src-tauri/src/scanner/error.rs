@@ -13,6 +13,9 @@ pub enum ScanError {
     #[error("Scan option is unsupported: {reason}")]
     OptionUnsupported { reason: String },
 
+    #[error("Filesystem walk failed unexpectedly")]
+    WalkFailed,
+
     #[error("Database error: {0}")]
     Catalogue(#[from] CatalogueError),
 }
@@ -24,6 +27,7 @@ impl ScanError {
             ScanError::AlreadyRunning(_) => "scan_already_running",
             ScanError::RootUnreachable { .. } => "scan_root_unreachable",
             ScanError::OptionUnsupported { .. } => "scan_root_option_unsupported",
+            ScanError::WalkFailed => "scan_walk_failed",
             ScanError::Catalogue(c) => c.code(),
         }
     }

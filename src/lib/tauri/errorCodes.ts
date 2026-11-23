@@ -35,6 +35,7 @@ export const KNOWN_IPC_ERROR_CODES = [
   "scan_already_running",
   "scan_root_unreachable",
   "scan_root_option_unsupported",
+  "scan_walk_failed",
   "internal",
 ] as const;
 

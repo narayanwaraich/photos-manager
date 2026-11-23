@@ -85,6 +85,7 @@ pub struct ScanOptions {
     pub failure_hook_after_batch: Option<usize>,
     pub failure_in_move_step: bool,
     pub failure_in_final_marking: bool,
+    pub panic_in_walker_after_batch: Option<usize>,
 }
 
 impl Default for ScanOptions {
@@ -94,6 +95,7 @@ impl Default for ScanOptions {
             failure_hook_after_batch: None,
             failure_in_move_step: false,
             failure_in_final_marking: false,
+            panic_in_walker_after_batch: None,
         }
     }
 }

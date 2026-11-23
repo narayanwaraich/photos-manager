@@ -350,6 +350,7 @@ where
                 include_hidden,
                 batch_size,
                 cancel: walk_cancel,
+                panic_after_batch: options.panic_in_walker_after_batch,
             },
             tx,
         );
@@ -402,8 +403,8 @@ where
     // fails immediately with channel disconnection rather than hanging forever.
     drop(rx);
 
-    // Wait for the blocking walk task to terminate
-    let _ = walk_handle.await;
+    // Wait for the blocking walk task to terminate; abort if the walker thread panicked (Decision i, J1)
+    walk_handle.await.map_err(|_| ScanError::WalkFailed)?;
 
     // Cancellation check: cancelled scans mark nothing missing (Decision i)
     if cancel.is_cancelled() {
