@@ -1,23 +1,40 @@
 import { invoke } from "@tauri-apps/api/core";
-import { AppInfoSchema, type AppInfoDto, IpcErrorSchema, type CommandResult } from "./schemas";
+import { z } from "zod";
+import {
+  AppInfoSchema,
+  type AppInfoDto,
+  IpcErrorSchema,
+  type CommandResult,
+  RootSummarySchema,
+  type RootSummary,
+  AddRootResultSchema,
+  type AddRootResult,
+  RemoveRootPreviewSchema,
+  type RemoveRootPreview,
+} from "./schemas";
 
 export * from "./errorCodes";
 export * from "./schemas";
 
 /**
- * Invokes the `get_app_info` Tauri command, validating the returned payload with Zod.
- * Returns a typed Result object so error paths are explicitly typed without throwing.
+ * Common invocation helper for all typed Tauri commands.
+ * Dispatches via Tauri invoke, safely parses the result using Zod,
+ * and maps any thrown IPC or runtime error into a typed CommandResult without throwing.
  */
-export async function getAppInfo(): Promise<CommandResult<AppInfoDto>> {
+async function invokeCommand<T>(
+  cmd: string,
+  args: Record<string, unknown> | undefined,
+  schema: z.ZodType<T>,
+): Promise<CommandResult<T>> {
   try {
-    const raw = await invoke("get_app_info");
-    const parsed = AppInfoSchema.safeParse(raw);
+    const raw = await invoke(cmd, args);
+    const parsed = schema.safeParse(raw);
     if (!parsed.success) {
       return {
         status: "error",
         error: {
           code: "internal",
-          message: `Malformed response from get_app_info: ${parsed.error.message}`,
+          message: `Malformed response from ${cmd}: ${parsed.error.message}`,
         },
       };
     }
@@ -35,4 +52,43 @@ export async function getAppInfo(): Promise<CommandResult<AppInfoDto>> {
       },
     };
   }
+}
+
+/**
+ * Invokes the `get_app_info` Tauri command, validating the returned payload with Zod.
+ */
+export async function getAppInfo(): Promise<CommandResult<AppInfoDto>> {
+  return invokeCommand("get_app_info", undefined, AppInfoSchema);
+}
+
+/**
+ * Invokes the `list_roots` Tauri command, returning all library roots with volume details and reachable status.
+ */
+export async function listRoots(): Promise<CommandResult<RootSummary[]>> {
+  return invokeCommand("list_roots", undefined, z.array(RootSummarySchema));
+}
+
+/**
+ * Invokes the `add_root` Tauri command.
+ * Note: Folder selection occurs in native Rust dialog; only an optional label crosses the boundary.
+ */
+export async function addRoot(label?: string): Promise<CommandResult<AddRootResult>> {
+  return invokeCommand("add_root", label !== undefined ? { label } : undefined, AddRootResultSchema);
+}
+
+/**
+ * Invokes the `preview_remove_root` Tauri command, retrieving item counts prior to confirmation.
+ */
+export async function previewRemoveRoot(rootId: string): Promise<CommandResult<RemoveRootPreview>> {
+  return invokeCommand("preview_remove_root", { rootId }, RemoveRootPreviewSchema);
+}
+
+/**
+ * Invokes the `remove_root` Tauri command with verified expected file count.
+ */
+export async function removeRoot(
+  rootId: string,
+  expectedFiles: number,
+): Promise<CommandResult<null>> {
+  return invokeCommand("remove_root", { rootId, expectedFiles }, z.null());
 }

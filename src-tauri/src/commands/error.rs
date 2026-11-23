@@ -54,6 +54,7 @@ pub const ALL_CODES: &[&str] = &[
     "root_not_found",
     "root_changed_since_preview",
     "volume_unavailable",
+    "dialog_busy",
     "internal",
 ];
 
@@ -105,6 +106,7 @@ pub fn fixed_message_for_code(code: &str) -> &'static str {
         "volume_unavailable" => {
             "Storage volume details could not be retrieved for this folder."
         }
+        "dialog_busy" => "A file or folder dialog is already open.",
         _ => "An internal application error occurred.",
     }
 }
@@ -554,6 +556,7 @@ mod tests {
             );
             emitted_codes.insert(code);
         }
+        emitted_codes.insert("dialog_busy");
         emitted_codes.insert("internal");
 
         // Verify ALL_CODES has no stale entries that no error type emits
