@@ -74,6 +74,11 @@ pub fn is_always_skipped_name(name: &str) -> bool {
     ALWAYS_SKIPPED_NAMES.contains(&lower.as_str())
 }
 
+/// Checks if a directory name ends in `.photoslibrary` (case-insensitive, Decision m).
+pub fn is_skipped_package_dir(name: &str) -> bool {
+    name.to_lowercase().ends_with(".photoslibrary")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

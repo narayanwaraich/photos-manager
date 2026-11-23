@@ -4,7 +4,7 @@ use walkdir::WalkDir;
 
 use crate::database::validate_file_size;
 use crate::filesystem::{PathError, RelPath};
-use crate::scanner::classify::{classify, is_always_skipped_name, Class};
+use crate::scanner::classify::{classify, is_always_skipped_name, is_skipped_package_dir, Class};
 use crate::scanner::types::{ScanCancel, ScanWarning};
 
 /// A single discovered item from the filesystem walk.
@@ -146,6 +146,13 @@ pub fn run_walk(params: WalkParams, tx: tokio::sync::mpsc::Sender<Vec<WalkItem>>
                     continue;
                 }
 
+                // Check .photoslibrary packages (case-insensitive, Decision m)
+                if file_type.is_dir() && is_skipped_package_dir(file_name_str) {
+                    current_batch.push(WalkItem::SkippedByRule);
+                    it.skip_current_dir();
+                    continue;
+                }
+
                 // Check hidden entries unless include_hidden is enabled (Decision d)
                 if !params.include_hidden {
                     let is_hidden_dot = file_name_str.starts_with('.');
@@ -269,7 +276,7 @@ pub fn run_walk(params: WalkParams, tx: tokio::sync::mpsc::Sender<Vec<WalkItem>>
                 // Directory listing or stat failed (Decision i)
                 if let Some(path) = err.path() {
                     if let Ok(rel) = RelPath::from_absolute(&params.root_path, path) {
-                        let is_dir = path.is_dir() || err.depth() > 0;
+                        let is_dir = path.is_dir();
                         if is_dir {
                             current_batch.push(WalkItem::InaccessibleDir {
                                 rel_path: rel.clone(),

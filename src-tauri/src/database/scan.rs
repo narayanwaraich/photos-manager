@@ -53,14 +53,23 @@ pub async fn upsert_folder(
     conn: &mut SqliteConnection,
     params: &FolderEntryParams<'_>,
 ) -> Result<FolderId, CatalogueError> {
-    let existing: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM folders WHERE root_id = ? AND path_key = ? LIMIT 1;")
-            .bind(params.root_id.as_str())
-            .bind(params.path_key)
-            .fetch_optional(&mut *conn)
-            .await?;
+    let existing: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT id, last_seen_generation FROM folders WHERE root_id = ? AND path_key = ? LIMIT 1;",
+    )
+    .bind(params.root_id.as_str())
+    .bind(params.path_key)
+    .fetch_optional(&mut *conn)
+    .await?;
 
-    if let Some((id_str,)) = existing {
+    if let Some((id_str, last_seen_gen)) = existing {
+        if last_seen_gen.as_deref() == Some(params.scan_generation) {
+            return Err(CatalogueError::PathKeyCollision {
+                root_id: params.root_id.to_string(),
+                path_key: params.path_key.to_vec(),
+                existing_id: Some(id_str),
+            });
+        }
+
         sqlx::query(
             "UPDATE folders SET last_seen_generation = ?, status = 'present', modified_at_ms = ? WHERE id = ?;",
         )
@@ -145,7 +154,7 @@ pub async fn process_file_entry(
     params: &FileEntryParams<'_>,
 ) -> Result<FileProcessOutcome, CatalogueError> {
     let existing_row: Option<SqliteRow> = sqlx::query(
-        "SELECT id, size_bytes, modified_at_ms, file_identity, status FROM files WHERE root_id = ? AND path_key = ? LIMIT 1;",
+        "SELECT id, size_bytes, modified_at_ms, file_identity, status, scan_generation FROM files WHERE root_id = ? AND path_key = ? LIMIT 1;",
     )
     .bind(params.root_id.as_str())
     .bind(params.path_key)
@@ -160,6 +169,15 @@ pub async fn process_file_entry(
 
     if let Some(row) = existing_row {
         let file_id_str: String = row.try_get("id")?;
+        let existing_gen: Option<String> = row.try_get("scan_generation")?;
+        if existing_gen.as_deref() == Some(params.scan_generation) {
+            return Err(CatalogueError::PathKeyCollision {
+                root_id: params.root_id.to_string(),
+                path_key: params.path_key.to_vec(),
+                existing_id: Some(file_id_str),
+            });
+        }
+
         let existing_size: i64 = row.try_get("size_bytes")?;
         let existing_mtime: i64 = row.try_get("modified_at_ms")?;
         let existing_identity: Option<String> = row.try_get("file_identity")?;
@@ -446,7 +464,7 @@ pub async fn detect_and_apply_moves(
 ) -> Result<u64, CatalogueError> {
     let stale_rows = sqlx::query(
         "SELECT id, file_identity FROM files
-         WHERE root_id = ? AND (scan_generation IS NULL OR scan_generation != ?) AND file_identity IS NOT NULL;",
+         WHERE root_id = ? AND (scan_generation IS NULL OR scan_generation != ?) AND file_identity IS NOT NULL AND status != 'missing';",
     )
     .bind(root_id.as_str())
     .bind(current_generation)
