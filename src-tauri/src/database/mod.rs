@@ -3,6 +3,7 @@ pub mod files;
 pub mod folders;
 pub mod models;
 pub mod roots;
+pub mod scan;
 pub mod volumes;
 
 pub use assets::*;
@@ -10,6 +11,7 @@ pub use files::*;
 pub use folders::*;
 pub use models::*;
 pub use roots::*;
+pub use scan::*;
 pub use volumes::*;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};

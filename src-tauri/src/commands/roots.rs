@@ -591,14 +591,20 @@ mod tests {
 
         let in_flight = Arc::new(Mutex::new(HashSet::new()));
 
-        // Use a 50ms timeout with a checker that sleeps for 10 seconds
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
+        let rx_clone = release_rx.clone();
+
+        // Use a 50ms timeout with a checker that blocks until released through a channel
         let start = Instant::now();
         let summaries = crate::library::roots::list_roots_with_checker_and_timeout(
             &pool,
             &in_flight,
             Duration::from_millis(50),
-            |_| {
-                std::thread::sleep(Duration::from_secs(10));
+            move |_| {
+                if let Ok(rx) = rx_clone.lock() {
+                    let _ = rx.recv();
+                }
                 true
             },
         )
@@ -617,6 +623,9 @@ mod tests {
             "Expected completion within timeout plus slack, took {:?}",
             elapsed
         );
+
+        // Release the blocking checker thread so it doesn't hold the test worker thread
+        let _ = release_tx.send(());
     }
 
     #[tokio::test]

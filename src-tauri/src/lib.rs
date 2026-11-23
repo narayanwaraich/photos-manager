@@ -6,6 +6,7 @@ pub mod image_pipeline;
 pub mod library;
 pub mod metadata;
 pub mod platform;
+pub mod scanner;
 pub mod smoke;
 
 use image_pipeline::ImageProcessor;
