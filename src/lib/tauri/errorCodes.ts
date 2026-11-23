@@ -32,6 +32,9 @@ export const KNOWN_IPC_ERROR_CODES = [
   "root_changed_since_preview",
   "volume_unavailable",
   "dialog_busy",
+  "scan_already_running",
+  "scan_root_unreachable",
+  "scan_root_option_unsupported",
   "internal",
 ] as const;
 

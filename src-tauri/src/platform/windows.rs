@@ -126,6 +126,49 @@ pub fn describe_volume_windows(path: &Path) -> Result<VolumeInfo, RootError> {
     })
 }
 
+/// Retrieves the hardware file identity on Windows (volume serial number + 128-bit file ID) (spec §5.3, D27, TASK-1D decision g).
+///
+/// Returns `None` on any failure, as file identity is best-effort and must never abort a scan.
+#[cfg(windows)]
+pub fn file_identity_windows(path: &Path) -> Option<String> {
+    use std::fs::OpenOptions;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO,
+    };
+
+    // Open file handle with read-only access and share-all (read, write, delete) permissions.
+    // FILE_SHARE_READ (1) | FILE_SHARE_WRITE (2) | FILE_SHARE_DELETE (4) = 7
+    let file = OpenOptions::new()
+        .read(true)
+        .share_mode(7)
+        .open(path)
+        .ok()?;
+
+    let handle = file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+    // SAFETY: FILE_ID_INFO contains only plain integer types (u64 and [u8; 16]), valid when zeroed.
+    let mut info: FILE_ID_INFO = unsafe { std::mem::zeroed() };
+
+    // SAFETY: GetFileInformationByHandleEx is passed a valid file handle and a correctly
+    // sized pointer to FILE_ID_INFO matching the FileIdInfo class parameter.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            handle,
+            FileIdInfo,
+            &mut info as *mut _ as *mut core::ffi::c_void,
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+
+    if ok == 0 {
+        return None;
+    }
+
+    let file_id_u128 = u128::from_be_bytes(info.FileId.Identifier);
+    Some(format!("{:x}:{:x}", info.VolumeSerialNumber, file_id_u128))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +183,34 @@ mod tests {
         assert_eq!(parse_drive_type(5), VolumeKind::Removable);
         assert_eq!(parse_drive_type(6), VolumeKind::Internal);
         assert_eq!(parse_drive_type(99), VolumeKind::Unknown);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_file_identity_hardlink_and_distinct_files() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().expect("tempdir");
+        let file1 = dir.path().join("file1.txt");
+        let link1 = dir.path().join("link1.txt");
+        let file2 = dir.path().join("file2.txt");
+
+        std::fs::write(&file1, b"hello world").expect("write file1");
+        std::fs::hard_link(&file1, &link1).expect("create hard link");
+        std::fs::write(&file2, b"distinct file").expect("write file2");
+
+        let id_file1 = file_identity_windows(&file1);
+        let id_link1 = file_identity_windows(&link1);
+        let id_file2 = file_identity_windows(&file2);
+
+        assert!(id_file1.is_some(), "file1 identity should be extracted");
+        assert_eq!(
+            id_file1, id_link1,
+            "Two paths to one hard link must yield identical file identity"
+        );
+        assert_ne!(
+            id_file1, id_file2,
+            "Distinct files must yield distinct file identities"
+        );
     }
 }

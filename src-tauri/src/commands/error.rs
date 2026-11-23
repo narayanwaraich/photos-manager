@@ -55,6 +55,9 @@ pub const ALL_CODES: &[&str] = &[
     "root_changed_since_preview",
     "volume_unavailable",
     "dialog_busy",
+    "scan_already_running",
+    "scan_root_unreachable",
+    "scan_root_option_unsupported",
     "internal",
 ];
 
@@ -107,6 +110,15 @@ pub fn fixed_message_for_code(code: &str) -> &'static str {
             "Storage volume details could not be retrieved for this folder."
         }
         "dialog_busy" => "A file or folder dialog is already open.",
+        "scan_already_running" => {
+            "A scan is already in progress for this library folder."
+        }
+        "scan_root_unreachable" => {
+            "The library folder is missing or cannot be accessed."
+        }
+        "scan_root_option_unsupported" => {
+            "The requested scan option is not supported."
+        }
         _ => "An internal application error occurred.",
     }
 }
@@ -135,6 +147,14 @@ impl From<RootError> for IpcError {
     }
 }
 
+impl From<crate::scanner::ScanError> for IpcError {
+    fn from(err: crate::scanner::ScanError) -> Self {
+        let code = err.code().to_string();
+        let message = fixed_message_for_code(&code).to_string();
+        Self { code, message }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,9 +164,34 @@ mod tests {
 
     /// Exhaustive match over every `CatalogueError` and `PathError` variant (no `_` arm)
     /// so adding a new variant breaks compilation until it is covered in the leak and drift tests.
-    fn catalogue_error_sample(template: &CatalogueError) -> (CatalogueError, Vec<&'static str>) {
-        match template {
-            CatalogueError::PathKeyCollision { .. } => (
+    fn assert_catalogue_variant_covered(err: &CatalogueError) {
+        match err {
+            CatalogueError::PathKeyCollision { .. } => {}
+            CatalogueError::PlatformMismatch { .. } => {}
+            CatalogueError::NotFound { .. } => {}
+            CatalogueError::SizeOutOfRange { .. } => {}
+            CatalogueError::Database(_) => {}
+            CatalogueError::Migration(_) => {}
+            CatalogueError::InvalidEnum(_) => {}
+            CatalogueError::Path(p) => match p {
+                PathError::NotUnicode => {}
+                PathError::NotInsideRoot => {}
+                PathError::ParentComponent => {}
+                PathError::CurrentDirComponent => {}
+                PathError::AbsoluteComponent => {}
+                PathError::EmptyComponent => {}
+                PathError::NulByte => {}
+                PathError::InvalidSeparator => {}
+                PathError::VerbatimMismatch => {}
+                PathError::InvalidNativeLength => {}
+            },
+        }
+    }
+
+    /// Builds all `CatalogueError` leak samples directly without a template argument (REVIEW-1B-round2).
+    fn all_catalogue_error_samples() -> Vec<(CatalogueError, Vec<&'static str>)> {
+        vec![
+            (
                 CatalogueError::PathKeyCollision {
                     root_id: "secret_root_999".to_string(),
                     path_key: b"secret_key_bytes_12345".to_vec(),
@@ -159,103 +204,51 @@ mod tests {
                     "12345",
                 ],
             ),
-            CatalogueError::PlatformMismatch { .. } => (
+            (
                 CatalogueError::PlatformMismatch {
                     expected: "secret_expected_unix".to_string(),
                     found: "secret_found_windows".to_string(),
                 },
                 vec!["secret_expected_unix", "secret_found_windows"],
             ),
-            CatalogueError::NotFound { .. } => (
+            (
                 CatalogueError::NotFound {
                     entity: "secret_entity_asset",
                     id: "secret_entity_id_888".to_string(),
                 },
                 vec!["secret_entity_asset", "secret_entity_id_888"],
             ),
-            CatalogueError::SizeOutOfRange { .. } => (
+            (
                 CatalogueError::SizeOutOfRange {
                     size: 987_654_321_098_765,
                 },
                 vec!["987654321098765"],
             ),
-            CatalogueError::Database(_) => (
+            (
                 CatalogueError::Database(sqlx::Error::Configuration(
                     "secret_sql_path_/Users/alice/secret.jpg".into(),
                 )),
                 vec!["secret_sql_path", "/Users/alice/secret.jpg"],
             ),
-            CatalogueError::Migration(_) => (
+            (
                 CatalogueError::Migration(sqlx::migrate::MigrateError::VersionMissing(77777)),
                 vec!["77777", "VersionMissing"],
             ),
-            CatalogueError::InvalidEnum(_) => (
+            (
                 CatalogueError::InvalidEnum("bogus_enum_secret_value".to_string()),
                 vec!["bogus_enum_secret_value"],
             ),
-            CatalogueError::Path(p) => match p {
-                PathError::NotUnicode => (CatalogueError::Path(PathError::NotUnicode), vec![]),
-                PathError::NotInsideRoot => {
-                    (CatalogueError::Path(PathError::NotInsideRoot), vec![])
-                }
-                PathError::ParentComponent => {
-                    (CatalogueError::Path(PathError::ParentComponent), vec![])
-                }
-                PathError::CurrentDirComponent => {
-                    (CatalogueError::Path(PathError::CurrentDirComponent), vec![])
-                }
-                PathError::AbsoluteComponent => {
-                    (CatalogueError::Path(PathError::AbsoluteComponent), vec![])
-                }
-                PathError::EmptyComponent => {
-                    (CatalogueError::Path(PathError::EmptyComponent), vec![])
-                }
-                PathError::NulByte => (CatalogueError::Path(PathError::NulByte), vec![]),
-                PathError::InvalidSeparator => {
-                    (CatalogueError::Path(PathError::InvalidSeparator), vec![])
-                }
-                PathError::VerbatimMismatch => {
-                    (CatalogueError::Path(PathError::VerbatimMismatch), vec![])
-                }
-                PathError::InvalidNativeLength => {
-                    (CatalogueError::Path(PathError::InvalidNativeLength), vec![])
-                }
-            },
-        }
-    }
-
-    fn all_catalogue_error_samples() -> Vec<(CatalogueError, Vec<&'static str>)> {
-        let templates = [
-            CatalogueError::PathKeyCollision {
-                root_id: String::new(),
-                path_key: Vec::new(),
-                existing_id: None,
-            },
-            CatalogueError::PlatformMismatch {
-                expected: String::new(),
-                found: String::new(),
-            },
-            CatalogueError::NotFound {
-                entity: "",
-                id: String::new(),
-            },
-            CatalogueError::SizeOutOfRange { size: 0 },
-            CatalogueError::Database(sqlx::Error::RowNotFound),
-            CatalogueError::Migration(sqlx::migrate::MigrateError::VersionMissing(0)),
-            CatalogueError::InvalidEnum(String::new()),
-            CatalogueError::Path(PathError::NotUnicode),
-            CatalogueError::Path(PathError::NotInsideRoot),
-            CatalogueError::Path(PathError::ParentComponent),
-            CatalogueError::Path(PathError::CurrentDirComponent),
-            CatalogueError::Path(PathError::AbsoluteComponent),
-            CatalogueError::Path(PathError::EmptyComponent),
-            CatalogueError::Path(PathError::NulByte),
-            CatalogueError::Path(PathError::InvalidSeparator),
-            CatalogueError::Path(PathError::VerbatimMismatch),
-            CatalogueError::Path(PathError::InvalidNativeLength),
-        ];
-
-        templates.iter().map(catalogue_error_sample).collect()
+            (CatalogueError::Path(PathError::NotUnicode), vec![]),
+            (CatalogueError::Path(PathError::NotInsideRoot), vec![]),
+            (CatalogueError::Path(PathError::ParentComponent), vec![]),
+            (CatalogueError::Path(PathError::CurrentDirComponent), vec![]),
+            (CatalogueError::Path(PathError::AbsoluteComponent), vec![]),
+            (CatalogueError::Path(PathError::EmptyComponent), vec![]),
+            (CatalogueError::Path(PathError::NulByte), vec![]),
+            (CatalogueError::Path(PathError::InvalidSeparator), vec![]),
+            (CatalogueError::Path(PathError::VerbatimMismatch), vec![]),
+            (CatalogueError::Path(PathError::InvalidNativeLength), vec![]),
+        ]
     }
 
     /// Exhaustive match over every `StartupError` variant (no `_` arm).
@@ -353,8 +346,8 @@ mod tests {
                 RootError::VolumeUnavailable("statfs failed for /Volumes/SecretDrive".to_string()),
                 vec!["statfs failed", "/Volumes/SecretDrive"],
             ),
-            RootError::Catalogue(c) => {
-                let (sample, secrets) = catalogue_error_sample(c);
+            RootError::Catalogue(_) => {
+                let (sample, secrets) = all_catalogue_error_samples().remove(0);
                 (RootError::Catalogue(sample), secrets)
             }
         }
@@ -395,6 +388,7 @@ mod tests {
         let internal_msg = fixed_message_for_code("internal");
 
         for (cat_err, forbidden_substrings) in all_catalogue_error_samples() {
+            assert_catalogue_variant_covered(&cat_err);
             let code = cat_err.code();
             let raw_display = cat_err.to_string();
             let ipc_err: IpcError = cat_err.into();
@@ -493,6 +487,76 @@ mod tests {
         }
     }
 
+    /// Exhaustive match over every `ScanError` variant (no `_` arm).
+    fn assert_scan_variant_covered(err: &crate::scanner::ScanError) {
+        match err {
+            crate::scanner::ScanError::AlreadyRunning(_) => {}
+            crate::scanner::ScanError::RootUnreachable { .. } => {}
+            crate::scanner::ScanError::OptionUnsupported { .. } => {}
+            crate::scanner::ScanError::Catalogue(_) => {}
+        }
+    }
+
+    fn all_scan_error_samples() -> Vec<(crate::scanner::ScanError, Vec<&'static str>)> {
+        vec![
+            (
+                crate::scanner::ScanError::AlreadyRunning(
+                    "secret_root_already_running".to_string(),
+                ),
+                vec!["secret_root_already_running"],
+            ),
+            (
+                crate::scanner::ScanError::RootUnreachable {
+                    path: "/Users/alice/secret_missing_root".to_string(),
+                },
+                vec!["/Users/alice/secret_missing_root", "secret_missing_root"],
+            ),
+            (
+                crate::scanner::ScanError::OptionUnsupported {
+                    reason: "secret_symlinks_unsupported".to_string(),
+                },
+                vec!["secret_symlinks_unsupported"],
+            ),
+            (
+                crate::scanner::ScanError::Catalogue(CatalogueError::Database(
+                    sqlx::Error::Configuration("secret_scan_db_error".into()),
+                )),
+                vec!["secret_scan_db_error"],
+            ),
+        ]
+    }
+
+    #[test]
+    fn test_ipc_error_from_scan_error() {
+        let internal_msg = fixed_message_for_code("internal");
+
+        for (err, forbidden_substrings) in all_scan_error_samples() {
+            assert_scan_variant_covered(&err);
+            let code = err.code().to_string();
+            let raw_display = err.to_string();
+            let ipc_err: IpcError = err.into();
+
+            assert_eq!(ipc_err.code, code);
+            assert!(!ipc_err.message.is_empty());
+            assert_ne!(
+                ipc_err.message, internal_msg,
+                "ScanError code '{code}' fell back to the generic internal message"
+            );
+
+            for secret in forbidden_substrings {
+                assert!(
+                    raw_display.contains(secret),
+                    "Test bug: scan Display '{raw_display}' did not contain '{secret}'"
+                );
+                assert!(
+                    !ipc_err.message.contains(secret),
+                    "ScanError message for '{code}' leaked '{secret}': '{}'",
+                    ipc_err.message
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_error_codes_sync_with_typescript() {
         let ts_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -553,6 +617,14 @@ mod tests {
             assert!(
                 ALL_CODES.contains(&code),
                 "RootError code '{code}' is missing from ALL_CODES"
+            );
+            emitted_codes.insert(code);
+        }
+        for (scan_err, _) in all_scan_error_samples() {
+            let code = scan_err.code();
+            assert!(
+                ALL_CODES.contains(&code),
+                "ScanError code '{code}' is missing from ALL_CODES"
             );
             emitted_codes.insert(code);
         }

@@ -25,10 +25,6 @@ export const VolumeKindSchema = z.enum([
   "Removable",
   "Network",
   "Unknown",
-  "internal",
-  "removable",
-  "network",
-  "unknown",
 ]);
 
 export type VolumeKind = z.infer<typeof VolumeKindSchema>;
@@ -38,10 +34,6 @@ export const RootStatusSchema = z.enum([
   "Paused",
   "Offline",
   "Removed",
-  "active",
-  "paused",
-  "offline",
-  "removed",
 ]);
 
 export type RootStatus = z.infer<typeof RootStatusSchema>;
