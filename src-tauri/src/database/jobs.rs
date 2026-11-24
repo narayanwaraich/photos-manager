@@ -83,21 +83,24 @@ pub async fn update_job_progress(
     Ok(())
 }
 
-/// Updates the status of a job (e.g. to 'cancelling').
-pub async fn update_job_status(
+/// Updates a running job's status to 'cancelling' (spec §6.2, Decision c, R2).
+///
+/// Only updates the row if its current status is 'running'.
+/// Returns the number of rows changed (1 if marked cancelling, 0 if job was not running).
+pub async fn mark_job_cancelling(
     conn: &mut SqliteConnection,
     job_id: &str,
-    status: &str,
     updated_at_ms: i64,
-) -> Result<(), CatalogueError> {
-    sqlx::query("UPDATE jobs SET status = ?, updated_at_ms = ? WHERE id = ?;")
-        .bind(status)
-        .bind(updated_at_ms)
-        .bind(job_id)
-        .execute(&mut *conn)
-        .await?;
+) -> Result<u64, CatalogueError> {
+    let result = sqlx::query(
+        "UPDATE jobs SET status = 'cancelling', updated_at_ms = ? WHERE id = ? AND status = 'running';",
+    )
+    .bind(updated_at_ms)
+    .bind(job_id)
+    .execute(&mut *conn)
+    .await?;
 
-    Ok(())
+    Ok(result.rows_affected())
 }
 
 /// Finalizes a job row with its terminal status, counts, and error details (Decision e).

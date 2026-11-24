@@ -99,10 +99,13 @@ export async function removeRoot(
 
 /**
  * Starts an asynchronous scan of the given library root, streaming progress events via a Tauri Channel.
+ * Validates each event against ScanEventSchema. If parsing fails, invokes onInvalidEvent (if provided)
+ * and drops the event without fabricating a failed terminal event (Decision g, R3).
  */
 export async function startScan(
   rootId: string,
   onEvent: (event: ScanEvent) => void,
+  onInvalidEvent?: () => void,
 ): Promise<CommandResult<StartScanResult>> {
   const channel = new Channel<unknown>();
   channel.onmessage = (message: unknown) => {
@@ -110,11 +113,7 @@ export async function startScan(
     if (parsed.success) {
       onEvent(parsed.data);
     } else {
-      onEvent({
-        kind: "failed",
-        jobId: "unknown",
-        code: "internal",
-      });
+      onInvalidEvent?.();
     }
   };
   return invokeCommand("start_scan", { rootId, onEvent: channel }, StartScanResultSchema);

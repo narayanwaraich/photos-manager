@@ -226,7 +226,7 @@ impl JobManager {
         // 1. Signal cancellation
         cancel.cancel();
 
-        // 2. Update status in database to 'cancelling'
+        // 2. Update status in database to 'cancelling' if still running (Decision c, R2)
         let now_ms = database::now_ms().map_err(IpcError::from)?;
         let mut conn = self
             .pool
@@ -234,25 +234,45 @@ impl JobManager {
             .await
             .map_err(CatalogueError::Database)
             .map_err(IpcError::from)?;
-        database::update_job_status(&mut conn, job_id.as_str(), "cancelling", now_ms)
+        let _ = database::mark_job_cancelling(&mut conn, job_id.as_str(), now_ms)
             .await
             .map_err(IpcError::from)?;
 
         Ok(())
     }
 
-    /// Core implementation of `start_scan` (Decision a, c, d, g, h).
+    /// Core implementation of `start_scan` (Decision a, c, d, g, h, R4).
+    ///
+    /// Generates UUID v7 `scan_generation` and calls `start_scan_with_options`.
+    pub async fn start_scan_impl<S>(
+        self: &Arc<Self>,
+        root_id: RootId,
+        sink: S,
+    ) -> Result<StartScanResult, IpcError>
+    where
+        S: Fn(ScanEvent) + Send + Sync + 'static,
+    {
+        let scan_generation = uuid::Uuid::now_v7().to_string();
+        let options = ScanOptions {
+            generation: Some(scan_generation),
+            ..Default::default()
+        };
+        self.start_scan_with_options(root_id, options, sink).await
+    }
+
+    /// Internal scan starter taking explicit `ScanOptions` (spec §6.2 step 1, Decision d, R4).
     ///
     /// 1. Acquires `ScanGuard` for the root. If already running, returns `scan_already_running` immediately.
-    /// 2. Generates UUID v7 `job_id` and `scan_generation`.
+    /// 2. Generates UUID v7 `job_id`.
     /// 3. Persists the `jobs` row with status `running` and generation in `payload_json` before touching disk.
     /// 4. Stores `RunningJob` in the in-memory map.
     /// 5. Emits `ScanEvent::Started`.
     /// 6. Spawns `run_tracked_job` supervisor.
     /// 7. Returns `StartScanResult { job_id }` immediately.
-    pub async fn start_scan_impl<S>(
+    async fn start_scan_with_options<S>(
         self: &Arc<Self>,
         root_id: RootId,
+        options: ScanOptions,
         sink: S,
     ) -> Result<StartScanResult, IpcError>
     where
@@ -271,12 +291,11 @@ impl JobManager {
         };
 
         let job_id = uuid::Uuid::now_v7().to_string();
-        let scan_generation = uuid::Uuid::now_v7().to_string();
         let now_ms = database::now_ms().map_err(IpcError::from)?;
 
         let payload_json = serde_json::json!({
             "root_id": root_id.as_str(),
-            "generation": scan_generation,
+            "generation": options.generation,
         })
         .to_string();
 
@@ -327,11 +346,6 @@ impl JobManager {
 
         // 5. Setup watch channel for progress throttling (Decision g)
         let (watch_tx, watch_rx) = tokio::sync::watch::channel(None);
-
-        let options = ScanOptions {
-            generation: Some(scan_generation),
-            ..Default::default()
-        };
 
         let pool_for_scan = self.pool.clone();
         let root_id_for_scan = root_id.clone();

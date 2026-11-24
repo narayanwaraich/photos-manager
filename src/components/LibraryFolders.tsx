@@ -9,7 +9,6 @@ import {
   type RootSummary,
   type RemoveRootPreview,
   type ScanEvent,
-  ScanEventSchema,
 } from "../lib/tauri";
 import {
   formatRootWarning,
@@ -55,8 +54,11 @@ export function LibraryFolders() {
   // Cancelling state per root to disable repeated clicks
   const [cancellingRoots, setCancellingRoots] = useState<Record<string, boolean>>({});
 
-  const fetchRoots = useCallback(async () => {
-    setLoading(true);
+  const fetchRoots = useCallback(async (options?: { quiet?: boolean }) => {
+    const isQuiet = options?.quiet ?? false;
+    if (!isQuiet) {
+      setLoading(true);
+    }
     setGeneralError(null);
     const res = await listRoots();
     if (res.status === "ok") {
@@ -64,20 +66,22 @@ export function LibraryFolders() {
     } else {
       setGeneralError(res.error.message);
     }
-    setLoading(false);
+    if (!isQuiet) {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
     void fetchRoots();
   }, [fetchRoots]);
 
-  // Window-reload reconciliation polling: refresh every 2s while any root has activeJobId (Decision j)
+  // Window-reload reconciliation polling: refresh every 2s while any root has activeJobId (Decision j, R6)
   useEffect(() => {
     const anyActive = roots.some((r) => r.activeJobId !== null);
     if (!anyActive) return;
 
     const timer = setInterval(() => {
-      void fetchRoots();
+      void fetchRoots({ quiet: true });
     }, 2000);
 
     return () => clearInterval(timer);
@@ -165,113 +169,113 @@ export function LibraryFolders() {
       return next;
     });
 
-    const res = await startScan(root.id, (event: ScanEvent) => {
-      // Validate every event with Zod (Part D)
-      const parseResult = ScanEventSchema.safeParse(event);
-      if (!parseResult.success) {
+    const res = await startScan(
+      root.id,
+      (validEvent: ScanEvent) => {
+        // Event is already parsed and validated by startScan (parse once, R3)
+        switch (validEvent.kind) {
+          case "started":
+            setActiveScans((prev) => ({
+              ...prev,
+              [root.id]: {
+                jobId: validEvent.jobId,
+                filesSeen: 0,
+                foldersSeen: 0,
+                parseError: false,
+              },
+            }));
+            break;
+
+          case "progress":
+            setActiveScans((prev) => {
+              const current = prev[root.id];
+              if (!current) return prev;
+              return {
+                ...prev,
+                [root.id]: {
+                  ...current,
+                  filesSeen: validEvent.filesSeen,
+                  foldersSeen: validEvent.foldersSeen,
+                },
+              };
+            });
+            break;
+
+          case "finished":
+            setActiveScans((prev) => {
+              const next = { ...prev };
+              delete next[root.id];
+              return next;
+            });
+            setCancellingRoots((prev) => {
+              const next = { ...prev };
+              delete next[root.id];
+              return next;
+            });
+
+            if (validEvent.outcome === "completed") {
+              setScanOutcomes((prev) => ({
+                ...prev,
+                [root.id]: {
+                  kind: "completed",
+                  summaryText: formatCompletedSummary(
+                    validEvent.counts,
+                    validEvent.warningCount,
+                  ),
+                  warnings: validEvent.warnings,
+                },
+              }));
+            } else {
+              setScanOutcomes((prev) => ({
+                ...prev,
+                [root.id]: {
+                  kind: "cancelled",
+                  summaryText: SCAN_CANCELLED_TEXT,
+                },
+              }));
+            }
+            // Quiet refresh roots list to update fileCount, lastScanAtMs, etc. without flickering (R6)
+            void fetchRoots({ quiet: true });
+            break;
+
+          case "failed":
+            setActiveScans((prev) => {
+              const next = { ...prev };
+              delete next[root.id];
+              return next;
+            });
+            setCancellingRoots((prev) => {
+              const next = { ...prev };
+              delete next[root.id];
+              return next;
+            });
+            setScanOutcomes((prev) => ({
+              ...prev,
+              [root.id]: {
+                kind: "failed",
+                errorMessage:
+                  validEvent.code === "interrupted"
+                    ? SCAN_INTERRUPTED_TEXT
+                    : `Scan failed (${validEvent.code}).`,
+              },
+            }));
+            // Quiet refresh roots list without flickering (R6)
+            void fetchRoots({ quiet: true });
+            break;
+        }
+      },
+      () => {
+        // onInvalidEvent: record parse error at most once per scan without fabricating a terminal event (R3)
         setActiveScans((prev) => {
           const current = prev[root.id];
-          if (!current) return prev;
+          if (!current || current.parseError) return prev;
           return {
             ...prev,
             [root.id]: { ...current, parseError: true },
           };
         });
-        return;
-      }
-
-      const validEvent = parseResult.data;
-
-      switch (validEvent.kind) {
-        case "started":
-          setActiveScans((prev) => ({
-            ...prev,
-            [root.id]: {
-              jobId: validEvent.jobId,
-              filesSeen: 0,
-              foldersSeen: 0,
-              parseError: false,
-            },
-          }));
-          break;
-
-        case "progress":
-          setActiveScans((prev) => {
-            const current = prev[root.id];
-            if (!current) return prev;
-            return {
-              ...prev,
-              [root.id]: {
-                ...current,
-                filesSeen: validEvent.filesSeen,
-                foldersSeen: validEvent.foldersSeen,
-              },
-            };
-          });
-          break;
-
-        case "finished":
-          setActiveScans((prev) => {
-            const next = { ...prev };
-            delete next[root.id];
-            return next;
-          });
-          setCancellingRoots((prev) => {
-            const next = { ...prev };
-            delete next[root.id];
-            return next;
-          });
-
-          if (validEvent.outcome === "completed") {
-            setScanOutcomes((prev) => ({
-              ...prev,
-              [root.id]: {
-                kind: "completed",
-                summaryText: formatCompletedSummary(
-                  validEvent.counts,
-                  validEvent.warningCount,
-                ),
-                warnings: validEvent.warnings,
-              },
-            }));
-          } else {
-            setScanOutcomes((prev) => ({
-              ...prev,
-              [root.id]: {
-                kind: "cancelled",
-                summaryText: SCAN_CANCELLED_TEXT,
-              },
-            }));
-          }
-          // Refresh roots list to update fileCount, lastScanAtMs, etc.
-          void fetchRoots();
-          break;
-
-        case "failed":
-          setActiveScans((prev) => {
-            const next = { ...prev };
-            delete next[root.id];
-            return next;
-          });
-          setCancellingRoots((prev) => {
-            const next = { ...prev };
-            delete next[root.id];
-            return next;
-          });
-          setScanOutcomes((prev) => ({
-            ...prev,
-            [root.id]: {
-              kind: "failed",
-              errorMessage:
-                validEvent.code === "interrupted"
-                  ? SCAN_INTERRUPTED_TEXT
-                  : `Scan failed (${validEvent.code}).`,
-            },
-          }));
-          void fetchRoots();
-          break;
-      }
-    });
+      },
+    );
 
     if (res.status === "ok") {
       setActiveScans((prev) => ({

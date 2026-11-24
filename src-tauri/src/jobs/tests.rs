@@ -12,7 +12,7 @@ use crate::jobs::{
     run_tracked_job, JobManager, ScanCountsDto, ScanEvent, ScanWarningDto, StartScanResult,
 };
 use crate::library::protected::ProtectedContext;
-use crate::scanner::{ScanCounts, ScanGuard, ScanOutcome, ScanProgress, ScanReport};
+use crate::scanner::{ScanCounts, ScanGuard, ScanOptions, ScanOutcome, ScanProgress, ScanReport};
 
 struct TestFixture {
     _temp: TempDir,
@@ -338,37 +338,182 @@ async fn test_refused_start_creates_no_job_row() {
     assert!(res2.is_ok(), "Must succeed after guard is released");
 }
 
-// 5. Persistence before touching: generation is in jobs payload_json before walk touches anything
+// 5a. Persistence before touching (Test A): scan fails before first batch; generation was persisted, root last_scan_generation is NULL (R4)
 #[tokio::test]
-async fn test_persistence_before_touching_disk() {
+async fn test_persistence_before_touching_disk_failure_leaves_null_generation() {
     let fix = setup_fixture().await;
+
+    // One file in the root
+    fs::write(fix.root_path.join("file1.jpg"), b"fake_data_1").unwrap();
+
     let manager = Arc::new(JobManager::new(fix.pool.clone()));
 
+    let generation_uuid = uuid::Uuid::now_v7().to_string();
+    let options = ScanOptions {
+        generation: Some(generation_uuid.clone()),
+        failure_hook_after_batch: Some(0),
+        ..Default::default()
+    };
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_sink = Arc::clone(&events);
+    let done_flag = Arc::new(AtomicBool::new(false));
+    let done_clone = Arc::clone(&done_flag);
+
     let start_res = manager
-        .start_scan_impl(fix.root_id.clone(), |_| {})
+        .start_scan_with_options(fix.root_id.clone(), options, move |ev| {
+            let mut list = events_sink.lock().unwrap();
+            let is_term = matches!(ev, ScanEvent::Finished { .. } | ScanEvent::Failed { .. });
+            list.push(ev);
+            if is_term {
+                done_clone.store(true, Ordering::SeqCst);
+            }
+        })
         .await
-        .expect("start scan");
+        .expect("start_scan_with_options");
+
     let job_id = start_res.job_id;
 
+    // Wait for terminal event by polling with a deadline
+    for _ in 0..100 {
+        if done_flag.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        done_flag.load(Ordering::SeqCst),
+        "Scan must reach terminal event"
+    );
+
     let mut conn = fix.pool.acquire().await.unwrap();
+
+    // Assert that the job row has payload_json.generation and ended failed
     let job_row = database::get_job_by_id(&mut conn, &job_id)
         .await
         .unwrap()
-        .expect("job row must exist immediately");
+        .expect("job row must exist");
+    assert_eq!(job_row.0, "failed", "Job must have failed");
 
-    // payload_json contains root_id and generation UUID
     let payload: serde_json::Value =
         serde_json::from_str(&job_row.1).expect("payload_json must be valid JSON");
-    assert_eq!(payload["root_id"], fix.root_id.as_str());
-    assert!(payload["generation"].is_string());
-    assert!(!payload["generation"].as_str().unwrap().is_empty());
+    assert_eq!(
+        payload["generation"].as_str(),
+        Some(generation_uuid.as_str()),
+        "payload_json must have the persisted scan generation"
+    );
+
+    // Assert that the root's last_scan_generation is NULL
+    let root_row = database::get_root(&mut conn, &fix.root_id)
+        .await
+        .unwrap()
+        .expect("root must exist");
+    assert_eq!(
+        root_row.last_scan_generation, None,
+        "root last_scan_generation must be NULL when scan fails before first batch"
+    );
 }
 
-// 6. Throttling: at most 4 progress events per second, last value never lost
+// 5b. Persistence before touching (Test B): completed scan leaves last_scan_generation equal to payload_json.generation (R4)
+#[tokio::test]
+async fn test_persistence_completed_scan_matches_root_last_scan_generation() {
+    let fix = setup_fixture().await;
+
+    // One file in the root
+    fs::write(fix.root_path.join("file1.jpg"), b"fake_data_1").unwrap();
+
+    let manager = Arc::new(JobManager::new(fix.pool.clone()));
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_sink = Arc::clone(&events);
+    let done_flag = Arc::new(AtomicBool::new(false));
+    let done_clone = Arc::clone(&done_flag);
+
+    let start_res = manager
+        .start_scan_impl(fix.root_id.clone(), move |ev| {
+            let mut list = events_sink.lock().unwrap();
+            let is_term = matches!(ev, ScanEvent::Finished { .. } | ScanEvent::Failed { .. });
+            list.push(ev);
+            if is_term {
+                done_clone.store(true, Ordering::SeqCst);
+            }
+        })
+        .await
+        .expect("start_scan_impl");
+
+    let job_id = start_res.job_id;
+
+    // Wait for terminal event by polling with a deadline
+    for _ in 0..100 {
+        if done_flag.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        done_flag.load(Ordering::SeqCst),
+        "Scan must reach terminal event"
+    );
+
+    let mut conn = fix.pool.acquire().await.unwrap();
+
+    // Assert job row completed
+    let job_row = database::get_job_by_id(&mut conn, &job_id)
+        .await
+        .unwrap()
+        .expect("job row must exist");
+    assert_eq!(job_row.0, "completed");
+
+    let payload: serde_json::Value =
+        serde_json::from_str(&job_row.1).expect("payload_json must be valid JSON");
+    let payload_gen = payload["generation"]
+        .as_str()
+        .expect("payload must contain generation string");
+    assert!(!payload_gen.is_empty());
+
+    // Assert that the root's last_scan_generation equals payload_json.generation
+    let root_row = database::get_root(&mut conn, &fix.root_id)
+        .await
+        .unwrap()
+        .expect("root must exist");
+    assert_eq!(
+        root_row.last_scan_generation.as_deref(),
+        Some(payload_gen),
+        "root last_scan_generation must equal payload_json.generation"
+    );
+}
+
+// 6. Throttling: at most 4 progress events per second, row writes rate-limited, last value never lost (R1)
 #[tokio::test]
 async fn test_throttle_rate_limits_progress_and_job_updates() {
     let fix = setup_fixture().await;
     let manager = Arc::new(JobManager::new(fix.pool.clone()));
+
+    // Create trigger and log table on the temporary database to count row updates (R1)
+    sqlx::query(
+        "CREATE TABLE job_update_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            new_status TEXT NOT NULL,
+            new_progress_done INTEGER NOT NULL
+        );",
+    )
+    .execute(&fix.pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "CREATE TRIGGER log_job_updates
+         AFTER UPDATE ON jobs
+         FOR EACH ROW
+         BEGIN
+             INSERT INTO job_update_log (job_id, new_status, new_progress_done)
+             VALUES (NEW.id, NEW.status, NEW.progress_done);
+         END;",
+    )
+    .execute(&fix.pool)
+    .await
+    .unwrap();
 
     let (watch_tx, watch_rx) = tokio::sync::watch::channel(None);
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -412,7 +557,7 @@ async fn test_throttle_rate_limits_progress_and_job_updates() {
         }))
     };
 
-    run_tracked_job(
+    let supervisor_handle = run_tracked_job(
         fix.pool.clone(),
         job_id.clone(),
         fix.root_id.clone(),
@@ -423,6 +568,8 @@ async fn test_throttle_rate_limits_progress_and_job_updates() {
             events_sink.lock().unwrap().push(ev);
         },
     );
+
+    let start_instant = std::time::Instant::now();
 
     // Pump 1,000 progress updates into watch channel
     for i in 1..=1000 {
@@ -439,7 +586,10 @@ async fn test_throttle_rate_limits_progress_and_job_updates() {
 
     // Stop worker to conclude job
     let _ = stop_tx.send(());
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let elapsed_ms = start_instant.elapsed().as_millis() as u64;
+
+    // Await supervisor task handle (R1: no fixed sleep, await completion)
+    let _ = supervisor_handle.await;
 
     let recorded = events.lock().unwrap().clone();
     let progress_events: Vec<_> = recorded
@@ -447,18 +597,48 @@ async fn test_throttle_rate_limits_progress_and_job_updates() {
         .filter(|e| matches!(e, ScanEvent::Progress { .. }))
         .collect();
 
-    // At most 4 progress events per simulated second
+    // Assert progress event rate (R1)
     assert!(
-        progress_events.len() <= 5,
-        "Throttled ticker must emit at most ~4 progress events per simulated second, got {}",
-        progress_events.len()
+        progress_events.len() as u64 <= elapsed_ms / 250 + 2,
+        "Throttled ticker must emit at most ~4 progress events per simulated second, got {} in {} ms",
+        progress_events.len(),
+        elapsed_ms
+    );
+    assert!(
+        !progress_events.is_empty(),
+        "Must receive at least 1 progress event"
     );
 
-    // Terminal event carries the exact final counts (never lost)
+    // Assert row update write rate before final update (R1)
+    let (total_updates,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM job_update_log WHERE job_id = ?;")
+            .bind(&job_id)
+            .fetch_one(&fix.pool)
+            .await
+            .unwrap();
+    let writes_before_final = total_updates.saturating_sub(1) as u64;
+    assert!(
+        writes_before_final <= elapsed_ms / 1000 + 1,
+        "Job row writes before final update must be <= elapsed_ms / 1000 + 1, got {} writes in {} ms",
+        writes_before_final,
+        elapsed_ms
+    );
+
+    // Final row in database: status completed, progress_done 1000 (R1)
+    let mut conn = fix.pool.acquire().await.unwrap();
+    let final_row = database::get_job_by_id(&mut conn, &job_id)
+        .await
+        .unwrap()
+        .expect("job row must exist");
+    assert_eq!(final_row.0, "completed");
+    assert_eq!(final_row.4, 1000);
+
+    // Terminal event carries the exact final counts (never lost) (R1)
     let term = recorded.last().unwrap();
     assert!(
         matches!(term, ScanEvent::Finished { counts, .. } if counts.files_seen == 1000),
-        "Terminal event must carry final 1000 count"
+        "Terminal event must carry final 1000 count, got {:?}",
+        term
     );
 }
 
@@ -886,4 +1066,69 @@ fn test_wire_format_scan_events_matches_literal_json() {
     };
     let res_json = serde_json::to_string(&res).unwrap();
     assert_eq!(res_json, r#"{"jobId":"job_01"}"#);
+}
+
+// 14. Cancel status update race: mark_job_cancelling only updates running rows (R2)
+#[tokio::test]
+async fn test_mark_job_cancelling_only_affects_running_jobs() {
+    let fix = setup_fixture().await;
+    let mut conn = fix.pool.acquire().await.unwrap();
+    let now_ms = database::now_ms().unwrap();
+
+    // 1. A completed row stays completed after the call
+    database::insert_job(
+        &mut conn,
+        &NewJobParams {
+            id: "job_completed_1",
+            root_id: Some(fix.root_id.as_str()),
+            job_type: "scan",
+            status: "completed",
+            priority: 50,
+            payload_json: "{}",
+            now_ms,
+        },
+    )
+    .await
+    .unwrap();
+
+    let rows_changed = database::mark_job_cancelling(&mut conn, "job_completed_1", now_ms + 100)
+        .await
+        .unwrap();
+    assert_eq!(rows_changed, 0, "Completed job row must not be changed");
+
+    let row = database::get_job_by_id(&mut conn, "job_completed_1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.0, "completed", "Completed job row must stay completed");
+
+    // 2. A running row becomes cancelling
+    database::insert_job(
+        &mut conn,
+        &NewJobParams {
+            id: "job_running_1",
+            root_id: Some(fix.root_id.as_str()),
+            job_type: "scan",
+            status: "running",
+            priority: 50,
+            payload_json: "{}",
+            now_ms,
+        },
+    )
+    .await
+    .unwrap();
+
+    let rows_changed = database::mark_job_cancelling(&mut conn, "job_running_1", now_ms + 100)
+        .await
+        .unwrap();
+    assert_eq!(rows_changed, 1, "Running job row must be updated");
+
+    let row = database::get_job_by_id(&mut conn, "job_running_1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.0, "cancelling",
+        "Running job row must become cancelling"
+    );
 }
