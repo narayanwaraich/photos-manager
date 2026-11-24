@@ -59,6 +59,9 @@ pub const ALL_CODES: &[&str] = &[
     "scan_root_unreachable",
     "scan_root_option_unsupported",
     "scan_walk_failed",
+    "interrupted",
+    "root_busy",
+    "job_not_found",
     "internal",
 ];
 
@@ -122,6 +125,15 @@ pub fn fixed_message_for_code(code: &str) -> &'static str {
         }
         "scan_walk_failed" => {
             "The filesystem walk encountered an unrecoverable error."
+        }
+        "interrupted" => {
+            "The app closed before this job finished."
+        }
+        "root_busy" => {
+            "This folder is being scanned. Cancel the scan or wait until it ends."
+        }
+        "job_not_found" => {
+            "The requested job was not found or is no longer running."
         }
         _ => "An internal application error occurred.",
     }
@@ -635,6 +647,9 @@ mod tests {
             emitted_codes.insert(code);
         }
         emitted_codes.insert("dialog_busy");
+        emitted_codes.insert("interrupted");
+        emitted_codes.insert("root_busy");
+        emitted_codes.insert("job_not_found");
         emitted_codes.insert("internal");
 
         // Verify ALL_CODES has no stale entries that no error type emits

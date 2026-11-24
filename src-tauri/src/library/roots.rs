@@ -318,6 +318,9 @@ where
             reachable,
             file_count: r.file_count,
             folder_count: r.folder_count,
+            last_scan_at_ms: r.last_scan_at_ms,
+            last_job: r.last_job,
+            active_job_id: None,
         });
     }
 

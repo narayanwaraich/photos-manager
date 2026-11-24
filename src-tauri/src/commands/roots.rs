@@ -48,9 +48,21 @@ pub async fn list_roots_impl(
     pool: &SqlitePool,
     in_flight: &Arc<Mutex<HashSet<RootId>>>,
 ) -> Result<Vec<RootSummary>, IpcError> {
-    let summaries = crate::library::roots::list_roots_with_in_flight(pool, in_flight)
+    list_roots_with_active_jobs(pool, in_flight, |_| None).await
+}
+
+/// Lists library roots populating `active_job_id` from the provided active job lookup (Decision j).
+pub async fn list_roots_with_active_jobs(
+    pool: &SqlitePool,
+    in_flight: &Arc<Mutex<HashSet<RootId>>>,
+    active_jobs: impl Fn(&RootId) -> Option<String>,
+) -> Result<Vec<RootSummary>, IpcError> {
+    let mut summaries = crate::library::roots::list_roots_with_in_flight(pool, in_flight)
         .await
         .map_err(IpcError::from)?;
+    for s in &mut summaries {
+        s.active_job_id = active_jobs(&s.id);
+    }
     Ok(summaries)
 }
 
@@ -121,13 +133,16 @@ pub async fn preview_remove_root_impl(
     Ok(preview)
 }
 
-/// Plain async function for executing verified root removal (Decision b, h).
+/// Plain async function for executing verified root removal (Decision b, h, i).
 pub async fn remove_root_impl(
     pool: &SqlitePool,
     root_id_str: &str,
     expected_files: i64,
 ) -> Result<(), IpcError> {
     let root_id = RootId::from(root_id_str.to_string());
+    // Acquire ScanGuard to ensure no concurrent scan is active (Decision i)
+    let _guard = crate::scanner::ScanGuard::acquire(&root_id)
+        .map_err(|_| IpcError::new("root_busy", fixed_message_for_code("root_busy")))?;
     crate::library::roots::remove_root(pool, &root_id, expected_files)
         .await
         .map_err(IpcError::from)?;
@@ -142,8 +157,9 @@ pub async fn remove_root_impl(
 pub async fn list_roots(
     pool: tauri::State<'_, SqlitePool>,
     in_flight: tauri::State<'_, ActiveReachableChecks>,
+    manager: tauri::State<'_, Arc<crate::jobs::JobManager>>,
 ) -> Result<Vec<RootSummary>, IpcError> {
-    list_roots_impl(&pool, &in_flight.0).await
+    list_roots_with_active_jobs(&pool, &in_flight.0, |id| manager.active_job_for_root(id)).await
 }
 
 #[tauri::command]
@@ -219,11 +235,40 @@ mod tests {
             reachable: true,
             file_count: 42,
             folder_count: 7,
+            last_scan_at_ms: Some(1732440000000),
+            last_job: Some(crate::database::LastJobSummary {
+                job_id: "job_0193498f3b4970008b8b000000000002".to_string(),
+                status: "completed".to_string(),
+                error_code: None,
+                finished_at_ms: Some(1732440005000),
+            }),
+            active_job_id: Some("job_0193498f3b4970008b8b000000000003".to_string()),
         };
 
         let json = serde_json::to_string(&summary).expect("serialize RootSummary");
-        let expected_json = r#"{"id":"root_0193498f3b4970008b8b000000000001","label":"My Photos","pathDisplay":"/Users/alice/Photos","volumeKind":"Internal","volumeLabel":"Macintosh HD","volumeCaseSensitive":false,"status":"Active","reachable":true,"fileCount":42,"folderCount":7}"#;
+        let expected_json = r#"{"id":"root_0193498f3b4970008b8b000000000001","label":"My Photos","pathDisplay":"/Users/alice/Photos","volumeKind":"Internal","volumeLabel":"Macintosh HD","volumeCaseSensitive":false,"status":"Active","reachable":true,"fileCount":42,"folderCount":7,"lastScanAtMs":1732440000000,"lastJob":{"jobId":"job_0193498f3b4970008b8b000000000002","status":"completed","errorCode":null,"finishedAtMs":1732440005000},"activeJobId":"job_0193498f3b4970008b8b000000000003"}"#;
         assert_eq!(json, expected_json);
+
+        let summary_nulls = RootSummary {
+            id: RootId::from("root_0193498f3b4970008b8b000000000001".to_string()),
+            label: "My Photos".to_string(),
+            path_display: "/Users/alice/Photos".to_string(),
+            volume_kind: VolumeKind::Internal,
+            volume_label: None,
+            volume_case_sensitive: false,
+            status: RootStatus::Active,
+            reachable: true,
+            file_count: 42,
+            folder_count: 7,
+            last_scan_at_ms: None,
+            last_job: None,
+            active_job_id: None,
+        };
+
+        let json_nulls =
+            serde_json::to_string(&summary_nulls).expect("serialize RootSummary nulls");
+        let expected_nulls = r#"{"id":"root_0193498f3b4970008b8b000000000001","label":"My Photos","pathDisplay":"/Users/alice/Photos","volumeKind":"Internal","volumeLabel":null,"volumeCaseSensitive":false,"status":"Active","reachable":true,"fileCount":42,"folderCount":7,"lastScanAtMs":null,"lastJob":null,"activeJobId":null}"#;
+        assert_eq!(json_nulls, expected_nulls);
     }
 
     #[test]

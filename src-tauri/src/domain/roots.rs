@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
+use crate::database::LastJobSummary;
 use crate::domain::{CatalogueError, RootId, RootStatus, VolumeId, VolumeKind};
 
 /// Warning conditions returned when adding a library root (spec §5.2, §6.1, D29).
@@ -43,6 +44,9 @@ pub struct RootSummary {
     pub reachable: bool,
     pub file_count: i64,
     pub folder_count: i64,
+    pub last_scan_at_ms: Option<i64>,
+    pub last_job: Option<LastJobSummary>,
+    pub active_job_id: Option<String>,
 }
 
 /// Preview of a library root removal (spec §5.2, D29).

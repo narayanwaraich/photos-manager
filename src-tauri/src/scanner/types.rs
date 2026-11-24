@@ -20,6 +20,24 @@ impl ScanCancel {
     }
 }
 
+/// All stable warning codes emitted by the scanner (Decision k).
+pub const ALL_WARNING_CODES: &[&str] = &[
+    "path_key_collision",
+    "path_not_unicode",
+    "entry_unreadable",
+    "file_time_invalid",
+    "size_out_of_range",
+    "path_not_inside_root",
+    "path_parent_component",
+    "path_current_dir_component",
+    "path_absolute_component",
+    "path_empty_component",
+    "path_nul_byte",
+    "path_invalid_separator",
+    "path_verbatim_mismatch",
+    "path_invalid_native_length",
+];
+
 /// A bounded scan warning (Decision a, l).
 ///
 /// Holds a stable code and a root-relative display path.
@@ -82,9 +100,14 @@ impl ScanOutcome {
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
     pub batch_size: usize,
+    pub generation: Option<String>,
+    #[cfg(test)]
     pub failure_hook_after_batch: Option<usize>,
+    #[cfg(test)]
     pub failure_in_move_step: bool,
+    #[cfg(test)]
     pub failure_in_final_marking: bool,
+    #[cfg(test)]
     pub panic_in_walker_after_batch: Option<usize>,
 }
 
@@ -92,9 +115,14 @@ impl Default for ScanOptions {
     fn default() -> Self {
         Self {
             batch_size: 500,
+            generation: None,
+            #[cfg(test)]
             failure_hook_after_batch: None,
+            #[cfg(test)]
             failure_in_move_step: false,
+            #[cfg(test)]
             failure_in_final_marking: false,
+            #[cfg(test)]
             panic_in_walker_after_batch: None,
         }
     }

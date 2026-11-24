@@ -2092,3 +2092,86 @@ async fn test_cancellation_deadlock_prevention() {
     .expect("second scan should start cleanly because guard was released");
     assert!(matches!(outcome2, ScanOutcome::Completed(_)));
 }
+
+#[test]
+fn test_warning_codes_sync_with_typescript_and_scanner_sources() {
+    use crate::scanner::ALL_WARNING_CODES;
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root_dir = manifest_dir.parent().expect("workspace root");
+    let ts_path = root_dir.join("src").join("lib").join("scanText.ts");
+
+    assert!(
+        ts_path.exists(),
+        "TypeScript scanText.ts file must exist at {:?}",
+        ts_path
+    );
+
+    let ts_content = std::fs::read_to_string(&ts_path).expect("read scanText.ts");
+
+    let mut ts_keys = std::collections::HashSet::new();
+    let dict_section = ts_content
+        .split("SCAN_WARNING_MESSAGES: Record<string, string> = {")
+        .nth(1)
+        .expect("find dictionary start")
+        .split("};")
+        .next()
+        .expect("find dictionary end");
+
+    for line in dict_section.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        if let Some((key, _)) = trimmed.split_once(':') {
+            let clean_key = key.trim().trim_matches(|c| c == '\'' || c == '"');
+            if !clean_key.is_empty() {
+                ts_keys.insert(clean_key.to_string());
+            }
+        }
+    }
+
+    let rust_codes: std::collections::HashSet<&str> = ALL_WARNING_CODES.iter().copied().collect();
+    assert_eq!(
+        rust_codes.len(),
+        ALL_WARNING_CODES.len(),
+        "No duplicate codes in ALL_WARNING_CODES"
+    );
+
+    for &code in ALL_WARNING_CODES {
+        assert!(
+            ts_keys.contains(code),
+            "Warning code '{code}' in Rust ALL_WARNING_CODES is missing from TypeScript SCAN_WARNING_MESSAGES"
+        );
+    }
+    for ts_key in &ts_keys {
+        assert!(
+            rust_codes.contains(ts_key.as_str()),
+            "TypeScript warning key '{ts_key}' is missing from Rust ALL_WARNING_CODES"
+        );
+    }
+
+    let walk_src =
+        std::fs::read_to_string(manifest_dir.join("src").join("scanner").join("walk.rs"))
+            .expect("read walk.rs");
+    let mod_src = std::fs::read_to_string(manifest_dir.join("src").join("scanner").join("mod.rs"))
+        .expect("read mod.rs");
+
+    for (file_name, content) in [("walk.rs", walk_src), ("mod.rs", mod_src)] {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("code:") {
+                if let Some(first_quote) = trimmed.find('"') {
+                    if let Some(second_quote) = trimmed[first_quote + 1..].find('"') {
+                        let literal_code =
+                            &trimmed[first_quote + 1..first_quote + 1 + second_quote];
+                        assert!(
+                            rust_codes.contains(literal_code),
+                            "Literal warning code '{literal_code}' in {file_name} is missing from ALL_WARNING_CODES"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

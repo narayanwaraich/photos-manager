@@ -171,6 +171,8 @@ pub struct RootSummaryRecord {
     pub volume_case_sensitive: bool,
     pub file_count: i64,
     pub folder_count: i64,
+    pub last_scan_at_ms: Option<i64>,
+    pub last_job: Option<crate::database::jobs::LastJobSummary>,
 }
 
 /// Lists all library roots with joined volume details and counts of files and folders in a single query (D29).
@@ -178,7 +180,7 @@ pub async fn list_roots_summaries(
     conn: &mut SqliteConnection,
 ) -> Result<Vec<RootSummaryRecord>, CatalogueError> {
     let rows: Vec<SqliteRow> = sqlx::query(
-        "SELECT r.id, r.label, r.path_display, r.path_native, r.status,
+        "SELECT r.id, r.label, r.path_display, r.path_native, r.status, r.last_scan_at_ms,
                 v.kind as volume_kind, v.label as volume_label, v.case_sensitive as volume_case_sensitive,
                 COALESCE(fc.file_count, 0) as file_count,
                 COALESCE(fdc.folder_count, 0) as folder_count
@@ -198,6 +200,7 @@ pub async fn list_roots_summaries(
         let path_display: String = r.try_get("path_display")?;
         let path_native: Vec<u8> = r.try_get("path_native")?;
         let status_str: String = r.try_get("status")?;
+        let last_scan_at_ms: Option<i64> = r.try_get("last_scan_at_ms")?;
         let vol_kind_str: Option<String> = r.try_get("volume_kind")?;
         let volume_label: Option<String> = r.try_get("volume_label")?;
         let vol_cs_int: Option<i32> = r.try_get("volume_case_sensitive")?;
@@ -213,8 +216,11 @@ pub async fn list_roots_summaries(
             crate::domain::VolumeKind::Unknown
         };
 
+        let root_id = RootId::from(id_str);
+        let last_job = crate::database::jobs::get_last_job_for_root(conn, &root_id).await?;
+
         summaries.push(RootSummaryRecord {
-            id: RootId::from(id_str),
+            id: root_id,
             label,
             path_display,
             path_native,
@@ -224,6 +230,8 @@ pub async fn list_roots_summaries(
             volume_case_sensitive: vol_cs_int.unwrap_or(0) != 0,
             file_count,
             folder_count,
+            last_scan_at_ms,
+            last_job,
         });
     }
 

@@ -1,6 +1,7 @@
 pub mod assets;
 pub mod files;
 pub mod folders;
+pub mod jobs;
 pub mod models;
 pub mod roots;
 pub mod scan;
@@ -9,6 +10,7 @@ pub mod volumes;
 pub use assets::*;
 pub use files::*;
 pub use folders::*;
+pub use jobs::*;
 pub use models::*;
 pub use roots::*;
 pub use scan::*;
@@ -1479,5 +1481,102 @@ mod tests {
         .execute(&pool)
         .await
         .expect("A second root's own root-folder row must succeed");
+    }
+
+    #[tokio::test]
+    async fn test_migration_jobs_table_and_invariants() {
+        let temp_dir = tempdir().expect("tempdir");
+        let db_path = temp_dir.path().join("migration_jobs_test.db");
+
+        let pool = init_pool(&db_path).await.expect("init_pool");
+        let mut conn = pool.acquire().await.expect("acquire");
+
+        // 1. Verify migration count is 4
+        let count_row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM _sqlx_migrations WHERE success = 1;")
+                .fetch_one(&mut *conn)
+                .await
+                .expect("count migrations");
+        assert_eq!(count_row.0, 4, "4 migrations must be successfully applied");
+
+        // 2. Verify jobs table exists
+        let table_row: Option<(String,)> = sqlx::query_as(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs';",
+        )
+        .fetch_optional(&mut *conn)
+        .await
+        .expect("table query");
+        assert!(table_row.is_some(), "jobs table must exist");
+
+        // 3. Verify index on (root_id, created_at_ms) exists
+        let index_row: Option<(String,)> = sqlx::query_as(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_jobs_root_created';",
+        )
+        .fetch_optional(&mut *conn)
+        .await
+        .expect("index query");
+        assert!(
+            index_row.is_some(),
+            "idx_jobs_root_created index must exist"
+        );
+
+        // 4. Insert a library root to test foreign key and cascade
+        let root_id = RootId::from("root_job_test_01");
+        let root = RootRow {
+            id: root_id.clone(),
+            volume_id: None,
+            label: "Job Test Root".to_string(),
+            path_display: "/photos".to_string(),
+            path_native: b"/photos".to_vec(),
+            status: RootStatus::Active,
+            follow_symlinks: false,
+            include_hidden: false,
+            created_at_ms: 1000,
+            updated_at_ms: 1000,
+            last_scan_at_ms: None,
+            last_scan_generation: None,
+        };
+        insert_root(&mut conn, &root).await.expect("insert_root");
+
+        // 5. Insert a valid job row
+        let job_params = crate::database::NewJobParams {
+            id: "job_01",
+            root_id: Some(root_id.as_str()),
+            job_type: "scan",
+            status: "running",
+            priority: 50,
+            payload_json: "{}",
+            now_ms: 1000,
+        };
+        crate::database::insert_job(&mut conn, &job_params)
+            .await
+            .expect("insert valid job");
+
+        // 6. Test CHECK constraint rejects invalid status
+        let bad_status_res = sqlx::query(
+            "INSERT INTO jobs (
+               id, root_id, job_type, status, priority, payload_json,
+               progress_done, created_at_ms, updated_at_ms
+             ) VALUES ('job_bad', ?, 'scan', 'invalid_status', 50, '{}', 0, 1000, 1000);",
+        )
+        .bind(root_id.as_str())
+        .execute(&mut *conn)
+        .await;
+        assert!(
+            bad_status_res.is_err(),
+            "CHECK constraint on status must reject invalid status values"
+        );
+
+        // 7. Test ON DELETE CASCADE: deleting the library root removes its jobs
+        delete_root(&mut conn, &root_id).await.expect("delete_root");
+
+        let job_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM jobs WHERE id = 'job_01';")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("query job count");
+        assert_eq!(
+            job_count.0, 0,
+            "Deleting library root must cascade delete associated jobs"
+        );
     }
 }
