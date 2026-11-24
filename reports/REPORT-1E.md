@@ -1,20 +1,20 @@
 # REPORT-1E: Jobs and the first Scan button: a job manager, a `jobs` table, `start_scan` / `cancel_scan`, progress to the screen
 
-**Branch:** `task/1E` · **Final code commit:** `eab69f4d18a7628b9a9407fc76fda948eb838e6d` · **Report commit:** `8950fbd` · **Date:** 2026-11-24
-**CI Run ID:** `45376219399` (green on macOS arm64, Windows x64, and cargo deny)
+**Branch:** `task/1E` · **Final code commit:** `a07a4762039271b8d2f9d07fd9393372b9627995` · **Report commit:** the commit that adds this file (see git log --oneline -- reports/REPORT-1E.md) · **Date:** 2026-11-24
+**CI Run ID:** `45400085275` (green on macOS arm64, Windows x64, and cargo deny)
 **OS actually tested:**
 ```
 ProductName:		macOS
 ProductVersion:		27.2.1
 BuildVersion:		26B131
 ```
-**Windows x64 testing:** Executed on GitHub Actions Windows CI runner (`windows-latest`, run `45376219399`, job `138383105280`, elapsed 7m20s) running the complete `pnpm verify` suite, unsigned packaging, and clean-environment smoke tests.
+**Windows x64 testing:** Executed on GitHub Actions Windows CI runner (`windows-latest`, run `45400085275`, job `138466062389`, elapsed 6m55s) running the complete `pnpm verify` suite, unsigned packaging, and clean-environment smoke tests.
 
 ## 1. Summary
 
 This task implements the first job execution infrastructure in Photos Manager: a typed `JobManager` in Rust, database migration 4 (`jobs` table with cascade and indexing), asynchronous scan command wrappers (`start_scan`, `cancel_scan`), real-time progress streaming via Tauri `Channel` with dual-rate throttling (at most 4 UI events/sec, at most 1 DB write/sec), startup reconciliation marking interrupted jobs `failed/interrupted`, guard-based mutual exclusion between root removal and scanning (`root_busy`), and the Library Folders card UI scan controls and status summaries (spec §5.2, §6.2, §11, §12.1, §12.3, D28, D29, D30).
 
-All acceptance criteria are fully met. The test suite expanded from 145 tests (1D baseline) to 160 tests (160 passed, 0 failed, 2 ignored on macOS; 156 passed, 0 failed, 2 ignored on Windows x64 in CI). Verification via `pnpm verify` passes locally on macOS and remotely on Windows x64 and macOS arm64 in GitHub Actions CI.
+All acceptance criteria are fully met. The test suite expanded from 145 tests (1D baseline) to 162 tests (162 passed, 0 failed, 2 ignored on macOS; 158 passed, 0 failed, 2 ignored on Windows x64 in CI). Verification via `pnpm verify` passes locally on macOS and remotely on Windows x64 and macOS arm64 in GitHub Actions CI.
 
 ---
 
@@ -113,11 +113,11 @@ All acceptance criteria are fully met. The test suite expanded from 145 tests (1
 |---|---|---|
 | Report section 1 written first, with the lifecycle table. | met | `reports/REPORT-1E.md` Section 1 created prior to implementation code. |
 | `git diff --stat main..HEAD` shows only allowed paths; exactly one new migration; no change to `capabilities/`, `tauri.conf.json`, `deny.toml`, `ci.yml`, `Cargo.toml`, `package.json`, `pnpm-lock.yaml`. | met | Verbatim `git diff --stat` output in Section 3; exactly 1 migration file `20261124000000_create_jobs.sql`. |
-| Every test of Part C exists and passes on both OSes in CI; the three mutation demonstrations are pasted with failing output and the revert. | met | 13 jobs tests in `src-tauri/src/jobs/tests.rs`; 160 passed on macOS, 156 passed on Windows in CI run `45376219399`; mutation runs pasted in Section 5. |
+| Every test of Part C exists and passes on both OSes in CI; the three mutation demonstrations are pasted with failing output and the revert. | met | 15 jobs tests in `src-tauri/src/jobs/tests.rs`; 162 passed on macOS, 158 passed on Windows in CI run `45400085275`; mutation runs pasted in Section 5 and Round 2. |
 | No `unwrap`/`expect` in production code of the new files; `rg -n "panic!" ...` shows no production hit; no `unsafe` added. | met | Verbatim greps in Section 5; zero production hits; zero new unsafe. |
 | `ScanOptions` in production has no test hook (paste `rg -n "failure_hook|failure_in|panic_in|panic_after" src-tauri/src` with every hit inside `#[cfg(test)]`). | met | Verbatim grep in Section 5 confirms all hits inside `#[cfg(test)]`. |
-| `pnpm verify` green locally; `git status --short` empty afterwards; `gh run list --branch task/1E --limit 3` pasted, both OSes and cargo deny green. | met | `pnpm verify` passed with 0 errors; CI run `45376219399` all green on Windows, macOS arm64, and cargo deny. |
-| Section 7 (deviations) lists anything done differently and every extra file touched. | met | Documented in Section 7 (`src-tauri/src/domain/roots.rs`, `src-tauri/src/library/roots.rs`, and type alias). |
+| `pnpm verify` green locally; `git status --short` empty afterwards; `gh run list --branch task/1E --limit 3` pasted, both OSes and cargo deny green. | met | `pnpm verify` passed with 0 errors; CI run `45400085275` all green on Windows, macOS arm64, and cargo deny. |
+| Section 7 (deviations) lists anything done differently and every extra file touched. | met | Documented in Section 7 (`domain/roots.rs`, `library/roots.rs`, `scanner/tests.rs`, `commands/app_info.rs`, round 2 files, real-time throttle test rationale). |
 
 ---
 
@@ -713,7 +713,16 @@ src/lib/tauri/index.ts:1:import { Channel, invoke } from "@tauri-apps/api/core";
 ## 7. Deviations from the task, spec or amendments
 
 - **`src-tauri/src/domain/roots.rs` and `src-tauri/src/library/roots.rs` modified:** Although `domain/` and `library/` were not initially listed in the task's allowed paths, modifying them was required because `RootSummary` lives in `domain/roots.rs` and `list_roots_with_checker_and_timeout` lives in `library/roots.rs`. Adding `last_scan_at_ms`, `last_job`, and `active_job_id` was necessary to fulfill spec §12.1 and decision (j).
+- **`src-tauri/src/scanner/tests.rs` and `src-tauri/src/commands/app_info.rs` touched in round 1:** Added warning translation drift test in `scanner/tests.rs` and updated version checks in `commands/app_info.rs`.
+- **Files touched in Round 2:**
+  - `src-tauri/src/database/jobs.rs`: Replaced `update_job_status` with `mark_job_cancelling` (conditional update `WHERE id = ? AND status = 'running'` returning rows updated).
+  - `src-tauri/src/jobs/mod.rs`: Called `mark_job_cancelling` in `cancel_scan_impl`, factored out `start_scan_with_options` taking explicit `ScanOptions`.
+  - `src-tauri/src/jobs/tests.rs`: Implemented R1 throttle test with JoinHandle await and SQLite row-update trigger count assertions; R2 cancel race test; R4 persistence Test A and Test B.
+  - `src/lib/tauri/index.ts`: Updated `startScan` to take `onInvalidEvent`, dropping invalid payloads without synthesizing a terminal failed event.
+  - `src/components/LibraryFolders.tsx`: Removed redundant Zod parse; set `parseError` once from `onInvalidEvent`; added `quiet` option to `fetchRoots` to eliminate UI button and card flickering.
+  - `reports/REPORT-1E.md`: Updated report with Round 2 documentation, raw command outputs, and corrected commit and run headers.
 - **`JobDetailsTuple` type alias in `database/jobs.rs`:** Added a type alias for the 6-tuple return type of `get_job_by_id` to satisfy Clippy's `type_complexity` lint.
+- **Real-time throttle test:** The throttle test (`test_throttle_rate_limits_progress_and_job_updates`) uses real time (`std::time::Instant` and `Duration`) because `tokio::time::pause` requires tokio's `test-util` feature, which would require modifying `Cargo.toml`, a change strictly forbidden by the task instructions. Real-time rate limits and event bounds are verified deterministically over 30 consecutive runs.
 
 ---
 
@@ -733,6 +742,279 @@ None.
 ## 10. Proposed next task
 
 Not proposed per task rules ("Do not propose the next task; do not start 1F").
+
+---
+
+## Round 2
+
+### Summary of Round 2 Actions (Items R1 to R6)
+
+1. **R2 (Cancel race fix):**
+   - In `src-tauri/src/database/jobs.rs`, replaced `update_job_status` with `mark_job_cancelling(conn, job_id, updated_at_ms) -> Result<u64, CatalogueError>`.
+   - Constrained update with `WHERE id = ? AND status = 'running'`.
+   - In `cancel_scan_impl` (`src-tauri/src/jobs/mod.rs`), calls `mark_job_cancelling` and ignores returned row count (0 rows indicates job ended before cancel).
+   - Added unit test `test_mark_job_cancelling_only_affects_running_jobs` in `src-tauri/src/jobs/tests.rs` asserting completed rows stay completed (0 rows changed) and running rows become cancelling (1 row changed).
+
+2. **R1 (Throttle test determinism & row write verification):**
+   - Retained the `JoinHandle` returned by `run_tracked_job` in `test_throttle_rate_limits_progress_and_job_updates` and awaited it after sending the stop signal (`supervisor_handle.await`), eliminating the fixed 50 ms sleep race.
+   - Measured real elapsed time using `std::time::Instant` from first pumped progress update to stop signal.
+   - Asserted `progress_events.len() as u64 <= elapsed_ms / 250 + 2` and `>= 1`.
+   - Created temporary table `job_update_log` and SQLite trigger `AFTER UPDATE ON jobs FOR EACH ROW` inside the test database to record every row update.
+   - Asserted row updates before the final update satisfy `writes_before_final <= elapsed_ms / 1000 + 1`.
+   - Asserted final row status is `completed` with `progress_done = 1000`.
+   - Asserted final event is `ScanEvent::Finished` with 1000 files seen.
+   - Audited all `sleep` calls in `src-tauri/src/jobs/tests.rs`: all other sleeps reside inside poll loops bounded by a 5-second deadline.
+
+3. **R4 (Persistence before touching disk):**
+   - Added private `start_scan_with_options(root_id, options, sink)` in `JobManager` holding the core scanning initialization.
+   - `start_scan_impl` generates UUID v7 `scan_generation` and delegates to `start_scan_with_options` with `ScanOptions { generation: Some(scan_generation), ..Default::default() }`.
+   - Replaced `test_persistence_before_touching_disk` with:
+     - `test_persistence_before_touching_disk_failure_leaves_null_generation` (Test A): runs with `failure_hook_after_batch: Some(0)`, asserts job row has `payload_json.generation`, job ends `failed`, and `library_roots.last_scan_generation` is NULL.
+     - `test_persistence_completed_scan_matches_root_last_scan_generation` (Test B): runs completed scan, asserts root's `last_scan_generation` equals `payload_json.generation`.
+
+4. **R3 (UI malformed event handling without synthetic failure):**
+   - Updated `startScan` in `src/lib/tauri/index.ts` to `startScan(rootId, onEvent, onInvalidEvent)`.
+   - Parses incoming channel payloads once with `ScanEventSchema.safeParse`. If parsing succeeds, forwards to `onEvent`; if parsing fails, invokes `onInvalidEvent()` and drops the payload without fabricating a synthetic `failed` event.
+   - In `src/components/LibraryFolders.tsx`, removed redundant second Zod parse; set `parseError: true` once per scan via `onInvalidEvent`.
+   - Pure UI parsing logic was tested manually; no new test file was created because the task allowed files constraint forbids adding new files.
+
+5. **R6 (Quiet polling option to prevent UI button and card flickering):**
+   - Updated `fetchRoots` in `src/components/LibraryFolders.tsx` with optional `{ quiet?: boolean }`. When `quiet` is true, does not set `loading = true`.
+   - Window reload 2-second polling effect and terminal `finished` / `failed` handlers call `fetchRoots({ quiet: true })`.
+   - Initial load and explicit user Refresh button click retain `loading = true`, preventing "Refresh" and "Add folder…" from flickering or momentarily disabling during background scans.
+
+6. **R5 (Report corrections):**
+   - Corrected final code commit id (`a07a4762039271b8d2f9d07fd9393372b9627995`), report commit pointer (`the commit that adds this file (see git log --oneline -- reports/REPORT-1E.md)`), and green CI run ID (`45400085275`).
+   - Updated Section 2 criteria table and Section 7 deviations.
+   - Documented the three mutation demonstrations and 30-run throttle test loop.
+
+---
+
+### Three Mutation Demonstrations (Round 2)
+
+#### Mutation (a): Cancel Status Condition Mutation
+- **Mutated:** In `src-tauri/src/database/jobs.rs`, removed `AND status = 'running'` from `mark_job_cancelling`.
+```diff
+--- a/src-tauri/src/database/jobs.rs
++++ b/src-tauri/src/database/jobs.rs
+@@ -95,3 +95,3 @@ pub async fn mark_job_cancelling(
+     let result = sqlx::query(
+-        "UPDATE jobs SET status = 'cancelling', updated_at_ms = ? WHERE id = ? AND status = 'running';",
++        "UPDATE jobs SET status = 'cancelling', updated_at_ms = ? WHERE id = ?;",
+     )
+```
+- **Failing Output:**
+```
+$ cargo test --manifest-path src-tauri/Cargo.toml test_mark_job_cancelling_only_affects_running_jobs
+   Compiling photos-manager v0.1.0 (/Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.33s
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/photos_manager_lib-ad282ae838a45b1d)
+
+running 1 test
+test jobs::tests::test_mark_job_cancelling_only_affects_running_jobs ... FAILED
+
+failures:
+
+---- jobs::tests::test_mark_job_cancelling_only_affects_running_jobs stdout ----
+
+thread 'jobs::tests::test_mark_job_cancelling_only_affects_running_jobs' (821846) panicked at src/jobs/tests.rs:1091:5:
+assertion `left == right` failed: Completed job row must not be changed
+  left: 1
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+failures:
+    jobs::tests::test_mark_job_cancelling_only_affects_running_jobs
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 163 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`
+```
+- **Revert:** Restored `AND status = 'running'`.
+- **Passing Output:**
+```
+$ cargo test --manifest-path src-tauri/Cargo.toml test_mark_job_cancelling_only_affects_running_jobs
+   Compiling photos-manager v0.1.0 (/Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.17s
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/photos_manager_lib-ad282ae838a45b1d)
+
+running 1 test
+test jobs::tests::test_mark_job_cancelling_only_affects_running_jobs ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 163 filtered out; finished in 0.01s
+```
+
+---
+
+#### Mutation (b): Throttle Row-Write Condition Mutation
+- **Mutated:** In `src-tauri/src/jobs/mod.rs`, removed `if tick_count.is_multiple_of(4)` in `run_tracked_job` so that the supervisor updates the database on every 250 ms tick instead of once per second.
+```diff
+--- a/src-tauri/src/jobs/mod.rs
++++ b/src-tauri/src/jobs/mod.rs
+@@ -434,6 +434,4 @@ pub fn run_tracked_job<F, S>(
+-                    // Once per second (every 4 ticks): write progress to jobs table (Decision e)
+-                    if tick_count.is_multiple_of(4) {
+-                        if let Ok(now_ms) = database::now_ms() {
+-                            if let Ok(mut conn) = pool.acquire().await {
+-                                let _ = database::update_job_progress(&mut conn, &job_id, last_progress_done, now_ms).await;
+-                            }
+-                        }
+-                    }
++                    if let Ok(now_ms) = database::now_ms() {
++                        if let Ok(mut conn) = pool.acquire().await {
++                            let _ = database::update_job_progress(&mut conn, &job_id, last_progress_done, now_ms).await;
++                        }
++                    }
+```
+- **Failing Output:**
+```
+$ cargo test --manifest-path src-tauri/Cargo.toml test_throttle_rate_limits_progress_and_job_updates
+   Compiling photos-manager v0.1.0 (/Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.64s
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/photos_manager_lib-ad282ae838a45b1d)
+
+running 1 test
+test jobs::tests::test_throttle_rate_limits_progress_and_job_updates ... FAILED
+
+failures:
+
+---- jobs::tests::test_throttle_rate_limits_progress_and_job_updates stdout ----
+
+thread 'jobs::tests::test_throttle_rate_limits_progress_and_job_updates' (823726) panicked at src/jobs/tests.rs:614:5:
+Job row writes before final update must be <= elapsed_ms / 1000 + 1, got 3 writes in 615 ms
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+failures:
+    jobs::tests::test_throttle_rate_limits_progress_and_job_updates
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 163 filtered out; finished in 0.63s
+
+error: test failed, to rerun pass `--lib`
+```
+- **Revert:** Restored `if tick_count.is_multiple_of(4)`.
+- **Passing Output:**
+```
+$ cargo test --manifest-path src-tauri/Cargo.toml test_throttle_rate_limits_progress_and_job_updates
+   Compiling photos-manager v0.1.0 (/Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.01s
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/photos_manager_lib-ad282ae838a45b1d)
+
+running 1 test
+test jobs::tests::test_throttle_rate_limits_progress_and_job_updates ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 163 filtered out; finished in 0.63s
+```
+
+---
+
+#### Mutation (c): Generation Passing Mutation
+- **Mutated:** In `src-tauri/src/jobs/mod.rs`, passed `generation: None` instead of `Some(scan_generation)` in `start_scan_impl`.
+```diff
+--- a/src-tauri/src/jobs/mod.rs
++++ b/src-tauri/src/jobs/mod.rs
+@@ -255,4 +255,4 @@ impl JobManager {
+-        let scan_generation = uuid::Uuid::now_v7().to_string();
+         let options = ScanOptions {
+-            generation: Some(scan_generation),
++            generation: None,
+             ..Default::default()
+         };
+```
+- **Failing Output:**
+```
+$ cargo test --manifest-path src-tauri/Cargo.toml test_persistence_completed_scan_matches_root_last_scan_generation
+   Compiling photos-manager v0.1.0 (/Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.13s
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/photos_manager_lib-ad282ae838a45b1d)
+
+running 1 test
+test jobs::tests::test_persistence_completed_scan_matches_root_last_scan_generation ... FAILED
+
+failures:
+
+---- jobs::tests::test_persistence_completed_scan_matches_root_last_scan_generation stdout ----
+
+thread 'jobs::tests::test_persistence_completed_scan_matches_root_last_scan_generation' (825637) panicked at src/jobs/tests.rs:465:10:
+payload must contain generation string
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+failures:
+    jobs::tests::test_persistence_completed_scan_matches_root_last_scan_generation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 163 filtered out; finished in 0.06s
+
+error: test failed, to rerun pass `--lib`
+```
+- **Revert:** Restored `generation: Some(scan_generation)`.
+- **Passing Output:**
+```
+$ cargo test --manifest-path src-tauri/Cargo.toml test_persistence_completed_scan_matches_root_last_scan_generation
+   Compiling photos-manager v0.1.0 (/Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.07s
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/photos_manager_lib-ad282ae838a45b1d)
+
+running 1 test
+test jobs::tests::test_persistence_completed_scan_matches_root_last_scan_generation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 163 filtered out; finished in 0.06s
+```
+
+---
+
+### 30 Consecutive Throttle Test Runs
+
+```
+$ for i in $(seq 1 30); do cargo test --manifest-path src-tauri/Cargo.toml test_throttle > /dev/null 2>&1 || { echo "FAILED on run $i"; break; }; done; echo "loop finished"
+loop finished
+```
+
+---
+
+### Audit of Sleep Calls in `src-tauri/src/jobs/tests.rs`
+
+1. `test_job_lifecycle_completed_scan` (line 115): `tokio::time::sleep(Duration::from_millis(50)).await;` inside a poll loop with a 5-second deadline checking atomic `done_flag`. Acceptable.
+2. `test_job_lifecycle_cancelled_scan_leaves_zero_missing` (line 187, line 220): `tokio::time::sleep(Duration::from_millis(50)).await;` inside poll loops with 5-second deadlines checking atomic `done_first` and `done_second`. Acceptable.
+3. `test_job_lifecycle_unreachable_root_fails` (line 288): `tokio::time::sleep(Duration::from_millis(50)).await;` inside a poll loop with a 5-second deadline checking atomic `done_flag`. Acceptable.
+4. `test_persistence_before_touching_disk_failure_leaves_null_generation` (line 383): `tokio::time::sleep(Duration::from_millis(50)).await;` inside a poll loop with a 5-second deadline checking atomic `done_flag`. Acceptable.
+5. `test_persistence_completed_scan_matches_root_last_scan_generation` (line 450): `tokio::time::sleep(Duration::from_millis(50)).await;` inside a poll loop with a 5-second deadline checking atomic `done_flag`. Acceptable.
+6. `test_dead_channel_does_not_stop_job` (line 741): `tokio::time::sleep(Duration::from_millis(50)).await;` inside a database poll loop with a 5-second deadline checking `row.0 == "completed"`. Acceptable.
+7. Fixed sleep in `test_throttle_rate_limits_progress_and_job_updates`: previous fixed `sleep(Duration::from_millis(50))` after stop signal was eliminated and replaced with `supervisor_handle.await`, ensuring the supervisor task, database commit, and terminal event emission are fully joined before reading results.
+
+---
+
+### CI Execution Matrix (Run 45400085275)
+
+```
+$ gh run list --branch task/1E --limit 3
+STATUS  TITLE        WORKFLOW    BRANCH   EVENT  ID          ELAPSED  AGE
+✓       fix(1E):...  CI & Pa...  task/1E  push   45400085275 7m10s    about 8m ago
+✓       feat(1E)...  CI & Pa...  task/1E  push   45376219399 7m24s    about 2h ago
+```
+
+```
+$ gh run view 45400085275
+✓ task/1E CI & Packaging Matrix · 45400085275
+Triggered via push about 7 minutes ago
+
+JOBS
+✓ windows-x64 in 6m55s (ID 138466062389)
+✓ Security & License check (cargo deny) in 44s (ID 138466062461)
+✓ macos-arm64 in 7m6s (ID 138466063098)
+```
+
+CI test counts extracted from raw job logs:
+- **Windows x64** (`gh run view --job 138466062389 --log | grep -E "test result:.*passed"`):
+```
+windows-x64	Run verification suite (pnpm verify)	2026-11-24T13:10:07.6745874Z test result: ok. 158 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 22.41s
+windows-x64	Run verification suite (pnpm verify)	2026-11-24T13:10:07.6746974Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+windows-x64	Run verification suite (pnpm verify)	2026-11-24T13:10:07.6748066Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+- **macOS arm64** (`gh run view --job 138466063098 --log | grep -E "test result:.*passed"`):
+```
+macos-arm64	Run verification suite (pnpm verify)	2026-11-24T13:10:14.0666770Z test result: ok. 162 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 5.28s
+macos-arm64	Run verification suite (pnpm verify)	2026-11-24T13:10:14.0670420Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+macos-arm64	Run verification suite (pnpm verify)	2026-11-24T13:10:14.0671450Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
 
 ---
 
