@@ -76,6 +76,7 @@ pub struct WalkParams {
     pub include_hidden: bool,
     pub batch_size: usize,
     pub cancel: ScanCancel,
+    #[cfg(test)]
     pub panic_after_batch: Option<usize>,
 }
 
@@ -90,6 +91,7 @@ pub fn run_walk(params: WalkParams, tx: tokio::sync::mpsc::Sender<Vec<WalkItem>>
         .into_iter();
 
     let mut current_batch = Vec::with_capacity(params.batch_size);
+    #[cfg(test)]
     let mut batches_sent: usize = 0;
 
     while let Some(entry_res) = it.next() {
@@ -318,10 +320,13 @@ pub fn run_walk(params: WalkParams, tx: tokio::sync::mpsc::Sender<Vec<WalkItem>>
             {
                 return;
             }
-            batches_sent += 1;
-            if let Some(panic_after) = params.panic_after_batch {
-                if batches_sent >= panic_after {
-                    panic!("test failure hook: walker thread panicked after batch");
+            #[cfg(test)]
+            {
+                batches_sent += 1;
+                if let Some(panic_after) = params.panic_after_batch {
+                    if batches_sent >= panic_after {
+                        panic!("test failure hook: walker thread panicked after batch");
+                    }
                 }
             }
             current_batch = Vec::with_capacity(params.batch_size);
@@ -331,10 +336,13 @@ pub fn run_walk(params: WalkParams, tx: tokio::sync::mpsc::Sender<Vec<WalkItem>>
     if !current_batch.is_empty() {
         let send_res = tx.blocking_send(current_batch);
         if send_res.is_ok() {
-            batches_sent += 1;
-            if let Some(panic_after) = params.panic_after_batch {
-                if batches_sent >= panic_after {
-                    panic!("test failure hook: walker thread panicked after batch");
+            #[cfg(test)]
+            {
+                batches_sent += 1;
+                if let Some(panic_after) = params.panic_after_batch {
+                    if batches_sent >= panic_after {
+                        panic!("test failure hook: walker thread panicked after batch");
+                    }
                 }
             }
         }

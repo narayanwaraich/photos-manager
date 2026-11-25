@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import {
   AppInfoSchema,
@@ -11,6 +11,10 @@ import {
   type AddRootResult,
   RemoveRootPreviewSchema,
   type RemoveRootPreview,
+  StartScanResultSchema,
+  type StartScanResult,
+  ScanEventSchema,
+  type ScanEvent,
 } from "./schemas";
 
 export * from "./errorCodes";
@@ -91,4 +95,33 @@ export async function removeRoot(
   expectedFiles: number,
 ): Promise<CommandResult<null>> {
   return invokeCommand("remove_root", { rootId, expectedFiles }, z.null());
+}
+
+/**
+ * Starts an asynchronous scan of the given library root, streaming progress events via a Tauri Channel.
+ * Validates each event against ScanEventSchema. If parsing fails, invokes onInvalidEvent (if provided)
+ * and drops the event without fabricating a failed terminal event (Decision g, R3).
+ */
+export async function startScan(
+  rootId: string,
+  onEvent: (event: ScanEvent) => void,
+  onInvalidEvent?: () => void,
+): Promise<CommandResult<StartScanResult>> {
+  const channel = new Channel<unknown>();
+  channel.onmessage = (message: unknown) => {
+    const parsed = ScanEventSchema.safeParse(message);
+    if (parsed.success) {
+      onEvent(parsed.data);
+    } else {
+      onInvalidEvent?.();
+    }
+  };
+  return invokeCommand("start_scan", { rootId, onEvent: channel }, StartScanResultSchema);
+}
+
+/**
+ * Cancels a running scan job by its job ID.
+ */
+export async function cancelScan(jobId: string): Promise<CommandResult<null>> {
+  return invokeCommand("cancel_scan", { jobId }, z.null());
 }

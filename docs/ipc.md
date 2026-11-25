@@ -22,3 +22,34 @@ As specified by D4, the project adopted the robust fallback:
 4. **Register in Tauri handler:** Add your command to `tauri::generate_handler![...]` in `src-tauri/src/lib.rs`.
 5. **Define Zod schemas:** In `src/lib/tauri/schemas.ts`, create the Zod schema (matching camelCase names) and export the inferred TypeScript type (`z.infer<typeof ...>`).
 6. **Wrap in frontend client:** In `src/lib/tauri/index.ts`, export a typed helper that invokes the command and parses the output via `YourSchema.safeParse()`.
+
+---
+
+## 3. Asynchronous Job Streaming via Tauri Channel (`start_scan`, `cancel_scan`)
+
+Long-running operations (such as filesystem scanning) return immediately across the IPC boundary with a job identifier, streaming continuous progress updates back to the UI through a Tauri `Channel` (spec §11, §12.1, TASK-1E decision g).
+
+### Commands & Signatures
+
+1. **`start_scan(rootId: string, onEvent: Channel<ScanEvent>) -> Result<StartScanResult, IpcError>`**
+   - Returns `{ jobId: string }` immediately once the `jobs` row is persisted.
+   - Streams `ScanEvent` items to `onEvent`.
+2. **`cancel_scan(jobId: string) -> Result<(), IpcError>`**
+   - Signals cancellation to the running scan and transitions the job row to `cancelling`.
+   - Returns `job_not_found` if the job is not running or unknown.
+
+### Event Shape (`ScanEvent`)
+
+Tagged discriminated union on the `kind` field:
+- `started`: `{ kind: "started", jobId: string, rootId: string }`
+- `progress`: `{ kind: "progress", jobId: string, foldersSeen: number, filesSeen: number, batches: number }`
+- `finished`: `{ kind: "finished", jobId: string, outcome: "completed" | "cancelled", counts: ScanCounts, warningCount: number, warnings: ScanWarning[], elapsedMs: number }`
+- `failed`: `{ kind: "failed", jobId: string, code: string }`
+
+### Decision (g) Stream Invariants
+1. **Ordering:** `started` is always delivered first.
+2. **Exclusivity:** Exactly one of `finished` or `failed` is delivered last, and no event follows it.
+3. **Throttling:** `progress` events are throttled to at most four updates per second (250 ms ticker over a `watch` channel, latest value wins).
+4. **Database persistence:** Job progress is persisted to SQLite at most once per second.
+5. **Decoupled survival:** Failed delivery over the channel (e.g., WebView window reloaded or closed) is ignored and never aborts or halts the background scanning job.
+6. **Bounded warnings:** `warnings` in `finished` contains at most the first 100 root-relative warnings (`{ code, relPath }`), never absolute paths.

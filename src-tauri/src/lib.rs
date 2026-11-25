@@ -3,6 +3,7 @@ pub mod database;
 pub mod domain;
 pub mod filesystem;
 pub mod image_pipeline;
+pub mod jobs;
 pub mod library;
 pub mod metadata;
 pub mod platform;
@@ -120,6 +121,8 @@ pub fn run() {
             commands::add_root,
             commands::preview_remove_root,
             commands::remove_root,
+            commands::start_scan,
+            commands::cancel_scan,
         ])
         // Register custom URI scheme protocol for thumbnail serving (spec §7.2)
         // macOS: asset-thumb://localhost/<id>
@@ -185,11 +188,24 @@ pub fn run() {
 
             match startup_res {
                 Ok(pool) => {
+                    // Startup reconciliation: transition running, cancelling, queued jobs to failed/interrupted (Decision f)
+                    tauri::async_runtime::block_on(async {
+                        let error_msg = commands::fixed_message_for_code("interrupted");
+                        let now_ms = database::now_ms().unwrap_or(0);
+                        if let Ok(mut conn) = pool.acquire().await {
+                            let _ =
+                                database::reconcile_interrupted_jobs(&mut conn, error_msg, now_ms)
+                                    .await;
+                        }
+                    });
+
+                    let job_manager = std::sync::Arc::new(jobs::JobManager::new(pool.clone()));
                     let protected_ctx = library::ProtectedContext::from_environment(&app_data_dir);
                     app.manage(protected_ctx);
                     app.manage(pool);
                     app.manage(commands::ActiveReachableChecks::default());
                     app.manage(commands::DialogGuard::default());
+                    app.manage(job_manager);
                     Ok(())
                 }
                 Err(startup_err) => {

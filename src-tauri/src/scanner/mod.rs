@@ -12,6 +12,7 @@ pub use error::ScanError;
 pub use guard::ScanGuard;
 pub use types::{
     ScanCancel, ScanCounts, ScanOptions, ScanOutcome, ScanProgress, ScanReport, ScanWarning,
+    ALL_WARNING_CODES,
 };
 pub use walk::{system_time_to_unix_ms, WalkItem, WalkParams};
 
@@ -268,9 +269,26 @@ pub(crate) async fn apply_batch(
     Ok(())
 }
 
-/// Core scanner entry point: walks a library root, records folders, files and assets,
-/// tracks generations, detects moves, and declares missing items only on full completion (spec §6.2).
+/// Core scanner entry point: acquires the scan guard and runs the guarded scan (spec §6.2).
 pub async fn scan_root<P>(
+    pool: &SqlitePool,
+    root_id: &RootId,
+    options: ScanOptions,
+    cancel: ScanCancel,
+    progress: P,
+) -> Result<ScanOutcome, ScanError>
+where
+    P: FnMut(ScanProgress) + Send,
+{
+    // Ensure only one scan runs per root at a time (Decision j)
+    let guard = ScanGuard::acquire(root_id)?;
+    scan_root_guarded(guard, pool, root_id, options, cancel, progress).await
+}
+
+/// Core guarded scanner: walks a library root with an already acquired guard, records folders,
+/// files and assets, tracks generations, detects moves, and declares missing items only on full completion (spec §6.2, Decision d).
+pub async fn scan_root_guarded<P>(
+    _guard: ScanGuard,
     pool: &SqlitePool,
     root_id: &RootId,
     options: ScanOptions,
@@ -280,9 +298,6 @@ pub async fn scan_root<P>(
 where
     P: FnMut(ScanProgress) + Send,
 {
-    // Ensure only one scan runs per root at a time (Decision j)
-    let _guard = ScanGuard::acquire(root_id)?;
-
     let mut conn = pool.acquire().await?;
 
     // Fetch root row from catalogue (never trust path strings from callers)
@@ -320,7 +335,10 @@ where
     };
     let key_policy = PathKeyPolicy { case_sensitive };
 
-    let scan_generation = uuid::Uuid::now_v7().to_string();
+    let scan_generation = options
+        .generation
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
     let scan_start_time = Instant::now();
     let scan_start_ms = system_time_to_unix_ms(SystemTime::now()).unwrap_or_default();
 
@@ -350,6 +368,7 @@ where
                 include_hidden,
                 batch_size,
                 cancel: walk_cancel,
+                #[cfg(test)]
                 panic_after_batch: options.panic_in_walker_after_batch,
             },
             tx,
@@ -360,6 +379,7 @@ where
 
     // Async writer loop applying batches in dedicated write transactions
     while let Some(batch) = rx.recv().await {
+        #[cfg(test)]
         if let Some(fail_after) = options.failure_hook_after_batch {
             if batches_committed >= fail_after as u64 {
                 return Err(CatalogueError::Database(sqlx::Error::PoolClosed).into());
@@ -417,6 +437,7 @@ where
         }));
     }
 
+    #[cfg(test)]
     if options.failure_in_move_step {
         return Err(CatalogueError::Database(sqlx::Error::PoolClosed).into());
     }
@@ -437,6 +458,7 @@ where
     counts.moved = moved_count;
     counts.new = counts.new.saturating_sub(moved_count);
 
+    #[cfg(test)]
     if options.failure_in_final_marking {
         return Err(CatalogueError::Database(sqlx::Error::PoolClosed).into());
     }
