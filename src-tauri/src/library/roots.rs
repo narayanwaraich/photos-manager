@@ -115,9 +115,35 @@ where
 
     let now_ms = database::now_ms()?;
 
-    // 6. Find or insert volume record
+    // 6. Find or insert volume record (decisions g, h, D29e)
     let volume_id = if let Some(ref uuid) = vol_info.fs_uuid {
-        if let Some(existing_vol) = database::volumes::find_volume_by_uuid(&mut tx, uuid).await? {
+        let candidates = database::volumes::find_volumes_by_identity(&mut tx, uuid).await?;
+        let matched_vol = if crate::platform::is_serial_identity(uuid) {
+            candidates.into_iter().find(|v| {
+                v.fs_uuid
+                    .as_deref()
+                    .is_some_and(|s| crate::platform::same_volume_identity(s, uuid))
+                    && v.fs_type == vol_info.fs_type
+                    && v.label == vol_info.label
+            })
+        } else {
+            candidates.into_iter().next()
+        };
+
+        if let Some(existing_vol) = matched_vol {
+            // Decision g: refresh case sensitivity when probe is definite; refuse if volume already has files
+            if probe != CaseProbe::Unknown && case_sensitive != existing_vol.case_sensitive {
+                if database::volumes::volume_has_files(&mut tx, &existing_vol.id).await? {
+                    return Err(RootError::VolumeCaseChanged);
+                }
+                database::volumes::update_volume_case_sensitive(
+                    &mut tx,
+                    &existing_vol.id,
+                    case_sensitive,
+                )
+                .await?;
+            }
+
             database::volumes::update_volume_label_and_seen(
                 &mut tx,
                 &existing_vol.id,
@@ -202,28 +228,21 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Default timeout for live reachable status checks (Decision d: 2 seconds).
-pub const DEFAULT_REACHABLE_TIMEOUT: Duration = Duration::from_secs(2);
+use crate::library::availability::{
+    check_root_availability, AvailabilityOutcome, DEFAULT_REACHABLE_TIMEOUT,
+};
 
-/// RAII guard that removes a `RootId` from the active in-flight set when the blocking
-/// inspection thread exits (or panics).
-struct InFlightCheckGuard {
-    set: Arc<Mutex<HashSet<RootId>>>,
-    id: RootId,
-}
-
-impl Drop for InFlightCheckGuard {
-    fn drop(&mut self) {
-        if let Ok(mut set) = self.set.lock() {
-            set.remove(&self.id);
-        }
-    }
+/// Read-only listing result pairing a `RootSummary` with the three-valued live availability outcome.
+pub struct RootAvailabilityItem {
+    pub summary: RootSummary,
+    pub availability: AvailabilityOutcome,
 }
 
 /// Lists all registered library roots with volume summaries, live reachable status, and counts (D29).
 ///
 /// Bounded by construction (user library folders); not paginated (spec §12.1).
 /// Uses a process-wide default in-flight tracker and the 2-second timeout.
+/// Stays read-only (never changes stored `status`).
 pub async fn list_roots(pool: &SqlitePool) -> Result<Vec<RootSummary>, RootError> {
     static DEFAULT_IN_FLIGHT: std::sync::OnceLock<Arc<Mutex<HashSet<RootId>>>> =
         std::sync::OnceLock::new();
@@ -240,7 +259,7 @@ pub async fn list_roots_with_in_flight(
         .await
 }
 
-/// Fully parameterized version of `list_roots` allowing custom in-flight set, timeout,
+/// Fully parameterized read-only version of `list_roots` allowing custom in-flight set, timeout,
 /// and checker function for unit tests and failure injection (Decision d).
 pub async fn list_roots_with_checker_and_timeout<F>(
     pool: &SqlitePool,
@@ -251,80 +270,287 @@ pub async fn list_roots_with_checker_and_timeout<F>(
 where
     F: Fn(&Path) -> bool + Send + Sync + Clone + 'static,
 {
+    let items =
+        list_roots_with_availability_deps(pool, in_flight, timeout, check_fn, describe_volume)
+            .await?;
+    Ok(items.into_iter().map(|item| item.summary).collect())
+}
+
+/// Read-only root listing that returns both each `RootSummary` and its three-valued
+/// `AvailabilityOutcome` so the command layer can apply definite transitions (TASK-1F decision d).
+pub async fn list_roots_with_availability(
+    pool: &SqlitePool,
+    in_flight: &Arc<Mutex<HashSet<RootId>>>,
+) -> Result<Vec<RootAvailabilityItem>, RootError> {
+    list_roots_with_availability_deps(
+        pool,
+        in_flight,
+        DEFAULT_REACHABLE_TIMEOUT,
+        |p| p.is_dir(),
+        describe_volume,
+    )
+    .await
+}
+
+/// Parameterized read-only root listing with injectable `is_dir` checker and volume `describer`.
+pub async fn list_roots_with_availability_deps<F, D>(
+    pool: &SqlitePool,
+    in_flight: &Arc<Mutex<HashSet<RootId>>>,
+    timeout: Duration,
+    is_dir_fn: F,
+    describer: D,
+) -> Result<Vec<RootAvailabilityItem>, RootError>
+where
+    F: Fn(&Path) -> bool + Send + Sync + Clone + 'static,
+    D: Fn(&Path) -> Result<VolumeInfo, RootError> + Send + Sync + Clone + 'static,
+{
     let mut conn = pool.acquire().await.map_err(CatalogueError::Database)?;
     let records = database::roots::list_roots_summaries(&mut conn).await?;
+    drop(conn);
+
+    if in_flight.lock().is_err() {
+        return Err(CatalogueError::Database(sqlx::Error::Configuration(
+            "Active reachable checks mutex poisoned".into(),
+        ))
+        .into());
+    }
 
     let mut check_tasks = Vec::with_capacity(records.len());
 
     for r in &records {
         let root_id = r.id.clone();
         let native_path = crate::filesystem::blob_to_native(&r.path_native);
+        let stored_uuid = r.volume_fs_uuid.clone();
+        let in_flight_clone = Arc::clone(in_flight);
+        let checker = is_dir_fn.clone();
+        let vol_describer = describer.clone();
 
-        let already_in_flight = {
-            let mut set = in_flight.lock().map_err(|_| {
-                CatalogueError::Database(sqlx::Error::Configuration(
-                    "Active reachable checks mutex poisoned".into(),
-                ))
-            })?;
-            if set.contains(&root_id) {
-                true
-            } else {
-                set.insert(root_id.clone());
-                false
-            }
-        };
+        let task = tokio::spawn(async move {
+            check_root_availability(
+                &root_id,
+                native_path,
+                stored_uuid,
+                &in_flight_clone,
+                timeout,
+                checker,
+                vol_describer,
+            )
+            .await
+        });
 
-        if already_in_flight {
-            // Check is already running for this root; do not spawn a second thread.
-            // Reports false without starting another blocking thread (Decision d).
-            check_tasks.push(tokio::spawn(async move { false }));
-        } else {
-            let set_clone = Arc::clone(in_flight);
-            let id_clone = root_id.clone();
-            let checker = check_fn.clone();
-            let timeout_dur = timeout;
-
-            let task = tokio::spawn(async move {
-                let blocking_handle = tokio::task::spawn_blocking(move || {
-                    let _guard = InFlightCheckGuard {
-                        set: set_clone,
-                        id: id_clone,
-                    };
-                    checker(&native_path)
-                });
-
-                match tokio::time::timeout(timeout_dur, blocking_handle).await {
-                    Ok(Ok(is_dir)) => is_dir,
-                    _ => false, // timeout, panic, or JoinError
-                }
-            });
-
-            check_tasks.push(task);
-        }
+        check_tasks.push(task);
     }
 
-    let mut summaries = Vec::with_capacity(records.len());
+    let mut items = Vec::with_capacity(records.len());
     for (r, task) in records.into_iter().zip(check_tasks) {
-        let reachable = task.await.unwrap_or(false);
+        let availability = task.await.unwrap_or(AvailabilityOutcome::Unknown);
+        let reachable = availability.is_available();
 
-        summaries.push(RootSummary {
-            id: r.id,
-            label: r.label,
-            path_display: r.path_display,
-            volume_kind: r.volume_kind,
-            volume_label: r.volume_label,
-            volume_case_sensitive: r.volume_case_sensitive,
-            status: r.status,
-            reachable,
-            file_count: r.file_count,
-            folder_count: r.folder_count,
-            last_scan_at_ms: r.last_scan_at_ms,
-            last_job: r.last_job,
-            active_job_id: None,
+        items.push(RootAvailabilityItem {
+            summary: RootSummary {
+                id: r.id,
+                label: r.label,
+                path_display: r.path_display,
+                volume_kind: r.volume_kind,
+                volume_label: r.volume_label,
+                volume_case_sensitive: r.volume_case_sensitive,
+                status: r.status,
+                reachable,
+                file_count: r.file_count,
+                folder_count: r.folder_count,
+                last_scan_at_ms: r.last_scan_at_ms,
+                last_job: r.last_job,
+                active_job_id: None,
+            },
+            availability,
         });
     }
 
-    Ok(summaries)
+    Ok(items)
+}
+
+/// Attaches an `Offline` root at a new path on the same volume (TASK-1F decision f, D33).
+///
+/// Rules (in order):
+/// 1. Root exists (`not_found`), stored status is `Offline` (`root_not_offline`).
+/// 2. Acquires and holds `ScanGuard` (`root_busy`).
+/// 3. Canonicalises new path, checks protected folders and overlap excluding the root itself.
+/// 4. Stored and live volumes both have `fs_uuid` and match via `same_volume_identity` (`relocate_volume_mismatch`).
+/// 5. Content spot check on up to 30 `present`/`inaccessible` file rows; at least half must exist (`relocate_content_mismatch`).
+/// 6. Single `BEGIN IMMEDIATE` transaction updates `path_native`, `path_display`, `updated_at_ms`,
+///    `status = 'active'`, and volume `last_seen_at_ms`. No `files` or `folders` row is written.
+pub async fn relocate_root(
+    pool: &SqlitePool,
+    ctx: &ProtectedContext,
+    root_id: &RootId,
+    new_path: &Path,
+) -> Result<RootSummary, RootError> {
+    relocate_root_with_deps(pool, ctx, root_id, new_path, describe_volume).await
+}
+
+/// Parameterized version of `relocate_root` allowing an injected volume `describer` for testing.
+pub async fn relocate_root_with_deps<D>(
+    pool: &SqlitePool,
+    ctx: &ProtectedContext,
+    root_id: &RootId,
+    new_path: &Path,
+    describer: D,
+) -> Result<RootSummary, RootError>
+where
+    D: Fn(&Path) -> Result<VolumeInfo, RootError>,
+{
+    let mut conn = pool.acquire().await.map_err(CatalogueError::Database)?;
+
+    // 1. Verify root exists and is Offline
+    let root = database::roots::get_root(&mut conn, root_id)
+        .await?
+        .ok_or_else(|| {
+            RootError::Catalogue(CatalogueError::NotFound {
+                entity: "library_root",
+                id: root_id.to_string(),
+            })
+        })?;
+
+    if root.status != RootStatus::Offline {
+        return Err(RootError::NotOffline {
+            id: root_id.to_string(),
+        });
+    }
+
+    // 2. Acquire and hold ScanGuard until relocation finishes
+    let _scan_guard = crate::scanner::ScanGuard::acquire(root_id).map_err(|_| RootError::Busy)?;
+
+    // 3. Canonicalize and validate protected folders + overlap excluding self
+    let canon = canonicalize_root(new_path)?;
+    check_protected(&canon, ctx)?;
+
+    let stored_roots = database::roots::list_roots_for_overlap(&mut conn).await?;
+    let other_roots: Vec<_> = stored_roots
+        .into_iter()
+        .filter(|r| &r.id != root_id)
+        .collect();
+    check_overlap(&canon, &other_roots)?;
+
+    // 4. Verify stored and live volumes both have non-NULL matching fs_uuid
+    let stored_volume_id = root
+        .volume_id
+        .clone()
+        .ok_or(RootError::RelocateVolumeMismatch)?;
+    let stored_vol = database::volumes::get_volume(&mut conn, &stored_volume_id)
+        .await?
+        .ok_or(RootError::RelocateVolumeMismatch)?;
+    let stored_uuid = stored_vol
+        .fs_uuid
+        .as_deref()
+        .ok_or(RootError::RelocateVolumeMismatch)?;
+
+    let live_vol = describer(&canon.canonical_path)?;
+    let live_uuid = live_vol
+        .fs_uuid
+        .as_deref()
+        .ok_or(RootError::RelocateVolumeMismatch)?;
+    if !crate::platform::same_volume_identity(stored_uuid, live_uuid) {
+        return Err(RootError::RelocateVolumeMismatch);
+    }
+
+    // 5. Content spot check: up to 30 present/inaccessible file rows ordered by id; at least half must exist
+    let sample_blobs =
+        database::roots::list_relocate_spot_check_paths(&mut conn, root_id, 30).await?;
+    drop(conn);
+
+    if !sample_blobs.is_empty() {
+        let total = sample_blobs.len();
+        let candidate_root = canon.canonical_path.clone();
+        let matched = tokio::task::spawn_blocking(move || {
+            let mut found = 0usize;
+            for blob in sample_blobs {
+                let rel = crate::filesystem::blob_to_native(&blob);
+                if rel.as_os_str().is_empty() || rel.is_absolute() {
+                    continue;
+                }
+                let full_path = candidate_root.join(rel);
+                if std::fs::symlink_metadata(&full_path)
+                    .map(|m| m.is_file())
+                    .unwrap_or(false)
+                {
+                    found += 1;
+                }
+            }
+            found
+        })
+        .await
+        .map_err(|_| RootError::RelocateContentMismatch)?;
+
+        if matched * 2 < total {
+            return Err(RootError::RelocateContentMismatch);
+        }
+    }
+
+    // 6. Atomic BEGIN IMMEDIATE update of root paths, status='active', and volume last_seen_at_ms
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(CatalogueError::Database)?;
+
+    let latest_root = database::roots::get_root(&mut tx, root_id)
+        .await?
+        .ok_or_else(|| {
+            RootError::Catalogue(CatalogueError::NotFound {
+                entity: "library_root",
+                id: root_id.to_string(),
+            })
+        })?;
+    if latest_root.status != RootStatus::Offline {
+        return Err(RootError::NotOffline {
+            id: root_id.to_string(),
+        });
+    }
+
+    let latest_roots = database::roots::list_roots_for_overlap(&mut tx).await?;
+    let latest_others: Vec<_> = latest_roots
+        .into_iter()
+        .filter(|r| &r.id != root_id)
+        .collect();
+    check_overlap(&canon, &latest_others)?;
+
+    let now_ms = database::now_ms()?;
+    database::roots::relocate_root_paths(
+        &mut tx,
+        root_id,
+        &canon.path_display,
+        &canon.path_native,
+        now_ms,
+    )
+    .await?;
+    database::volumes::update_volume_last_seen(&mut tx, &stored_volume_id, now_ms).await?;
+
+    tx.commit().await.map_err(CatalogueError::Database)?;
+
+    let mut conn = pool.acquire().await.map_err(CatalogueError::Database)?;
+    let rec = database::roots::get_root_summary(&mut conn, root_id)
+        .await?
+        .ok_or_else(|| {
+            RootError::Catalogue(CatalogueError::NotFound {
+                entity: "library_root",
+                id: root_id.to_string(),
+            })
+        })?;
+
+    Ok(RootSummary {
+        id: rec.id,
+        label: rec.label,
+        path_display: rec.path_display,
+        volume_kind: rec.volume_kind,
+        volume_label: rec.volume_label,
+        volume_case_sensitive: rec.volume_case_sensitive,
+        status: rec.status,
+        reachable: true,
+        file_count: rec.file_count,
+        folder_count: rec.folder_count,
+        last_scan_at_ms: rec.last_scan_at_ms,
+        last_job: rec.last_job,
+        active_job_id: None,
+    })
 }
 
 /// Retrieves item counts for a library root prior to removal (spec §5.2, D29g).
@@ -885,5 +1111,563 @@ mod tests {
         let roots = list_roots(&pool).await.expect("list_roots");
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].id, outcome.root_id);
+    }
+
+    #[tokio::test]
+    async fn status_changes_only_on_definite_answers() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("catalogue.db");
+        let pool = init_pool(&db_path).await.expect("init_pool");
+
+        let dir = temp.path().join("StatusRoot");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let ctx = test_context(temp.path());
+        let outcome = add_root(&pool, &ctx, &dir, None).await.expect("add_root");
+
+        let mut conn = pool.acquire().await.unwrap();
+        let initial_row = database::roots::get_root(&mut conn, &outcome.root_id)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(conn);
+
+        // 1. Unknown outcomes leave Active unchanged (and do not touch updated_at_ms)
+        let s = crate::library::apply_availability_result(
+            &pool,
+            &outcome.root_id,
+            Some(RootStatus::Active),
+            AvailabilityOutcome::Unknown,
+        )
+        .await
+        .unwrap();
+        assert_eq!(s, RootStatus::Active);
+
+        // Check real Unknown causes from check_root_availability:
+        // (a) Timeout
+        let in_flight = Arc::new(Mutex::new(HashSet::new()));
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let rx_arc = Arc::new(Mutex::new(rx));
+        let rx_c = Arc::clone(&rx_arc);
+        let timeout_out = crate::library::check_root_availability(
+            &outcome.root_id,
+            dir.clone(),
+            None,
+            &in_flight,
+            Duration::from_millis(30),
+            move |_| {
+                if let Ok(g) = rx_c.lock() {
+                    let _ = g.recv();
+                }
+                true
+            },
+            describe_volume,
+        )
+        .await;
+        assert_eq!(timeout_out, AvailabilityOutcome::Unknown);
+
+        // (b) In-flight check (root_id is still inside in_flight while blocked)
+        let inflight_out = crate::library::check_root_availability(
+            &outcome.root_id,
+            dir.clone(),
+            None,
+            &in_flight,
+            Duration::from_millis(30),
+            |_| true,
+            describe_volume,
+        )
+        .await;
+        assert_eq!(inflight_out, AvailabilityOutcome::Unknown);
+        let _ = tx.send(());
+
+        // (c) Panicking checker -> Unknown
+        let clean_in_flight = Arc::new(Mutex::new(HashSet::new()));
+        let panic_out = crate::library::check_root_availability(
+            &outcome.root_id,
+            dir.clone(),
+            None,
+            &clean_in_flight,
+            Duration::from_millis(200),
+            |_| panic!("simulated checker panic"),
+            describe_volume,
+        )
+        .await;
+        assert_eq!(panic_out, AvailabilityOutcome::Unknown);
+
+        // Verify Active was never changed by Unknown
+        let mut conn = pool.acquire().await.unwrap();
+        let row_after_unknown = database::roots::get_root(&mut conn, &outcome.root_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row_after_unknown.status, RootStatus::Active);
+        assert_eq!(row_after_unknown.updated_at_ms, initial_row.updated_at_ms);
+        drop(conn);
+
+        // 2. Definite NotAvailable turns Active -> Offline
+        let s_off = crate::library::apply_availability_result(
+            &pool,
+            &outcome.root_id,
+            Some(RootStatus::Active),
+            AvailabilityOutcome::NotAvailable(crate::library::UnavailableReason::Unreachable),
+        )
+        .await
+        .unwrap();
+        assert_eq!(s_off, RootStatus::Offline);
+
+        // Unknown leaves Offline unchanged
+        let mut conn = pool.acquire().await.unwrap();
+        let offline_row = database::roots::get_root(&mut conn, &outcome.root_id)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(conn);
+        let s_off_unknown = crate::library::apply_availability_result(
+            &pool,
+            &outcome.root_id,
+            Some(RootStatus::Offline),
+            AvailabilityOutcome::Unknown,
+        )
+        .await
+        .unwrap();
+        assert_eq!(s_off_unknown, RootStatus::Offline);
+        let mut conn = pool.acquire().await.unwrap();
+        let offline_row_after = database::roots::get_root(&mut conn, &outcome.root_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(offline_row_after.updated_at_ms, offline_row.updated_at_ms);
+        drop(conn);
+
+        // Definite Available turns Offline -> Active
+        let s_on = crate::library::apply_availability_result(
+            &pool,
+            &outcome.root_id,
+            Some(RootStatus::Offline),
+            AvailabilityOutcome::Available,
+        )
+        .await
+        .unwrap();
+        assert_eq!(s_on, RootStatus::Active);
+
+        // 3. Paused and Removed never change under any outcome
+        for fixed_status in [RootStatus::Paused, RootStatus::Removed] {
+            let mut conn = pool.acquire().await.unwrap();
+            database::roots::set_root_status(&mut conn, &outcome.root_id, fixed_status, 123456)
+                .await
+                .unwrap();
+            drop(conn);
+
+            for outcome_val in [
+                AvailabilityOutcome::Available,
+                AvailabilityOutcome::NotAvailable(crate::library::UnavailableReason::Unreachable),
+                AvailabilityOutcome::NotAvailable(crate::library::UnavailableReason::VolumeChanged),
+                AvailabilityOutcome::Unknown,
+            ] {
+                let res = crate::library::apply_availability_result(
+                    &pool,
+                    &outcome.root_id,
+                    Some(fixed_status),
+                    outcome_val,
+                )
+                .await
+                .unwrap();
+                assert_eq!(res, fixed_status);
+                let mut conn = pool.acquire().await.unwrap();
+                let row = database::roots::get_root(&mut conn, &outcome.root_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(row.status, fixed_status);
+                assert_eq!(row.updated_at_ms, 123456);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn case_refresh_definite_change_with_files_refused_volume_case_changed() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("catalogue.db");
+        let pool = init_pool(&db_path).await.expect("init_pool");
+
+        let dir1 = temp.path().join("CaseRoot1");
+        let dir2 = temp.path().join("CaseRoot2");
+        std::fs::create_dir_all(&dir1).expect("create dir1");
+        std::fs::create_dir_all(&dir2).expect("create dir2");
+        let canon1 = std::fs::canonicalize(&dir1).unwrap();
+        let canon2 = std::fs::canonicalize(&dir2).unwrap();
+
+        let ctx = test_context(temp.path());
+        let describer = |_p: &Path| -> Result<VolumeInfo, RootError> {
+            Ok(VolumeInfo {
+                kind: VolumeKind::Internal,
+                label: Some("CaseDisk".to_string()),
+                fs_uuid: Some("uuid-case-test".to_string()),
+                fs_type: Some("apfs".to_string()),
+            })
+        };
+
+        // First probe: CaseInsensitive (dir1 and swapped parent match)
+        let mut map1 = HashMap::new();
+        map1.insert(
+            canon1.clone(),
+            FileIdentity {
+                dev_or_serial: 1,
+                ino_or_index: 100,
+            },
+        );
+        map1.insert(
+            canon1
+                .parent()
+                .unwrap()
+                .join(crate::library::case_probe::swap_case("CaseRoot1")),
+            FileIdentity {
+                dev_or_serial: 1,
+                ino_or_index: 100,
+            },
+        );
+        let lookup1 = TestLookup(map1);
+
+        let out1 = add_root_with_deps(&pool, &ctx, &dir1, None, describer, &lookup1)
+            .await
+            .expect("add root 1");
+
+        // Insert a file row under root 1
+        let mut conn = pool.acquire().await.unwrap();
+        let root_folder = database::get_root_folder_id(&mut conn, &out1.root_id)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO files (
+                id, root_id, folder_id, name, extension, rel_path_display, rel_path_native,
+                path_key, size_bytes, modified_at_ms, status, created_in_catalog_at_ms, updated_at_ms
+             ) VALUES ('f_case_1', ?, ?, 'a.jpg', 'jpg', 'a.jpg', X'612E6A7067', X'612E6A7067', 10, 1000, 'present', 1000, 1000);",
+        )
+        .bind(out1.root_id.as_str())
+        .bind(root_folder.as_str())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        drop(conn);
+
+        // Second probe on same volume: definite CaseSensitive -> must fail with volume_case_changed
+        let mut map2 = HashMap::new();
+        map2.insert(
+            canon2.clone(),
+            FileIdentity {
+                dev_or_serial: 1,
+                ino_or_index: 200,
+            },
+        );
+        map2.insert(
+            canon2
+                .parent()
+                .unwrap()
+                .join(crate::library::case_probe::swap_case("CaseRoot2")),
+            FileIdentity {
+                dev_or_serial: 1,
+                ino_or_index: 201,
+            },
+        );
+        let lookup2 = TestLookup(map2);
+
+        let err = add_root_with_deps(&pool, &ctx, &dir2, None, describer, &lookup2)
+            .await
+            .expect_err("definite case change on volume with files must be refused");
+        assert_eq!(err.code(), "volume_case_changed");
+
+        let mut conn = pool.acquire().await.unwrap();
+        let roots = database::roots::list_roots(&mut conn).await.unwrap();
+        assert_eq!(roots.len(), 1, "No second root should be inserted");
+        let vol = database::volumes::get_volume(&mut conn, &out1.volume_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!vol.case_sensitive, "Stored case_sensitive must stay false");
+    }
+
+    #[tokio::test]
+    async fn case_refresh_unknown_probe_changes_nothing() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("catalogue.db");
+        let pool = init_pool(&db_path).await.expect("init_pool");
+
+        let dir1 = temp.path().join("UnknownCase1");
+        let dir2 = temp.path().join("UnknownCase2");
+        std::fs::create_dir_all(&dir1).expect("create dir1");
+        std::fs::create_dir_all(&dir2).expect("create dir2");
+        let canon1 = std::fs::canonicalize(&dir1).unwrap();
+
+        let ctx = test_context(temp.path());
+        let describer = |_p: &Path| -> Result<VolumeInfo, RootError> {
+            Ok(VolumeInfo {
+                kind: VolumeKind::Internal,
+                label: Some("Disk".to_string()),
+                fs_uuid: Some("uuid-unknown-case".to_string()),
+                fs_type: Some("apfs".to_string()),
+            })
+        };
+
+        let mut map1 = HashMap::new();
+        map1.insert(
+            canon1.clone(),
+            FileIdentity {
+                dev_or_serial: 1,
+                ino_or_index: 10,
+            },
+        );
+        map1.insert(
+            canon1
+                .parent()
+                .unwrap()
+                .join(crate::library::case_probe::swap_case("UnknownCase1")),
+            FileIdentity {
+                dev_or_serial: 1,
+                ino_or_index: 11,
+            },
+        );
+        let out1 = add_root_with_deps(&pool, &ctx, &dir1, None, describer, &TestLookup(map1))
+            .await
+            .expect("add root 1");
+
+        // Unknown probe (empty lookup) must succeed and leave case_sensitive = true untouched
+        let out2 = add_root_with_deps(
+            &pool,
+            &ctx,
+            &dir2,
+            None,
+            describer,
+            &TestLookup(HashMap::new()),
+        )
+        .await
+        .expect("unknown probe must succeed");
+        assert_eq!(out1.volume_id, out2.volume_id);
+        assert!(out2.warnings.contains(&RootWarning::CaseSensitivityUnknown));
+
+        let mut conn = pool.acquire().await.unwrap();
+        let vol = database::volumes::get_volume(&mut conn, &out1.volume_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            vol.case_sensitive,
+            "Unknown probe must not alter stored value"
+        );
+    }
+
+    #[tokio::test]
+    async fn case_refresh_definite_change_without_files_updates_volume() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("catalogue.db");
+        let pool = init_pool(&db_path).await.expect("init_pool");
+
+        let dir1 = temp.path().join("EmptyCase1");
+        let dir2 = temp.path().join("EmptyCase2");
+        std::fs::create_dir_all(&dir1).expect("create dir1");
+        std::fs::create_dir_all(&dir2).expect("create dir2");
+        let canon1 = std::fs::canonicalize(&dir1).unwrap();
+        let canon2 = std::fs::canonicalize(&dir2).unwrap();
+
+        let ctx = test_context(temp.path());
+        let describer = |_p: &Path| -> Result<VolumeInfo, RootError> {
+            Ok(VolumeInfo {
+                kind: VolumeKind::Internal,
+                label: Some("EmptyDisk".to_string()),
+                fs_uuid: Some("uuid-empty-case".to_string()),
+                fs_type: Some("apfs".to_string()),
+            })
+        };
+
+        // Root 1: CaseInsensitive, 0 file rows
+        let mut map1 = HashMap::new();
+        map1.insert(
+            canon1.clone(),
+            FileIdentity {
+                dev_or_serial: 1,
+                ino_or_index: 50,
+            },
+        );
+        map1.insert(
+            canon1
+                .parent()
+                .unwrap()
+                .join(crate::library::case_probe::swap_case("EmptyCase1")),
+            FileIdentity {
+                dev_or_serial: 1,
+                ino_or_index: 50,
+            },
+        );
+        let out1 = add_root_with_deps(&pool, &ctx, &dir1, None, describer, &TestLookup(map1))
+            .await
+            .expect("add root 1");
+
+        // Root 2: definite CaseSensitive with no file rows -> updates stored case_sensitive to true
+        let mut map2 = HashMap::new();
+        map2.insert(
+            canon2.clone(),
+            FileIdentity {
+                dev_or_serial: 1,
+                ino_or_index: 60,
+            },
+        );
+        map2.insert(
+            canon2
+                .parent()
+                .unwrap()
+                .join(crate::library::case_probe::swap_case("EmptyCase2")),
+            FileIdentity {
+                dev_or_serial: 1,
+                ino_or_index: 61,
+            },
+        );
+        let out2 = add_root_with_deps(&pool, &ctx, &dir2, None, describer, &TestLookup(map2))
+            .await
+            .expect("definite change without files should update stored value");
+        assert_eq!(out1.volume_id, out2.volume_id);
+
+        let mut conn = pool.acquire().await.unwrap();
+        let vol = database::volumes::get_volume(&mut conn, &out1.volume_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            vol.case_sensitive,
+            "Stored case_sensitive must be updated to true"
+        );
+    }
+
+    #[tokio::test]
+    async fn serial_identity_reuse_requires_equal_fs_type_and_label_and_supports_legacy_bare() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("catalogue.db");
+        let pool = init_pool(&db_path).await.expect("init_pool");
+
+        let dir1 = temp.path().join("Serial1");
+        let dir2 = temp.path().join("Serial2");
+        let dir3 = temp.path().join("Serial3");
+        let dir4 = temp.path().join("Serial4");
+        let dir5 = temp.path().join("LegacySerial");
+        for d in [&dir1, &dir2, &dir3, &dir4, &dir5] {
+            std::fs::create_dir_all(d).expect("create dir");
+        }
+
+        let ctx = test_context(temp.path());
+        let lookup = TestLookup(HashMap::new());
+
+        let out1 = add_root_with_deps(
+            &pool,
+            &ctx,
+            &dir1,
+            None,
+            |_| {
+                Ok(VolumeInfo {
+                    kind: VolumeKind::Removable,
+                    label: Some("USB1".to_string()),
+                    fs_uuid: Some("serial:AABBCCDD".to_string()),
+                    fs_type: Some("exfat".to_string()),
+                })
+            },
+            &lookup,
+        )
+        .await
+        .unwrap();
+
+        // Same serial, different label -> new volume row
+        let out2 = add_root_with_deps(
+            &pool,
+            &ctx,
+            &dir2,
+            None,
+            |_| {
+                Ok(VolumeInfo {
+                    kind: VolumeKind::Removable,
+                    label: Some("USB2".to_string()),
+                    fs_uuid: Some("serial:AABBCCDD".to_string()),
+                    fs_type: Some("exfat".to_string()),
+                })
+            },
+            &lookup,
+        )
+        .await
+        .unwrap();
+        assert_ne!(out1.volume_id, out2.volume_id);
+
+        // Same serial, different fs_type -> new volume row
+        let out3 = add_root_with_deps(
+            &pool,
+            &ctx,
+            &dir3,
+            None,
+            |_| {
+                Ok(VolumeInfo {
+                    kind: VolumeKind::Removable,
+                    label: Some("USB1".to_string()),
+                    fs_uuid: Some("serial:AABBCCDD".to_string()),
+                    fs_type: Some("ntfs".to_string()),
+                })
+            },
+            &lookup,
+        )
+        .await
+        .unwrap();
+        assert_ne!(out1.volume_id, out3.volume_id);
+        assert_ne!(out2.volume_id, out3.volume_id);
+
+        // Same serial, equal fs_type and label -> reuses volume 1
+        let out4 = add_root_with_deps(
+            &pool,
+            &ctx,
+            &dir4,
+            None,
+            |_| {
+                Ok(VolumeInfo {
+                    kind: VolumeKind::Removable,
+                    label: Some("USB1".to_string()),
+                    fs_uuid: Some("serial:AABBCCDD".to_string()),
+                    fs_type: Some("exfat".to_string()),
+                })
+            },
+            &lookup,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out1.volume_id, out4.volume_id);
+
+        // Legacy bare 8-hex volume row is reused by matching serial: identity
+        let mut conn = pool.acquire().await.unwrap();
+        let legacy_vol_id = VolumeId::new();
+        database::volumes::insert_volume(
+            &mut conn,
+            &VolumeRow {
+                id: legacy_vol_id.clone(),
+                kind: VolumeKind::Removable,
+                label: Some("LEGACY".to_string()),
+                fs_uuid: Some("11223344".to_string()),
+                fs_type: Some("fat32".to_string()),
+                case_sensitive: false,
+                last_seen_at_ms: Some(1000),
+            },
+        )
+        .await
+        .unwrap();
+        drop(conn);
+
+        let out5 = add_root_with_deps(
+            &pool,
+            &ctx,
+            &dir5,
+            None,
+            |_| {
+                Ok(VolumeInfo {
+                    kind: VolumeKind::Removable,
+                    label: Some("LEGACY".to_string()),
+                    fs_uuid: Some("serial:11223344".to_string()),
+                    fs_type: Some("fat32".to_string()),
+                })
+            },
+            &lookup,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out5.volume_id, legacy_vol_id);
     }
 }

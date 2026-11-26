@@ -169,10 +169,57 @@ pub struct RootSummaryRecord {
     pub volume_kind: crate::domain::VolumeKind,
     pub volume_label: Option<String>,
     pub volume_case_sensitive: bool,
+    pub volume_fs_uuid: Option<String>,
     pub file_count: i64,
     pub folder_count: i64,
     pub last_scan_at_ms: Option<i64>,
     pub last_job: Option<crate::database::jobs::LastJobSummary>,
+}
+
+async fn row_to_root_summary_record(
+    conn: &mut SqliteConnection,
+    r: SqliteRow,
+) -> Result<RootSummaryRecord, CatalogueError> {
+    let id_str: String = r.try_get("id")?;
+    let label: String = r.try_get("label")?;
+    let path_display: String = r.try_get("path_display")?;
+    let path_native: Vec<u8> = r.try_get("path_native")?;
+    let status_str: String = r.try_get("status")?;
+    let last_scan_at_ms: Option<i64> = r.try_get("last_scan_at_ms")?;
+    let vol_kind_str: Option<String> = r.try_get("volume_kind")?;
+    let volume_label: Option<String> = r.try_get("volume_label")?;
+    let vol_cs_int: Option<i32> = r.try_get("volume_case_sensitive")?;
+    let volume_fs_uuid: Option<String> = r.try_get("volume_fs_uuid")?;
+    let file_count: i64 = r.try_get("file_count")?;
+    let folder_count: i64 = r.try_get("folder_count")?;
+
+    let status = RootStatus::from_str(&status_str)
+        .map_err(|e| CatalogueError::InvalidEnum(e.to_string()))?;
+    let volume_kind = if let Some(vk) = vol_kind_str {
+        crate::domain::VolumeKind::from_str(&vk)
+            .map_err(|e| CatalogueError::InvalidEnum(e.to_string()))?
+    } else {
+        crate::domain::VolumeKind::Unknown
+    };
+
+    let root_id = RootId::from(id_str);
+    let last_job = crate::database::jobs::get_last_job_for_root(conn, &root_id).await?;
+
+    Ok(RootSummaryRecord {
+        id: root_id,
+        label,
+        path_display,
+        path_native,
+        status,
+        volume_kind,
+        volume_label,
+        volume_case_sensitive: vol_cs_int.unwrap_or(0) != 0,
+        volume_fs_uuid,
+        file_count,
+        folder_count,
+        last_scan_at_ms,
+        last_job,
+    })
 }
 
 /// Lists all library roots with joined volume details and counts of files and folders in a single query (D29).
@@ -182,6 +229,7 @@ pub async fn list_roots_summaries(
     let rows: Vec<SqliteRow> = sqlx::query(
         "SELECT r.id, r.label, r.path_display, r.path_native, r.status, r.last_scan_at_ms,
                 v.kind as volume_kind, v.label as volume_label, v.case_sensitive as volume_case_sensitive,
+                v.fs_uuid as volume_fs_uuid,
                 COALESCE(fc.file_count, 0) as file_count,
                 COALESCE(fdc.folder_count, 0) as folder_count
          FROM library_roots r
@@ -195,47 +243,89 @@ pub async fn list_roots_summaries(
 
     let mut summaries = Vec::with_capacity(rows.len());
     for r in rows {
-        let id_str: String = r.try_get("id")?;
-        let label: String = r.try_get("label")?;
-        let path_display: String = r.try_get("path_display")?;
-        let path_native: Vec<u8> = r.try_get("path_native")?;
-        let status_str: String = r.try_get("status")?;
-        let last_scan_at_ms: Option<i64> = r.try_get("last_scan_at_ms")?;
-        let vol_kind_str: Option<String> = r.try_get("volume_kind")?;
-        let volume_label: Option<String> = r.try_get("volume_label")?;
-        let vol_cs_int: Option<i32> = r.try_get("volume_case_sensitive")?;
-        let file_count: i64 = r.try_get("file_count")?;
-        let folder_count: i64 = r.try_get("folder_count")?;
-
-        let status = RootStatus::from_str(&status_str)
-            .map_err(|e| CatalogueError::InvalidEnum(e.to_string()))?;
-        let volume_kind = if let Some(vk) = vol_kind_str {
-            crate::domain::VolumeKind::from_str(&vk)
-                .map_err(|e| CatalogueError::InvalidEnum(e.to_string()))?
-        } else {
-            crate::domain::VolumeKind::Unknown
-        };
-
-        let root_id = RootId::from(id_str);
-        let last_job = crate::database::jobs::get_last_job_for_root(conn, &root_id).await?;
-
-        summaries.push(RootSummaryRecord {
-            id: root_id,
-            label,
-            path_display,
-            path_native,
-            status,
-            volume_kind,
-            volume_label,
-            volume_case_sensitive: vol_cs_int.unwrap_or(0) != 0,
-            file_count,
-            folder_count,
-            last_scan_at_ms,
-            last_job,
-        });
+        summaries.push(row_to_root_summary_record(conn, r).await?);
     }
 
     Ok(summaries)
+}
+
+/// Fetches a single library root summary record by ID (TASK-1F decision f).
+pub async fn get_root_summary(
+    conn: &mut SqliteConnection,
+    root_id: &RootId,
+) -> Result<Option<RootSummaryRecord>, CatalogueError> {
+    let row: Option<SqliteRow> = sqlx::query(
+        "SELECT r.id, r.label, r.path_display, r.path_native, r.status, r.last_scan_at_ms,
+                v.kind as volume_kind, v.label as volume_label, v.case_sensitive as volume_case_sensitive,
+                v.fs_uuid as volume_fs_uuid,
+                COALESCE(fc.file_count, 0) as file_count,
+                COALESCE(fdc.folder_count, 0) as folder_count
+         FROM library_roots r
+         LEFT JOIN volumes v ON r.volume_id = v.id
+         LEFT JOIN (SELECT root_id, COUNT(*) as file_count FROM files GROUP BY root_id) fc ON fc.root_id = r.id
+         LEFT JOIN (SELECT root_id, COUNT(*) as folder_count FROM folders WHERE parent_id IS NOT NULL GROUP BY root_id) fdc ON fdc.root_id = r.id
+         WHERE r.id = ?;",
+    )
+    .bind(root_id.as_str())
+    .fetch_optional(&mut *conn)
+    .await?;
+
+    match row {
+        Some(r) => Ok(Some(row_to_root_summary_record(conn, r).await?)),
+        None => Ok(None),
+    }
+}
+
+/// Lists up to `limit` `rel_path_native` values from `files` with status `present` or `inaccessible`
+/// ordered by `id` for relocate content spot-checking (TASK-1F decision f).
+pub async fn list_relocate_spot_check_paths(
+    conn: &mut SqliteConnection,
+    root_id: &RootId,
+    limit: i64,
+) -> Result<Vec<Vec<u8>>, CatalogueError> {
+    let rows: Vec<(Vec<u8>,)> = sqlx::query_as(
+        "SELECT rel_path_native
+         FROM files
+         WHERE root_id = ? AND status IN ('present', 'inaccessible')
+         ORDER BY id ASC
+         LIMIT ?;",
+    )
+    .bind(root_id.as_str())
+    .bind(limit)
+    .fetch_all(&mut *conn)
+    .await?;
+
+    Ok(rows.into_iter().map(|r| r.0).collect())
+}
+
+/// Updates a relocated root's paths, status (`active`), and `updated_at_ms` (TASK-1F decision f).
+pub async fn relocate_root_paths(
+    conn: &mut SqliteConnection,
+    root_id: &RootId,
+    path_display: &str,
+    path_native: &[u8],
+    updated_at_ms: i64,
+) -> Result<(), CatalogueError> {
+    let result = sqlx::query(
+        "UPDATE library_roots
+         SET path_display = ?, path_native = ?, status = 'active', updated_at_ms = ?
+         WHERE id = ?;",
+    )
+    .bind(path_display)
+    .bind(path_native)
+    .bind(updated_at_ms)
+    .bind(root_id.as_str())
+    .execute(&mut *conn)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(CatalogueError::NotFound {
+            entity: "library_root",
+            id: root_id.to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 /// Retrieves stored library roots with their component lists for overlap checking (D29b).

@@ -39,6 +39,12 @@ export const KNOWN_IPC_ERROR_CODES = [
   "interrupted",
   "root_busy",
   "job_not_found",
+  "root_offline",
+  "root_volume_changed",
+  "root_not_offline",
+  "relocate_volume_mismatch",
+  "relocate_content_mismatch",
+  "volume_case_changed",
   "internal",
 ] as const;
 

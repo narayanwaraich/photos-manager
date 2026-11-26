@@ -105,7 +105,7 @@ pub fn describe_volume_windows(path: &Path) -> Result<VolumeInfo, RootError> {
             .to_string();
         if guid_str.is_empty() {
             if serial_number != 0 {
-                Some(format!("{:08X}", serial_number))
+                Some(crate::platform::format_serial_identity(serial_number))
             } else {
                 None
             }
@@ -113,7 +113,7 @@ pub fn describe_volume_windows(path: &Path) -> Result<VolumeInfo, RootError> {
             Some(guid_str)
         }
     } else if serial_number != 0 {
-        Some(format!("{:08X}", serial_number))
+        Some(crate::platform::format_serial_identity(serial_number))
     } else {
         None
     };

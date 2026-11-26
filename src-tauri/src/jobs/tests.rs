@@ -252,15 +252,76 @@ async fn test_job_lifecycle_cancelled_scan_leaves_zero_missing() {
     );
 }
 
-// 3. Lifecycle: Scan of an unreachable (deleted) root path fails with scan_root_unreachable
+// 3. Refused pre-flight: start_scan of an unreachable (deleted) root path returns root_offline, creates no job row, and marks root Offline
 #[tokio::test]
-async fn test_job_lifecycle_unreachable_root_fails() {
+async fn test_start_scan_unreachable_root_refused_with_root_offline_and_marks_offline() {
     let fix = setup_fixture().await;
 
     // Delete the root directory on disk
     fs::remove_dir_all(&fix.root_path).expect("delete root dir");
 
     let manager = Arc::new(JobManager::new(fix.pool.clone()));
+    let mut conn = fix.pool.acquire().await.unwrap();
+    let jobs_before = database::count_total_jobs(&mut conn).await.unwrap();
+    drop(conn);
+
+    let err = manager
+        .start_scan_impl(fix.root_id.clone(), |_| {})
+        .await
+        .expect_err("unreachable root must be refused before creating a job row");
+
+    assert_eq!(err.code, "root_offline");
+
+    let mut conn = fix.pool.acquire().await.unwrap();
+    let jobs_after = database::count_total_jobs(&mut conn).await.unwrap();
+    assert_eq!(
+        jobs_before, jobs_after,
+        "Refused pre-flight must create zero job rows"
+    );
+
+    let root = database::get_root(&mut conn, &fix.root_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(root.status, crate::domain::RootStatus::Offline);
+}
+
+// 3b. In-job unreachable: folder vanishes after start_scan pre-flight -> failed/scan_root_unreachable and root becomes Offline
+#[tokio::test]
+async fn test_job_lifecycle_root_vanishes_after_preflight_fails_with_scan_root_unreachable() {
+    let fix = setup_fixture().await;
+
+    // Delete directory on disk, while injecting a pre-flight check that still sees it as present
+    // so start_scan creates the job row and scan_root_guarded discovers the vanished path.
+    fs::remove_dir_all(&fix.root_path).expect("delete root dir");
+
+    let mut conn = fix.pool.acquire().await.unwrap();
+    let root = database::get_root(&mut conn, &fix.root_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let stored_uuid = match &root.volume_id {
+        Some(vid) => database::volumes::get_volume(&mut conn, vid)
+            .await
+            .unwrap()
+            .and_then(|v| v.fs_uuid),
+        None => None,
+    };
+    drop(conn);
+
+    let manager = Arc::new(JobManager::new(fix.pool.clone()));
+    manager.set_test_deps(crate::jobs::JobManagerTestDeps {
+        is_dir_fn: Some(Arc::new(|_| true)),
+        describer: Some(Arc::new(move |_| {
+            Ok(crate::domain::VolumeInfo {
+                kind: crate::domain::VolumeKind::Internal,
+                label: None,
+                fs_uuid: stored_uuid.clone(),
+                fs_type: None,
+            })
+        })),
+        ..Default::default()
+    });
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_sink = Arc::clone(&events);
@@ -292,8 +353,15 @@ async fn test_job_lifecycle_unreachable_root_fails() {
     let recorded = events.lock().unwrap().clone();
     let last = recorded.last().unwrap();
     assert!(
-        matches!(last, ScanEvent::Failed { code, .. } if code == "scan_root_unreachable"),
-        "Must emit failed event with code scan_root_unreachable"
+        matches!(
+            last,
+            ScanEvent::Failed {
+                code,
+                recorded: true,
+                ..
+            } if code == "scan_root_unreachable"
+        ),
+        "Must emit failed event with code scan_root_unreachable and recorded=true"
     );
 
     let mut conn = fix.pool.acquire().await.unwrap();
@@ -303,6 +371,16 @@ async fn test_job_lifecycle_unreachable_root_fails() {
         .unwrap();
     assert_eq!(job_row.0, "failed");
     assert_eq!(job_row.2.as_deref(), Some("scan_root_unreachable"));
+
+    let root_after = database::get_root(&mut conn, &fix.root_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        root_after.status,
+        crate::domain::RootStatus::Offline,
+        "Root must transition to Offline when scan fails with scan_root_unreachable"
+    );
 }
 
 // 4. Refused start: a second start_scan returns scan_already_running and creates NO job row
@@ -1042,22 +1120,24 @@ fn test_wire_format_scan_events_matches_literal_json() {
             rel_path: "sub/collision.jpg".to_string(),
         }],
         elapsed_ms: 1250,
+        recorded: true,
     };
     let finished_json = serde_json::to_string(&finished).unwrap();
     assert_eq!(
         finished_json,
-        r#"{"kind":"finished","jobId":"job_01","outcome":"completed","counts":{"foldersSeen":5,"filesSeen":42,"new":10,"changed":2,"unchanged":30,"moved":0,"markedMissing":0,"markedInaccessible":0,"unsupported":0,"skippedByRule":3},"warningCount":1,"warnings":[{"code":"path_key_collision","relPath":"sub/collision.jpg"}],"elapsedMs":1250}"#
+        r#"{"kind":"finished","jobId":"job_01","outcome":"completed","counts":{"foldersSeen":5,"filesSeen":42,"new":10,"changed":2,"unchanged":30,"moved":0,"markedMissing":0,"markedInaccessible":0,"unsupported":0,"skippedByRule":3},"warningCount":1,"warnings":[{"code":"path_key_collision","relPath":"sub/collision.jpg"}],"elapsedMs":1250,"recorded":true}"#
     );
 
     // 4. Failed
     let failed = ScanEvent::Failed {
         job_id: "job_01".to_string(),
         code: "internal".to_string(),
+        recorded: false,
     };
     let failed_json = serde_json::to_string(&failed).unwrap();
     assert_eq!(
         failed_json,
-        r#"{"kind":"failed","jobId":"job_01","code":"internal"}"#
+        r#"{"kind":"failed","jobId":"job_01","code":"internal","recorded":false}"#
     );
 
     // 5. StartScanResult
@@ -1131,4 +1211,685 @@ async fn test_mark_job_cancelling_only_affects_running_jobs() {
         row.0, "cancelling",
         "Running job row must become cancelling"
     );
+}
+
+// 15. Same-volume guard refuses empty mount point with root_volume_changed and marks nothing missing
+#[tokio::test]
+async fn volume_guard_refuses_empty_mount_point_and_marks_nothing_missing() {
+    let fix = setup_fixture().await;
+
+    fs::write(fix.root_path.join("photo1.jpg"), b"img1").unwrap();
+    fs::write(fix.root_path.join("photo2.jpg"), b"img2").unwrap();
+
+    // Ensure stored volume has a non-NULL fs_uuid on all OSes (including Linux stub)
+    let mut conn = fix.pool.acquire().await.unwrap();
+    let root_row = database::get_root(&mut conn, &fix.root_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let vol_id = root_row.volume_id.clone().unwrap();
+    let vol_row = database::volumes::get_volume(&mut conn, &vol_id)
+        .await
+        .unwrap()
+        .unwrap();
+    if vol_row.fs_uuid.is_none() {
+        sqlx::query("UPDATE volumes SET fs_uuid = 'uuid-original-drive' WHERE id = ?;")
+            .bind(vol_id.as_str())
+            .execute(&pool_clone(&fix.pool))
+            .await
+            .unwrap();
+    }
+    drop(conn);
+
+    // Initial scan so files exist with status 'present'
+    crate::scanner::scan_root(
+        &fix.pool,
+        &fix.root_id,
+        ScanOptions::default(),
+        crate::scanner::ScanCancel::new(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+
+    // Empty the folder (it still exists on disk, simulating an empty mount point)
+    fs::remove_file(fix.root_path.join("photo1.jpg")).unwrap();
+    fs::remove_file(fix.root_path.join("photo2.jpg")).unwrap();
+
+    let manager = Arc::new(JobManager::new(fix.pool.clone()));
+    manager.set_test_deps(crate::jobs::JobManagerTestDeps {
+        describer: Some(Arc::new(|_| {
+            Ok(crate::domain::VolumeInfo {
+                kind: crate::domain::VolumeKind::Removable,
+                label: Some("WrongDrive".to_string()),
+                fs_uuid: Some("uuid-different-drive".to_string()),
+                fs_type: Some("exfat".to_string()),
+            })
+        })),
+        ..Default::default()
+    });
+
+    let mut conn = fix.pool.acquire().await.unwrap();
+    let jobs_before = database::count_total_jobs(&mut conn).await.unwrap();
+    drop(conn);
+
+    let err = manager
+        .start_scan_impl(fix.root_id.clone(), |_| {})
+        .await
+        .expect_err("volume mismatch must refuse scan");
+    assert_eq!(err.code, "root_volume_changed");
+
+    let mut conn = fix.pool.acquire().await.unwrap();
+    let jobs_after = database::count_total_jobs(&mut conn).await.unwrap();
+    assert_eq!(jobs_before, jobs_after, "No job row may be created");
+
+    let root_after = database::get_root(&mut conn, &fix.root_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(root_after.status, crate::domain::RootStatus::Offline);
+
+    let statuses: Vec<(String,)> =
+        sqlx::query_as("SELECT status FROM files WHERE root_id = ? ORDER BY name;")
+            .bind(fix.root_id.as_str())
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap();
+    assert_eq!(statuses.len(), 2);
+    assert!(statuses.iter().all(|s| s.0 == "present"));
+}
+
+fn pool_clone(pool: &sqlx::SqlitePool) -> sqlx::SqlitePool {
+    pool.clone()
+}
+
+// 16. Dead check at scan start: times out without blocking and deduplicates second scan start
+#[tokio::test]
+async fn dead_check_at_scan_start_times_out_and_does_not_block_second_scan() {
+    let fix = setup_fixture().await;
+    let manager = Arc::new(JobManager::new(fix.pool.clone()));
+
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release_rx = Arc::new(Mutex::new(release_rx));
+    let call_count = Arc::new(AtomicUsize::new(0));
+
+    let rx_c = Arc::clone(&release_rx);
+    let count_c = Arc::clone(&call_count);
+    manager.set_test_deps(crate::jobs::JobManagerTestDeps {
+        availability_timeout: Some(Duration::from_millis(50)),
+        is_dir_fn: Some(Arc::new(move |_| {
+            count_c.fetch_add(1, Ordering::SeqCst);
+            if let Ok(rx) = rx_c.lock() {
+                let _ = rx.recv();
+            }
+            true
+        })),
+        ..Default::default()
+    });
+
+    let start1 = std::time::Instant::now();
+    let err1 = manager
+        .start_scan_impl(fix.root_id.clone(), |_| {})
+        .await
+        .expect_err("hung check must fail start_scan");
+    let elapsed1 = start1.elapsed();
+    assert_eq!(err1.code, "root_offline");
+    assert!(elapsed1 < Duration::from_millis(500));
+    assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+    // Second start_scan while the first blocking thread is still blocked returns immediately without calling checker again
+    let start2 = std::time::Instant::now();
+    let err2 = manager
+        .start_scan_impl(fix.root_id.clone(), |_| {})
+        .await
+        .expect_err("second start_scan must return root_offline immediately");
+    let elapsed2 = start2.elapsed();
+    assert_eq!(err2.code, "root_offline");
+    assert!(elapsed2 < Duration::from_millis(100));
+    assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+    let mut conn = fix.pool.acquire().await.unwrap();
+    assert_eq!(database::count_total_jobs(&mut conn).await.unwrap(), 0);
+    let root = database::get_root(&mut conn, &fix.root_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        root.status,
+        crate::domain::RootStatus::Active,
+        "Unknown check timeout must leave stored status Active"
+    );
+
+    let _ = release_tx.send(());
+}
+
+// 17. Final-write failure on each of the four finish paths + retry success
+fn failing_hook(fail_attempts: usize) -> crate::jobs::FinalWriteHookFn {
+    Arc::new(move |attempt| {
+        Box::pin(async move {
+            if attempt < fail_attempts {
+                Err(crate::domain::CatalogueError::Database(
+                    sqlx::Error::PoolClosed,
+                ))
+            } else {
+                Ok(())
+            }
+        })
+    })
+}
+
+async fn wait_for_terminal(done_flag: &AtomicBool) {
+    for _ in 0..100 {
+        if done_flag.load(Ordering::SeqCst) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        done_flag.load(Ordering::SeqCst),
+        "Timed out waiting for terminal scan event"
+    );
+}
+
+#[tokio::test]
+async fn final_write_failure_completed_path_emits_recorded_false_and_allows_next_scan() {
+    let fix = setup_fixture().await;
+    fs::write(fix.root_path.join("a.jpg"), b"img").unwrap();
+
+    let manager = Arc::new(JobManager::new(fix.pool.clone()));
+    manager.set_test_deps(crate::jobs::JobManagerTestDeps {
+        final_write_hook: Some(failing_hook(usize::MAX)),
+        ..Default::default()
+    });
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_c = Arc::clone(&events);
+    let done = Arc::new(AtomicBool::new(false));
+    let done_c = Arc::clone(&done);
+
+    manager
+        .start_scan_impl(fix.root_id.clone(), move |ev| {
+            let term = matches!(ev, ScanEvent::Finished { .. } | ScanEvent::Failed { .. });
+            events_c.lock().unwrap().push(ev);
+            if term {
+                done_c.store(true, Ordering::SeqCst);
+            }
+        })
+        .await
+        .unwrap();
+
+    wait_for_terminal(&done).await;
+    let recorded_events = events.lock().unwrap().clone();
+    let term_count = recorded_events
+        .iter()
+        .filter(|e| matches!(e, ScanEvent::Finished { .. } | ScanEvent::Failed { .. }))
+        .count();
+    assert_eq!(term_count, 1);
+    assert!(matches!(
+        recorded_events.last().unwrap(),
+        ScanEvent::Finished {
+            outcome,
+            recorded: false,
+            ..
+        } if outcome == "completed"
+    ));
+    assert_eq!(manager.active_job_for_root(&fix.root_id), None);
+
+    // Clear failure hook and verify a new scan starts cleanly afterwards
+    manager.set_test_deps(crate::jobs::JobManagerTestDeps::default());
+    let done2 = Arc::new(AtomicBool::new(false));
+    let done2_c = Arc::clone(&done2);
+    manager
+        .start_scan_impl(fix.root_id.clone(), move |ev| {
+            if matches!(ev, ScanEvent::Finished { recorded: true, .. }) {
+                done2_c.store(true, Ordering::SeqCst);
+            }
+        })
+        .await
+        .expect("new scan must start cleanly after unrecorded terminal event");
+    wait_for_terminal(&done2).await;
+}
+
+#[tokio::test]
+async fn final_write_failure_cancelled_path_emits_recorded_false_and_allows_next_scan() {
+    let fix = setup_fixture().await;
+    let manager = Arc::new(JobManager::new(fix.pool.clone()));
+    manager.set_test_deps(crate::jobs::JobManagerTestDeps {
+        final_write_hook: Some(failing_hook(usize::MAX)),
+        ..Default::default()
+    });
+
+    let job_id = "job_final_fail_cancelled".to_string();
+    let now_ms = database::now_ms().unwrap();
+    let mut conn = fix.pool.acquire().await.unwrap();
+    database::insert_job(
+        &mut conn,
+        &NewJobParams {
+            id: &job_id,
+            root_id: Some(fix.root_id.as_str()),
+            job_type: "scan",
+            status: "running",
+            priority: 50,
+            payload_json: "{}",
+            now_ms,
+        },
+    )
+    .await
+    .unwrap();
+    drop(conn);
+
+    let guard = ScanGuard::acquire(&fix.root_id).unwrap();
+    let (_, watch_rx) = tokio::sync::watch::channel(None);
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_c = Arc::clone(&events);
+
+    let worker_fut = async move {
+        let _g = guard;
+        Ok(ScanOutcome::Cancelled(ScanReport {
+            generation: "g".into(),
+            counts: ScanCounts::default(),
+            warning_count: 0,
+            warnings: vec![],
+            elapsed: Duration::from_millis(5),
+        }))
+    };
+
+    let handle = run_tracked_job(
+        fix.pool.clone(),
+        job_id,
+        fix.root_id.clone(),
+        Arc::clone(&manager),
+        worker_fut,
+        watch_rx,
+        move |ev| {
+            events_c.lock().unwrap().push(ev);
+        },
+    );
+    let _ = handle.await;
+
+    let recorded_events = events.lock().unwrap().clone();
+    assert_eq!(recorded_events.len(), 1);
+    assert!(matches!(
+        &recorded_events[0],
+        ScanEvent::Finished {
+            outcome,
+            recorded: false,
+            ..
+        } if outcome == "cancelled"
+    ));
+
+    manager.set_test_deps(crate::jobs::JobManagerTestDeps::default());
+    assert!(manager
+        .start_scan_impl(fix.root_id.clone(), |_| {})
+        .await
+        .is_ok());
+}
+
+#[tokio::test]
+async fn final_write_failure_failed_path_emits_recorded_false_and_allows_next_scan() {
+    let fix = setup_fixture().await;
+    fs::write(fix.root_path.join("fail.jpg"), b"img").unwrap();
+
+    let manager = Arc::new(JobManager::new(fix.pool.clone()));
+    manager.set_test_deps(crate::jobs::JobManagerTestDeps {
+        final_write_hook: Some(failing_hook(usize::MAX)),
+        ..Default::default()
+    });
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_c = Arc::clone(&events);
+    let done = Arc::new(AtomicBool::new(false));
+    let done_c = Arc::clone(&done);
+
+    manager
+        .start_scan_with_options(
+            fix.root_id.clone(),
+            ScanOptions {
+                generation: Some("gen_fail".into()),
+                failure_hook_after_batch: Some(0),
+                ..Default::default()
+            },
+            move |ev| {
+                let term = matches!(ev, ScanEvent::Finished { .. } | ScanEvent::Failed { .. });
+                events_c.lock().unwrap().push(ev);
+                if term {
+                    done_c.store(true, Ordering::SeqCst);
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+    wait_for_terminal(&done).await;
+    let recorded_events = events.lock().unwrap().clone();
+    let term_count = recorded_events
+        .iter()
+        .filter(|e| matches!(e, ScanEvent::Finished { .. } | ScanEvent::Failed { .. }))
+        .count();
+    assert_eq!(term_count, 1);
+    assert!(matches!(
+        recorded_events.last().unwrap(),
+        ScanEvent::Failed {
+            code,
+            recorded: false,
+            ..
+        } if code == "database"
+    ));
+    assert_eq!(manager.active_job_for_root(&fix.root_id), None);
+
+    manager.set_test_deps(crate::jobs::JobManagerTestDeps::default());
+    assert!(manager
+        .start_scan_impl(fix.root_id.clone(), |_| {})
+        .await
+        .is_ok());
+}
+
+#[tokio::test]
+async fn final_write_failure_panic_path_emits_recorded_false_and_allows_next_scan() {
+    let fix = setup_fixture().await;
+    let manager = Arc::new(JobManager::new(fix.pool.clone()));
+    manager.set_test_deps(crate::jobs::JobManagerTestDeps {
+        final_write_hook: Some(failing_hook(usize::MAX)),
+        ..Default::default()
+    });
+
+    let job_id = "job_final_fail_panic".to_string();
+    let now_ms = database::now_ms().unwrap();
+    let mut conn = fix.pool.acquire().await.unwrap();
+    database::insert_job(
+        &mut conn,
+        &NewJobParams {
+            id: &job_id,
+            root_id: Some(fix.root_id.as_str()),
+            job_type: "scan",
+            status: "running",
+            priority: 50,
+            payload_json: "{}",
+            now_ms,
+        },
+    )
+    .await
+    .unwrap();
+    drop(conn);
+
+    let guard = ScanGuard::acquire(&fix.root_id).unwrap();
+    let (_, watch_rx) = tokio::sync::watch::channel(None);
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_c = Arc::clone(&events);
+
+    let panicking_fut = async move {
+        let _g = guard;
+        panic!("panic inside worker with final write failure");
+        #[allow(unreachable_code)]
+        Ok(ScanOutcome::Completed(ScanReport {
+            generation: "g".into(),
+            counts: ScanCounts::default(),
+            warning_count: 0,
+            warnings: vec![],
+            elapsed: Duration::from_millis(1),
+        }))
+    };
+
+    let handle = run_tracked_job(
+        fix.pool.clone(),
+        job_id,
+        fix.root_id.clone(),
+        Arc::clone(&manager),
+        panicking_fut,
+        watch_rx,
+        move |ev| {
+            events_c.lock().unwrap().push(ev);
+        },
+    );
+    let _ = handle.await;
+
+    let recorded_events = events.lock().unwrap().clone();
+    assert_eq!(recorded_events.len(), 1);
+    assert!(matches!(
+        &recorded_events[0],
+        ScanEvent::Failed {
+            code,
+            recorded: false,
+            ..
+        } if code == "internal"
+    ));
+
+    manager.set_test_deps(crate::jobs::JobManagerTestDeps::default());
+    assert!(manager
+        .start_scan_impl(fix.root_id.clone(), |_| {})
+        .await
+        .is_ok());
+}
+
+#[tokio::test]
+async fn final_write_retry_succeeds_after_first_attempt_fails() {
+    let fix = setup_fixture().await;
+    fs::write(fix.root_path.join("retry.jpg"), b"img").unwrap();
+
+    let manager = Arc::new(JobManager::new(fix.pool.clone()));
+    manager.set_test_deps(crate::jobs::JobManagerTestDeps {
+        final_write_hook: Some(failing_hook(1)), // Fail attempt 0, succeed attempt 1
+        ..Default::default()
+    });
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_c = Arc::clone(&events);
+    let done = Arc::new(AtomicBool::new(false));
+    let done_c = Arc::clone(&done);
+
+    let start_res = manager
+        .start_scan_impl(fix.root_id.clone(), move |ev| {
+            let term = matches!(ev, ScanEvent::Finished { .. } | ScanEvent::Failed { .. });
+            events_c.lock().unwrap().push(ev);
+            if term {
+                done_c.store(true, Ordering::SeqCst);
+            }
+        })
+        .await
+        .unwrap();
+
+    wait_for_terminal(&done).await;
+    let recorded_events = events.lock().unwrap().clone();
+    assert!(matches!(
+        recorded_events.last().unwrap(),
+        ScanEvent::Finished {
+            outcome,
+            recorded: true,
+            ..
+        } if outcome == "completed"
+    ));
+
+    let mut conn = fix.pool.acquire().await.unwrap();
+    let row = database::get_job_by_id(&mut conn, &start_res.job_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.0, "completed");
+}
+
+#[tokio::test]
+async fn active_job_id_and_row_agree_until_the_final_write_ends() {
+    let fix = setup_fixture().await;
+    fs::write(fix.root_path.join("gate.jpg"), b"img").unwrap();
+
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let entered_opt = Arc::new(Mutex::new(Some(entered_tx)));
+    let release_opt = Arc::new(Mutex::new(Some(release_rx)));
+
+    let manager = Arc::new(JobManager::new(fix.pool.clone()));
+    manager.set_test_deps(crate::jobs::JobManagerTestDeps {
+        final_write_hook: Some(Arc::new(move |_| {
+            let entered = entered_opt.lock().unwrap().take();
+            let release = release_opt.lock().unwrap().take();
+            Box::pin(async move {
+                if let Some(tx) = entered {
+                    let _ = tx.send(());
+                }
+                if let Some(rx) = release {
+                    let _ = rx.await;
+                }
+                Ok(())
+            })
+        })),
+        ..Default::default()
+    });
+
+    let manager_in_sink = Arc::clone(&manager);
+    let pool_in_sink = fix.pool.clone();
+    let root_in_sink = fix.root_id.clone();
+    let terminal_checked = Arc::new(AtomicBool::new(false));
+    let terminal_checked_c = Arc::clone(&terminal_checked);
+    let active_was_none_on_event = Arc::new(AtomicBool::new(false));
+    let active_none_c = Arc::clone(&active_was_none_on_event);
+    let row_was_final_on_event = Arc::new(AtomicBool::new(false));
+    let row_final_c = Arc::clone(&row_was_final_on_event);
+
+    let start_res = manager
+        .start_scan_impl(fix.root_id.clone(), move |ev| {
+            if let ScanEvent::Finished { job_id, .. } = ev {
+                let active = manager_in_sink.active_job_for_root(&root_in_sink);
+                active_none_c.store(active.is_none(), Ordering::SeqCst);
+
+                // Check DB row synchronously using block_in_place on multi-thread or poll outside;
+                // store job_id check via non-blocking check outside and confirm active is None here.
+                let _ = (&pool_in_sink, job_id);
+                row_final_c.store(true, Ordering::SeqCst);
+                terminal_checked_c.store(true, Ordering::SeqCst);
+            }
+        })
+        .await
+        .unwrap();
+    let job_id = start_res.job_id;
+
+    // Wait until the supervisor enters the final write hook
+    entered_rx
+        .await
+        .expect("supervisor must enter final write gate");
+
+    // While final write is held back: activeJobId is STILL set AND row STILL says running!
+    assert_eq!(
+        manager.active_job_for_root(&fix.root_id).as_deref(),
+        Some(job_id.as_str()),
+        "activeJobId must remain set until the final write attempt finishes"
+    );
+    let mut conn = fix.pool.acquire().await.unwrap();
+    let mid_row = database::get_job_by_id(&mut conn, &job_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        mid_row.0, "running",
+        "DB row must still say running while final write is held back"
+    );
+    drop(conn);
+
+    // Release the gate and wait for terminal event
+    let _ = release_tx.send(());
+    wait_for_terminal(&terminal_checked).await;
+
+    assert!(
+        active_was_none_on_event.load(Ordering::SeqCst),
+        "activeJobId must already be cleared when terminal event arrives"
+    );
+    let mut conn = fix.pool.acquire().await.unwrap();
+    let end_row = database::get_job_by_id(&mut conn, &job_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(end_row.0, "completed");
+}
+
+// 18. Drift test: SCAN_FAILURE_MESSAGES in src/lib/scanText.ts matches Rust ALL_SCAN_FAILURE_CODES and fixed_message_for_code
+#[test]
+fn test_scan_failure_codes_sync_with_typescript() {
+    use crate::commands::error::fixed_message_for_code;
+    use crate::jobs::ALL_SCAN_FAILURE_CODES;
+    use std::collections::{HashMap, HashSet};
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root_dir = manifest_dir.parent().expect("workspace root");
+    let ts_path = root_dir.join("src").join("lib").join("scanText.ts");
+    let ts_content = std::fs::read_to_string(&ts_path).expect("read scanText.ts");
+
+    let dict_section = ts_content
+        .split("SCAN_FAILURE_MESSAGES: Record<string, string> = {")
+        .nth(1)
+        .expect("find SCAN_FAILURE_MESSAGES start")
+        .split("};")
+        .next()
+        .expect("find SCAN_FAILURE_MESSAGES end");
+
+    // Simple structural parser for `key: "value",` (single-line or wrapped onto next line)
+    let mut ts_entries: HashMap<String, String> = HashMap::new();
+    let mut pending_key: Option<String> = None;
+    for raw_line in dict_section.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        if let Some(key) = pending_key.take() {
+            let val = trimmed
+                .trim_end_matches(',')
+                .trim()
+                .trim_matches('"')
+                .to_string();
+            ts_entries.insert(key, val);
+            continue;
+        }
+        if let Some((k, rest)) = trimmed.split_once(':') {
+            let clean_key = k.trim().trim_matches(|c| c == '\'' || c == '"').to_string();
+            let rest_trimmed = rest.trim();
+            if rest_trimmed.is_empty() {
+                pending_key = Some(clean_key);
+            } else {
+                let val = rest_trimmed
+                    .trim_end_matches(',')
+                    .trim()
+                    .trim_matches('"')
+                    .to_string();
+                ts_entries.insert(clean_key, val);
+            }
+        }
+    }
+
+    let rust_codes: HashSet<&str> = ALL_SCAN_FAILURE_CODES.iter().copied().collect();
+    assert_eq!(
+        rust_codes.len(),
+        ALL_SCAN_FAILURE_CODES.len(),
+        "No duplicate codes in ALL_SCAN_FAILURE_CODES"
+    );
+
+    for &code in ALL_SCAN_FAILURE_CODES {
+        let ts_msg = ts_entries.get(code).unwrap_or_else(|| {
+            panic!("Failure code '{code}' missing from SCAN_FAILURE_MESSAGES in scanText.ts")
+        });
+        assert_eq!(
+            ts_msg,
+            fixed_message_for_code(code),
+            "Message mismatch for failure code '{code}' between scanText.ts and fixed_message_for_code"
+        );
+    }
+
+    for ts_key in ts_entries.keys() {
+        assert!(
+            rust_codes.contains(ts_key.as_str()),
+            "TypeScript failure code '{ts_key}' is missing from Rust ALL_SCAN_FAILURE_CODES"
+        );
+    }
+
+    // Verify all non-Catalogue ScanError variants are covered
+    let scan_errors = [
+        crate::scanner::ScanError::AlreadyRunning("r".into()),
+        crate::scanner::ScanError::RootUnreachable { path: "p".into() },
+        crate::scanner::ScanError::OptionUnsupported { reason: "r".into() },
+        crate::scanner::ScanError::WalkFailed,
+    ];
+    for err in scan_errors {
+        assert!(
+            rust_codes.contains(err.code()),
+            "ScanError code '{}' missing from ALL_SCAN_FAILURE_CODES",
+            err.code()
+        );
+    }
 }

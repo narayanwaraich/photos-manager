@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   listRoots,
   addRoot,
+  relocateRoot,
   previewRemoveRoot,
   removeRoot,
   startScan,
@@ -12,11 +13,16 @@ import {
 } from "../lib/tauri";
 import {
   formatRootWarning,
+  formatScanFailure,
   formatScanWarning,
   formatScanningProgress,
   formatCompletedSummary,
+  ROOT_OFFLINE_BADGE,
+  ROOT_OFFLINE_DETAIL,
+  ROOT_OFFLINE_SCAN_DISABLED,
   SCAN_CANCELLED_TEXT,
   SCAN_INTERRUPTED_TEXT,
+  SCAN_NOT_RECORDED_TEXT,
   SCAN_PROGRESS_ERROR_TEXT,
 } from "../lib/scanText";
 
@@ -32,6 +38,7 @@ interface ScanOutcomeState {
   summaryText?: string;
   warnings?: Array<{ code: string; relPath: string }>;
   errorMessage?: string;
+  recorded?: boolean;
 }
 
 export function LibraryFolders() {
@@ -53,6 +60,8 @@ export function LibraryFolders() {
   const [scanOutcomes, setScanOutcomes] = useState<Record<string, ScanOutcomeState>>({});
   // Cancelling state per root to disable repeated clicks
   const [cancellingRoots, setCancellingRoots] = useState<Record<string, boolean>>({});
+  // Relocating state tracking which offline root has a folder picker open
+  const [relocatingRootId, setRelocatingRootId] = useState<string | null>(null);
 
   const fetchRoots = useCallback(async (options?: { quiet?: boolean }) => {
     const isQuiet = options?.quiet ?? false;
@@ -223,6 +232,7 @@ export function LibraryFolders() {
                     validEvent.warningCount,
                   ),
                   warnings: validEvent.warnings,
+                  recorded: validEvent.recorded,
                 },
               }));
             } else {
@@ -231,6 +241,7 @@ export function LibraryFolders() {
                 [root.id]: {
                   kind: "cancelled",
                   summaryText: SCAN_CANCELLED_TEXT,
+                  recorded: validEvent.recorded,
                 },
               }));
             }
@@ -256,7 +267,8 @@ export function LibraryFolders() {
                 errorMessage:
                   validEvent.code === "interrupted"
                     ? SCAN_INTERRUPTED_TEXT
-                    : `Scan failed (${validEvent.code}).`,
+                    : formatScanFailure(validEvent.code),
+                recorded: validEvent.recorded,
               },
             }));
             // Quiet refresh roots list without flickering (R6)
@@ -300,6 +312,27 @@ export function LibraryFolders() {
       setGeneralError(res.error.message);
       setCancellingRoots((prev) => ({ ...prev, [rootId]: false }));
     }
+  };
+
+  // Relocate an offline library root via native folder picker (no automatic scan afterwards)
+  const handleRelocateRoot = async (root: RootSummary) => {
+    setRelocatingRootId(root.id);
+    setGeneralError(null);
+
+    const res = await relocateRoot(root.id);
+    if (res.status === "ok") {
+      if (res.data.outcome === "relocated") {
+        setScanOutcomes((prev) => {
+          const next = { ...prev };
+          delete next[root.id];
+          return next;
+        });
+        await fetchRoots();
+      }
+    } else {
+      setGeneralError(res.error.message);
+    }
+    setRelocatingRootId(null);
   };
 
   return (
@@ -430,10 +463,15 @@ export function LibraryFolders() {
             const outcome = scanOutcomes[root.id];
             const isCancelling = Boolean(cancellingRoots[root.id]);
 
-            // Scan button enablement rules (Decision k)
+            const isOffline = root.status === "Offline";
+            const isUnavailable = isOffline || !root.reachable;
+
+            // Scan button enablement rules (Decision k, TASK-1F Part D)
             const canScan = root.status === "Active" && root.reachable && !isScanning;
             let disabledReason: string | null = null;
-            if (root.status !== "Active") {
+            if (isOffline) {
+              disabledReason = ROOT_OFFLINE_SCAN_DISABLED;
+            } else if (root.status !== "Active") {
               disabledReason = `Folder is ${root.status.toLowerCase()}`;
             } else if (!root.reachable) {
               disabledReason = "Folder is not reachable";
@@ -448,14 +486,14 @@ export function LibraryFolders() {
                   padding: "0.75rem",
                   border: "1px solid #e0e0e0",
                   borderRadius: "4px",
-                  background: root.reachable ? "#fafafa" : "#fff5f5",
+                  background: isUnavailable ? "#fff5f5" : "#fafafa",
                 }}
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div style={{ flex: 1, minWidth: 0, marginRight: "1rem" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
                       <strong style={{ fontSize: "1.05rem" }}>{root.label}</strong>
-                      {!root.reachable && (
+                      {isOffline ? (
                         <span
                           style={{
                             backgroundColor: "#fed7d7",
@@ -466,8 +504,23 @@ export function LibraryFolders() {
                             fontWeight: "bold",
                           }}
                         >
-                          not reachable
+                          {ROOT_OFFLINE_BADGE}
                         </span>
+                      ) : (
+                        !root.reachable && (
+                          <span
+                            style={{
+                              backgroundColor: "#fed7d7",
+                              color: "#c53030",
+                              padding: "0.1rem 0.4rem",
+                              borderRadius: "3px",
+                              fontSize: "0.8rem",
+                              fontWeight: "bold",
+                            }}
+                          >
+                            not reachable
+                          </span>
+                        )
                       )}
                       <span
                         style={{
@@ -493,12 +546,51 @@ export function LibraryFolders() {
                     >
                       {root.pathDisplay}
                     </div>
+                    {isOffline && (
+                      <div style={{ fontSize: "0.85rem", color: "#9b2c2c", marginTop: "0.25rem" }}>
+                        {ROOT_OFFLINE_DETAIL}
+                      </div>
+                    )}
                     <div style={{ fontSize: "0.85rem", color: "#666", marginTop: "0.25rem" }}>
                       {root.fileCount} files · {root.folderCount} folders
                     </div>
                   </div>
 
-                  <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                  <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+                    {isOffline && !isScanning && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => void fetchRoots()}
+                          disabled={loading || adding || removing || relocatingRootId !== null}
+                          style={{
+                            padding: "0.4rem 0.8rem",
+                            cursor: "pointer",
+                            backgroundColor: "#fff",
+                            border: "1px solid #ccc",
+                            borderRadius: "4px",
+                          }}
+                        >
+                          {loading ? "Checking…" : "Check again"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleRelocateRoot(root)}
+                          disabled={loading || adding || removing || relocatingRootId !== null}
+                          style={{
+                            padding: "0.4rem 0.8rem",
+                            cursor: "pointer",
+                            backgroundColor: "#fff",
+                            border: "1px solid #2b6cb0",
+                            color: "#2b6cb0",
+                            borderRadius: "4px",
+                            fontWeight: "bold",
+                          }}
+                        >
+                          {relocatingRootId === root.id ? "Opening Dialog…" : "Find folder…"}
+                        </button>
+                      </>
+                    )}
                     {isScanning ? (
                       <button
                         type="button"
@@ -616,6 +708,9 @@ export function LibraryFolders() {
                     }}
                   >
                     <div>{outcome.summaryText}</div>
+                    {outcome.recorded === false && (
+                      <div style={{ marginTop: "0.25rem", color: "#744210" }}>{SCAN_NOT_RECORDED_TEXT}</div>
+                    )}
                     {outcome.warnings && outcome.warnings.length > 0 && (
                       <ul style={{ margin: "0.4rem 0 0 1rem", padding: 0, fontSize: "0.8rem", color: "#744210" }}>
                         {outcome.warnings.slice(0, 10).map((w, idx) => (
@@ -642,7 +737,10 @@ export function LibraryFolders() {
                       color: "#744210",
                     }}
                   >
-                    {outcome.summaryText}
+                    <div>{outcome.summaryText}</div>
+                    {outcome.recorded === false && (
+                      <div style={{ marginTop: "0.25rem" }}>{SCAN_NOT_RECORDED_TEXT}</div>
+                    )}
                   </div>
                 )}
 
@@ -659,12 +757,15 @@ export function LibraryFolders() {
                       color: "#c53030",
                     }}
                   >
-                    {outcome.errorMessage}
+                    <div>{outcome.errorMessage}</div>
+                    {outcome.recorded === false && (
+                      <div style={{ marginTop: "0.25rem", color: "#744210" }}>{SCAN_NOT_RECORDED_TEXT}</div>
+                    )}
                   </div>
                 )}
 
-                {/* Last job interrupted notice if no active outcome in this session */}
-                {!isScanning && !outcome && root.lastJob?.errorCode === "interrupted" && (
+                {/* Last job failed notice if no active outcome in this session */}
+                {!isScanning && !outcome && root.lastJob?.status === "failed" && (
                   <div
                     style={{
                       marginTop: "0.5rem",
@@ -676,7 +777,9 @@ export function LibraryFolders() {
                       color: "#7b341e",
                     }}
                   >
-                    {SCAN_INTERRUPTED_TEXT}
+                    {root.lastJob.errorCode === "interrupted"
+                      ? SCAN_INTERRUPTED_TEXT
+                      : formatScanFailure(root.lastJob.errorCode)}
                   </div>
                 )}
               </div>

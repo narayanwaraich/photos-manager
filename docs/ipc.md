@@ -43,13 +43,40 @@ Long-running operations (such as filesystem scanning) return immediately across 
 Tagged discriminated union on the `kind` field:
 - `started`: `{ kind: "started", jobId: string, rootId: string }`
 - `progress`: `{ kind: "progress", jobId: string, foldersSeen: number, filesSeen: number, batches: number }`
-- `finished`: `{ kind: "finished", jobId: string, outcome: "completed" | "cancelled", counts: ScanCounts, warningCount: number, warnings: ScanWarning[], elapsedMs: number }`
-- `failed`: `{ kind: "failed", jobId: string, code: string }`
+- `finished`: `{ kind: "finished", jobId: string, outcome: "completed" | "cancelled", counts: ScanCounts, warningCount: number, warnings: ScanWarning[], elapsedMs: number, recorded: boolean }`
+- `failed`: `{ kind: "failed", jobId: string, code: string, recorded: boolean }`
 
-### Decision (g) Stream Invariants
+### Decision (g) & TASK-1F Invariants
 1. **Ordering:** `started` is always delivered first.
 2. **Exclusivity:** Exactly one of `finished` or `failed` is delivered last, and no event follows it.
 3. **Throttling:** `progress` events are throttled to at most four updates per second (250 ms ticker over a `watch` channel, latest value wins).
 4. **Database persistence:** Job progress is persisted to SQLite at most once per second.
 5. **Decoupled survival:** Failed delivery over the channel (e.g., WebView window reloaded or closed) is ignored and never aborts or halts the background scanning job.
 6. **Bounded warnings:** `warnings` in `finished` contains at most the first 100 root-relative warnings (`{ code, relPath }`), never absolute paths.
+7. **Honest terminal recording (risk 63, decision k):** Both `finished` and `failed` carry `recorded: boolean`. The final `finalize_job` + `prune_finished_jobs` transaction retries once after 200 ms on any error. The active-job entry in `JobManager` is removed only after that final write attempt completes and before the terminal event is emitted. If the retry still fails, `recorded` is `false`: the catalogue batches already committed remain intact, while the `jobs` row remains `running` until the next app start-up reconciles it as `interrupted` ("did not finish").
+
+---
+
+## 4. Root Availability & Relocation (`relocate_root`)
+
+### Command Signature
+
+- **`relocate_root(rootId: string) -> Result<RelocateRootResult, IpcError>`**
+  - Runs the native folder dialog in Rust under `DialogGuard` (no path ever crosses from the WebView).
+  - Returns `{ outcome: "cancelled" }` when the dialog is dismissed, or `{ outcome: "relocated", root: RootSummary }` when re-attached.
+  - Enforces: root exists (`not_found`), stored status is `Offline` (`root_not_offline`), no scan active (`root_busy`), valid non-protected non-overlapping path (`root_path_invalid`, `root_not_unicode`, `root_protected`, `root_overlaps`), matching non-NULL volume identity (`relocate_volume_mismatch`), and content spot check of up to 30 `present`/`inaccessible` file rows (`relocate_content_mismatch`).
+  - **Known limit:** Roots on volumes without an `fs_uuid` (for example some network shares) cannot be relocated in Phase 1. Two Windows volumes without GUIDs that share the same 8-hex volume serial cannot be distinguished by the availability volume guard.
+
+### Pre-flight Availability & Walk Limit (decision e, risk 54)
+
+- `list_roots` (2 s timeout) and `start_scan` / `scan_root` pre-flight (5 s timeout) run `is_dir()` and `describe_volume()` on a blocking thread with per-root in-flight deduplication (`ActiveReachableChecks`).
+- **Known limit:** Once the directory walk inside `scan_root` starts, a single blocking filesystem call on a dead network share still cannot be cancelled until the OS call returns (risk 54).
+
+### Additional Error Codes (TASK-1F)
+
+- `root_offline`: Root is unreachable or check timed out / in flight at scan start.
+- `root_volume_changed`: Root path resolves to a different volume `fs_uuid` than stored.
+- `root_not_offline`: `relocate_root` called on a root whose stored status is not `Offline`.
+- `relocate_volume_mismatch`: Relocate target has a different or missing `fs_uuid`.
+- `relocate_content_mismatch`: Fewer than half of the sampled file rows exist under the relocate target.
+- `volume_case_changed`: Reused volume changed case sensitivity while roots on that volume already hold file rows.
