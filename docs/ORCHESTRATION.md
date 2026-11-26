@@ -6,7 +6,7 @@ How this project is run. Three roles, one loop.
 |---|---|---|
 | Product owner | Narayan | Decides scope, approves risky decisions, runs the tools (Mac primary; Windows PC for validation), commits and tags accepted work |
 | Orchestrator / reviewer | Claude (in the "Photo Manager" Project) | Writes task files, reviews reports and diffs against the spec and checklist, updates `docs/STATUS.md`, issues the next task |
-| Implementer | Antigravity with Gemini 3.8 Flash | Executes exactly one task file, writes a report, stops |
+| Implementer | Antigravity with Gemini 4 Hydrogen (from 2026-11-25; Gemini 3.8 Flash before) | Executes exactly one task file, writes a report, stops |
 
 **One place to look:** at the end of every Claude conversation, Claude overwrites `docs/NEXT_STEPS.md` with exact step-by-step instructions for you (commands, what you should see, what to do if not). Open that file first. Lessons on Rust and Git accumulate in `docs/LEARNING.md`; the current lesson is also inside NEXT_STEPS, so you never have to hunt.
 
@@ -29,10 +29,11 @@ Do the 0A review before anything else. If 0A fails its stop conditions, the whol
 
 ## 2. Prompts
 
-**Start a task** (new Antigravity conversation each time):
+**Start a task** (new Antigravity conversation each time; set the effort level in the model picker first, `high` unless the task file says `xhigh`):
 
 ```
 Read AGENTS.md and tasks/TASK-<ID>-*.md. Do exactly that task on branch task/<ID>.
+Effort setting (set by the owner in the picker): <high | xhigh>.
 Do not start any other task. When finished, write reports/REPORT-<ID>.md and stop.
 ```
 
@@ -81,7 +82,7 @@ Rules of the loop:
 
 - **One task per conversation, one branch per task.** Long conversations drift; fresh ones re-read `AGENTS.md`.
 - **Never merge before ACCEPT.** The agent's own "done" is a claim, not a result.
-- **Tasks are small.** If a task needs more than a day of review, Claude splits it.
+- **Tasks are sized to their risk, not to a day.** Size, effort and the calibration rule are in `docs/AGENT_PROFILE.md`. If a task would need a review the owner cannot follow, Claude splits it.
 - **Run `pnpm verify` yourself** before bringing a report back. A report that says "passes" while your run fails is the most important finding in any review.
 - **Gates are real.** A phase does not start until the previous gate in `docs/STATUS.md` is ticked by an ACCEPT.
 - **Spec changes are proposals.** If the agent finds the spec wrong, it says so in the report. Claude decides and issues a revised `IMPLEMENTATION_SPEC.md` (one file, edited in place with a dated change-log line at the bottom); there are no side documents or amendment files.
@@ -98,11 +99,13 @@ Add when relevant:
 
 Do not paste the whole repo. Do not paste API keys, tokens or personal photos.
 
-## 5. Working with Gemini 3.8 Flash
+## 5. Working with Gemini 4 Hydrogen (from 2026-11-25)
 
-- Google's model card shows strength on long-horizon coding and weaker results on a harder general terminal-agent benchmark. The workflow reflects that: small explicit tasks, written acceptance criteria, command-verified claims.
-- Its knowledge ends in March 2026. The most common failure will be confident use of an old crate API, a wrong Tauri 2 plugin name, or an invented flag. `AGENTS.md` forbids this, and the checklist checks for it.
-- Use Antigravity's planning mode for tasks that touch more than a few files, if your version offers it. Raise the model's effort setting for concurrency, the operation journal, and crash recovery (Phases 1 and 5); keep the default for UI work. Setting names vary; the model card only says effort levels are customizable.
+- Hydrogen replaced Gemini 3.8 Flash as the implementer. The sources, the task-sizing rules, the effort policy and the calibration scorecard are in `docs/AGENT_PROFILE.md`. Read it before writing any task file.
+- Its knowledge still ends in March 2026 (model card), so the verify-before-use rule in `AGENTS.md` stays: the most likely failure is confident use of an old crate API, a wrong Tauri 2 plugin name, or an invented flag. `AGENTS.md` forbids this, and the checklist checks for it.
+- Every claim about Hydrogen's reliability is unproven until our own reviews show it. The evidence rules, the report rules and the stop conditions do not relax.
+- Effort: `high` by default; `xhigh` only when a task file says so. You set it in the model picker; the agent cannot see it, so the start prompt names it.
+- Use Antigravity's planning mode for tasks that touch more than a few files, if your version offers it.
 - If the agent keeps failing the same step, stop. Bring the log to Claude; the task may be mis-specified.
 - Never grant the agent permission to run destructive commands automatically against anything outside the project folder.
 

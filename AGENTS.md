@@ -19,7 +19,7 @@ If two documents conflict, stop and report the conflict. Never pick the riskier 
 - If a requirement is ambiguous or conflicts with a rule here, stop and ask in the report instead of guessing.
 
 ## Do not trust memory for versions
-Your training knowledge ends before today's date (the Gemini 3.8 Flash model card gives a March 2026 cutoff). Versions and APIs of Tauri, Rust crates, npm packages, libvips, ExifTool, llama.cpp, Gemini and other providers must be checked against official docs or registries (`cargo info`, `npm view`, official docs) before use. Never invent package names, API fields, CLI flags or model IDs. If you cannot verify something, say so.
+Your training knowledge ends before today's date (the Gemini 4 Hydrogen model card gives a March 2026 cutoff). Versions and APIs of Tauri, Rust crates, npm packages, libvips, ExifTool, llama.cpp, Gemini and other providers must be checked against official docs or registries (`cargo info`, `npm view`, official docs) before use. Never invent package names, API fields, CLI flags or model IDs. If you cannot verify something, say so.
 
 ## Architecture (non-negotiable)
 - Stack: Tauri 2, React, TypeScript, Vite, Rust, SQLx + SQLite, libvips, ExifTool. Local embeddings (EmbeddingGemma 2, Apache 2.0) and cloud AI providers are optional modules. RAW, video, faces, maps, import and backup are later versions (spec §13): design seams exist, but never scaffold, stub or add empty tables for them.
