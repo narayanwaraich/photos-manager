@@ -73,6 +73,43 @@ pub fn now_ms() -> Result<i64, CatalogueError> {
         .map_err(|_| CatalogueError::SizeOutOfRange { size: u64::MAX })
 }
 
+/// Key in `app_settings` for the opt-in automatic scan setting (TASK-1G decision o, default false).
+pub const AUTO_SCAN_SETTING_KEY: &str = "auto_scan";
+
+/// Reads the `auto_scan` boolean setting from `app_settings`, defaulting to `false` when absent.
+pub async fn get_auto_scan(conn: &mut SqliteConnection) -> Result<bool, CatalogueError> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT value_json FROM app_settings WHERE key = ?;")
+            .bind(AUTO_SCAN_SETTING_KEY)
+            .fetch_optional(&mut *conn)
+            .await?;
+
+    match row {
+        Some((value_json,)) => serde_json::from_str::<bool>(&value_json)
+            .map_err(|_| CatalogueError::InvalidEnum("auto_scan".to_string())),
+        None => Ok(false),
+    }
+}
+
+/// Persists the `auto_scan` boolean setting into `app_settings`.
+pub async fn set_auto_scan(
+    conn: &mut SqliteConnection,
+    enabled: bool,
+    now_ms: i64,
+) -> Result<(), CatalogueError> {
+    let value_json = if enabled { "true" } else { "false" };
+    sqlx::query(
+        "INSERT INTO app_settings (key, value_json, updated_at_ms) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms;",
+    )
+    .bind(AUTO_SCAN_SETTING_KEY)
+    .bind(value_json)
+    .bind(now_ms)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 /// Creates a SQLite connection pool configured according to spec §5.1:
 /// - WAL journal mode
 /// - Foreign keys enabled on every connection

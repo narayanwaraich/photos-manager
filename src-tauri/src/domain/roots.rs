@@ -30,6 +30,16 @@ pub struct AddRootOutcome {
     pub warnings: Vec<RootWarning>,
 }
 
+/// Live filesystem watching state for a library root (TASK-1G decision o).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WatchingState {
+    On,
+    #[default]
+    Off,
+    Degraded,
+}
+
 /// Summary of a registered library root for display in lists (spec §12.1).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +57,8 @@ pub struct RootSummary {
     pub last_scan_at_ms: Option<i64>,
     pub last_job: Option<LastJobSummary>,
     pub active_job_id: Option<String>,
+    pub changes_detected: bool,
+    pub watching: WatchingState,
 }
 
 /// Preview of a library root removal (spec §5.2, D29).

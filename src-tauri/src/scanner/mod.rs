@@ -7,7 +7,10 @@ pub mod walk;
 #[cfg(test)]
 mod tests;
 
-pub use classify::{classify, is_always_skipped_name, Class};
+pub use classify::{
+    classify, is_always_skipped_name, is_skipped_package_dir, should_skip_event_path,
+    should_skip_path, Class,
+};
 pub use error::ScanError;
 pub use guard::ScanGuard;
 pub use types::{

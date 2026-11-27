@@ -35,6 +35,7 @@ pub struct LastJobSummary {
     pub status: String,
     pub error_code: Option<String>,
     pub finished_at_ms: Option<i64>,
+    pub trigger: String,
 }
 
 /// Inserts a new job row into the `jobs` table (spec §5.2, Decision d).
@@ -195,7 +196,7 @@ pub async fn get_last_job_for_root(
     root_id: &RootId,
 ) -> Result<Option<LastJobSummary>, CatalogueError> {
     let row: Option<SqliteRow> = sqlx::query(
-        "SELECT id, status, error_code, finished_at_ms
+        "SELECT id, status, error_code, finished_at_ms, payload_json
          FROM jobs
          WHERE root_id = ?
          ORDER BY created_at_ms DESC, id DESC
@@ -211,6 +212,7 @@ pub async fn get_last_job_for_root(
             let status: String = r.try_get("status")?;
             let raw_error_code: Option<String> = r.try_get("error_code")?;
             let finished_at_ms: Option<i64> = r.try_get("finished_at_ms")?;
+            let payload_json: String = r.try_get("payload_json")?;
 
             // errorCode is null unless failed (Decision j)
             let error_code = if status == "failed" {
@@ -219,11 +221,22 @@ pub async fn get_last_job_for_root(
                 None
             };
 
+            let trigger = serde_json::from_str::<serde_json::Value>(&payload_json)
+                .ok()
+                .and_then(|v| {
+                    v.get("trigger")
+                        .and_then(|t| t.as_str())
+                        .map(str::to_string)
+                })
+                .filter(|t| t == "auto" || t == "manual")
+                .unwrap_or_else(|| "manual".to_string());
+
             Ok(Some(LastJobSummary {
                 job_id,
                 status,
                 error_code,
                 finished_at_ms,
+                trigger,
             }))
         }
         None => Ok(None),

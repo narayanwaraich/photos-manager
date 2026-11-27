@@ -149,3 +149,17 @@ export const ROOT_OFFLINE_BADGE = "Not available";
 export const ROOT_OFFLINE_DETAIL =
   "The drive may be unplugged, or the folder was moved or renamed.";
 export const ROOT_OFFLINE_SCAN_DISABLED = "This folder is not available.";
+
+/**
+ * Fixed UI texts for filesystem watching hints and automatic scanning (TASK-1G decisions m, o, p).
+ */
+export const CHANGES_DETECTED_TEXT = "Changes detected since the last scan";
+export const WATCHING_OFF_TEXT =
+  "Watching: off — Automatic change detection could not start. Manual Scan still works.";
+export const WATCHING_DEGRADED_TEXT =
+  "Watching: degraded — Some folder changes may be missed. Manual Scan still works.";
+export const AUTO_SCAN_CHECKBOX_LABEL = "Automatically scan changed folders";
+export const AUTO_SCAN_RUNNING_TEXT = "Automatic scan is running…";
+export const AUTO_SCAN_COMPLETED_TEXT = "Started automatically: scan completed.";
+export const AUTO_SCAN_CANCELLED_TEXT =
+  "Started automatically: scan cancelled. Nothing was marked missing.";

@@ -80,3 +80,25 @@ Tagged discriminated union on the `kind` field:
 - `relocate_volume_mismatch`: Relocate target has a different or missing `fs_uuid`.
 - `relocate_content_mismatch`: Fewer than half of the sampled file rows exist under the relocate target.
 - `volume_case_changed`: Reused volume changed case sensitivity while roots on that volume already hold file rows.
+- `main_window_not_found`: Startup window `"main"` could not be found or shown.
+
+---
+
+## 5. Filesystem Watcher Hints & Automatic Scanning (`get_auto_scan`, `set_auto_scan`)
+
+### New `RootSummary` & `LastJobSummary` Fields (TASK-1G, D35)
+
+- `RootSummary` includes:
+  - `changesDetected: boolean`: In-memory hint set after debounced filesystem events (2 s quiet period, 30 s maximum wait) and cleared when a scan starts on that root. Watcher events never modify any catalogue row (`files`, `folders`, `library_roots`, `jobs`).
+  - `watching: "on" | "off" | "degraded"`: Live watcher state. Watcher start failures never fail `add_root` or app startup and surface as `"off"` with a fixed reason message; runtime watcher errors mark changes detected and surface as `"degraded"`.
+- `LastJobSummary` includes `trigger: "manual" | "auto"` (read from `jobs.payload_json`).
+
+### Settings Commands
+
+- `get_auto_scan() -> Result<bool, IpcError>`: Reads `auto_scan` from `app_settings` (defaults to `false` when unset).
+- `set_auto_scan(enabled: bool) -> Result<bool, IpcError>`: Persists `auto_scan` in `app_settings`.
+
+### UI Refresh & Honest Limits
+
+- **UI refresh (decision q):** `LibraryFolders` polls `list_roots` every 5 s while visible (2 s while a scan is active) and pauses polling via `document.visibilityState` / `visibilitychange` whenever the window is hidden or in the background, requiring no extra Tauri capabilities.
+- **Watcher limits (decision r):** Filesystem watching is best effort. Network shares, cloud/iCloud-managed folders, Windows event buffer overflows, and macOS FSEvents event coalescing can miss or collapse events. A manual **Scan** always works, and when `auto_scan` is enabled the 24-hour reconciliation scan acts as the safety net for lost events. The directory walk stage on a dead network share remains uncancellable once inside a blocking OS call (risk 54).

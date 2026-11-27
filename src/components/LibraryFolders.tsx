@@ -7,11 +7,18 @@ import {
   removeRoot,
   startScan,
   cancelScan,
+  getAutoScan,
+  setAutoScan,
   type RootSummary,
   type RemoveRootPreview,
   type ScanEvent,
 } from "../lib/tauri";
 import {
+  AUTO_SCAN_CANCELLED_TEXT,
+  AUTO_SCAN_CHECKBOX_LABEL,
+  AUTO_SCAN_COMPLETED_TEXT,
+  AUTO_SCAN_RUNNING_TEXT,
+  CHANGES_DETECTED_TEXT,
   formatRootWarning,
   formatScanFailure,
   formatScanWarning,
@@ -24,6 +31,8 @@ import {
   SCAN_INTERRUPTED_TEXT,
   SCAN_NOT_RECORDED_TEXT,
   SCAN_PROGRESS_ERROR_TEXT,
+  WATCHING_DEGRADED_TEXT,
+  WATCHING_OFF_TEXT,
 } from "../lib/scanText";
 
 interface ActiveScanState {
@@ -34,6 +43,7 @@ interface ActiveScanState {
 }
 
 interface ScanOutcomeState {
+  jobId?: string;
   kind: "completed" | "cancelled" | "failed";
   summaryText?: string;
   warnings?: Array<{ code: string; relPath: string }>;
@@ -47,6 +57,8 @@ export function LibraryFolders() {
   const [adding, setAdding] = useState(false);
   const [generalError, setGeneralError] = useState<string | null>(null);
   const [latestWarnings, setLatestWarnings] = useState<string[]>([]);
+  const [autoScan, setAutoScanState] = useState(false);
+  const [savingAutoScan, setSavingAutoScan] = useState(false);
 
   // Count-and-confirm removal state (spec §3.5, Decision h)
   const [previewingRootId, setPreviewingRootId] = useState<string | null>(null);
@@ -82,19 +94,67 @@ export function LibraryFolders() {
 
   useEffect(() => {
     void fetchRoots();
+    void getAutoScan().then((res) => {
+      if (res.status === "ok") {
+        setAutoScanState(res.data);
+      } else {
+        setGeneralError(res.error.message);
+      }
+    });
   }, [fetchRoots]);
 
-  // Window-reload reconciliation polling: refresh every 2s while any root has activeJobId (Decision j, R6)
+  // Visible-only periodic refresh (5 s while visible, 2 s while a scan is active; paused when window is hidden/backgrounded).
   useEffect(() => {
     const anyActive = roots.some((r) => r.activeJobId !== null);
-    if (!anyActive) return;
+    const intervalMs = anyActive ? 2000 : 5000;
+    let timer: ReturnType<typeof setInterval> | null = null;
 
-    const timer = setInterval(() => {
-      void fetchRoots({ quiet: true });
-    }, 2000);
+    const startPolling = () => {
+      if (timer !== null) return;
+      timer = setInterval(() => {
+        if (document.visibilityState === "visible") {
+          void fetchRoots({ quiet: true });
+        }
+      }, intervalMs);
+    };
 
-    return () => clearInterval(timer);
+    const stopPolling = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void fetchRoots({ quiet: true });
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    };
+
+    if (document.visibilityState === "visible") {
+      startPolling();
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      stopPolling();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [roots, fetchRoots]);
+
+  const handleToggleAutoScan = async (enabled: boolean) => {
+    setSavingAutoScan(true);
+    setGeneralError(null);
+    const res = await setAutoScan(enabled);
+    if (res.status === "ok") {
+      setAutoScanState(res.data);
+    } else {
+      setGeneralError(res.error.message);
+    }
+    setSavingAutoScan(false);
+  };
 
   const handleAddFolder = async () => {
     setAdding(true);
@@ -226,6 +286,7 @@ export function LibraryFolders() {
               setScanOutcomes((prev) => ({
                 ...prev,
                 [root.id]: {
+                  jobId: validEvent.jobId,
                   kind: "completed",
                   summaryText: formatCompletedSummary(
                     validEvent.counts,
@@ -239,6 +300,7 @@ export function LibraryFolders() {
               setScanOutcomes((prev) => ({
                 ...prev,
                 [root.id]: {
+                  jobId: validEvent.jobId,
                   kind: "cancelled",
                   summaryText: SCAN_CANCELLED_TEXT,
                   recorded: validEvent.recorded,
@@ -263,6 +325,7 @@ export function LibraryFolders() {
             setScanOutcomes((prev) => ({
               ...prev,
               [root.id]: {
+                jobId: validEvent.jobId,
                 kind: "failed",
                 errorMessage:
                   validEvent.code === "interrupted"
@@ -337,9 +400,35 @@ export function LibraryFolders() {
 
   return (
     <section style={{ marginTop: "1.5rem", padding: "1rem", border: "1px solid #ccc", borderRadius: "8px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: "1rem",
+          gap: "1rem",
+          flexWrap: "wrap",
+        }}
+      >
         <h2 style={{ margin: 0 }}>Library Folders</h2>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
+        <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.4rem",
+              fontSize: "0.9rem",
+              cursor: "pointer",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={autoScan}
+              disabled={savingAutoScan}
+              onChange={(e) => void handleToggleAutoScan(e.target.checked)}
+            />
+            <span>{AUTO_SCAN_CHECKBOX_LABEL}</span>
+          </label>
           <button
             type="button"
             onClick={() => void fetchRoots()}
@@ -457,10 +546,16 @@ export function LibraryFolders() {
           {roots.map((root) => {
             const isTarget = previewingRootId === root.id;
             const activeScan = activeScans[root.id];
-            // Recovered from window reload if not in activeScans but activeJobId is present
+            // Recovered from window reload or started by automatic scheduler
             const isRunningFromReload = !activeScan && root.activeJobId !== null;
             const isScanning = Boolean(activeScan) || isRunningFromReload;
-            const outcome = scanOutcomes[root.id];
+            const rawOutcome = scanOutcomes[root.id];
+            // If a newer job (such as an automatic scan) ran after our last manual session outcome, show the newer lastJob.
+            const outcome =
+              rawOutcome &&
+              (!root.lastJob || !rawOutcome.jobId || root.lastJob.jobId === rawOutcome.jobId)
+                ? rawOutcome
+                : undefined;
             const isCancelling = Boolean(cancellingRoots[root.id]);
 
             const isOffline = root.status === "Offline";
@@ -468,6 +563,7 @@ export function LibraryFolders() {
 
             // Scan button enablement rules (Decision k, TASK-1F Part D)
             const canScan = root.status === "Active" && root.reachable && !isScanning;
+            const highlightScan = canScan && root.changesDetected;
             let disabledReason: string | null = null;
             if (isOffline) {
               disabledReason = ROOT_OFFLINE_SCAN_DISABLED;
@@ -476,6 +572,13 @@ export function LibraryFolders() {
             } else if (!root.reachable) {
               disabledReason = "Folder is not reachable";
             }
+
+            const watchingIssueText =
+              root.status === "Active" && root.watching !== "on"
+                ? root.watching === "degraded"
+                  ? WATCHING_DEGRADED_TEXT
+                  : WATCHING_OFF_TEXT
+                : null;
 
             return (
               <div
@@ -522,6 +625,20 @@ export function LibraryFolders() {
                           </span>
                         )
                       )}
+                      {root.changesDetected && !isScanning && (
+                        <span
+                          style={{
+                            backgroundColor: "#feebc8",
+                            color: "#9c4221",
+                            padding: "0.1rem 0.4rem",
+                            borderRadius: "3px",
+                            fontSize: "0.8rem",
+                            fontWeight: "bold",
+                          }}
+                        >
+                          {CHANGES_DETECTED_TEXT}
+                        </span>
+                      )}
                       <span
                         style={{
                           backgroundColor: "#edf2f7",
@@ -549,6 +666,11 @@ export function LibraryFolders() {
                     {isOffline && (
                       <div style={{ fontSize: "0.85rem", color: "#9b2c2c", marginTop: "0.25rem" }}>
                         {ROOT_OFFLINE_DETAIL}
+                      </div>
+                    )}
+                    {watchingIssueText && (
+                      <div style={{ fontSize: "0.8rem", color: "#744210", marginTop: "0.25rem" }}>
+                        {watchingIssueText}
                       </div>
                     )}
                     <div style={{ fontSize: "0.85rem", color: "#666", marginTop: "0.25rem" }}>
@@ -620,9 +742,14 @@ export function LibraryFolders() {
                         style={{
                           padding: "0.4rem 0.8rem",
                           cursor: canScan ? "pointer" : "not-allowed",
-                          backgroundColor: canScan ? "#2b6cb0" : "#cbd5e0",
+                          backgroundColor: highlightScan
+                            ? "#d97706"
+                            : canScan
+                              ? "#2b6cb0"
+                              : "#cbd5e0",
                           color: "#fff",
-                          border: "none",
+                          border: highlightScan ? "2px solid #9c4221" : "none",
+                          boxShadow: highlightScan ? "0 0 0 2px #fbd38d" : "none",
                           borderRadius: "4px",
                           fontWeight: "bold",
                         }}
@@ -677,7 +804,7 @@ export function LibraryFolders() {
                   </div>
                 )}
 
-                {/* Recovered running state after window reload */}
+                {/* Recovered or automatic running state */}
                 {isRunningFromReload && (
                   <div
                     style={{
@@ -690,7 +817,7 @@ export function LibraryFolders() {
                       color: "#2b6cb0",
                     }}
                   >
-                    A scan is running…
+                    {root.lastJob?.trigger === "auto" ? AUTO_SCAN_RUNNING_TEXT : "A scan is running…"}
                   </div>
                 )}
 
@@ -764,23 +891,58 @@ export function LibraryFolders() {
                   </div>
                 )}
 
-                {/* Last job failed notice if no active outcome in this session */}
-                {!isScanning && !outcome && root.lastJob?.status === "failed" && (
-                  <div
-                    style={{
-                      marginTop: "0.5rem",
-                      padding: "0.4rem 0.6rem",
-                      backgroundColor: "#fffaf0",
-                      border: "1px solid #feebc8",
-                      borderRadius: "4px",
-                      fontSize: "0.85rem",
-                      color: "#7b341e",
-                    }}
-                  >
-                    {root.lastJob.errorCode === "interrupted"
-                      ? SCAN_INTERRUPTED_TEXT
-                      : formatScanFailure(root.lastJob.errorCode)}
-                  </div>
+                {/* Last job notice (automatic completion/cancellation, or any failed last job) when no session outcome is shown */}
+                {!isScanning && !outcome && root.lastJob && (
+                  <>
+                    {root.lastJob.status === "failed" && (
+                      <div
+                        style={{
+                          marginTop: "0.5rem",
+                          padding: "0.4rem 0.6rem",
+                          backgroundColor: "#fffaf0",
+                          border: "1px solid #feebc8",
+                          borderRadius: "4px",
+                          fontSize: "0.85rem",
+                          color: "#7b341e",
+                        }}
+                      >
+                        {root.lastJob.trigger === "auto" ? "Started automatically: " : ""}
+                        {root.lastJob.errorCode === "interrupted"
+                          ? SCAN_INTERRUPTED_TEXT
+                          : formatScanFailure(root.lastJob.errorCode)}
+                      </div>
+                    )}
+                    {root.lastJob.status === "completed" && root.lastJob.trigger === "auto" && (
+                      <div
+                        style={{
+                          marginTop: "0.5rem",
+                          padding: "0.4rem 0.6rem",
+                          backgroundColor: "#f0fff4",
+                          border: "1px solid #c6f6d5",
+                          borderRadius: "4px",
+                          fontSize: "0.85rem",
+                          color: "#22543d",
+                        }}
+                      >
+                        {AUTO_SCAN_COMPLETED_TEXT}
+                      </div>
+                    )}
+                    {root.lastJob.status === "cancelled" && root.lastJob.trigger === "auto" && (
+                      <div
+                        style={{
+                          marginTop: "0.5rem",
+                          padding: "0.4rem 0.6rem",
+                          backgroundColor: "#feebc8",
+                          border: "1px solid #fbd38d",
+                          borderRadius: "4px",
+                          fontSize: "0.85rem",
+                          color: "#744210",
+                        }}
+                      >
+                        {AUTO_SCAN_CANCELLED_TEXT}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             );

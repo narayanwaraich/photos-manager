@@ -135,3 +135,17 @@ export async function startScan(
 export async function cancelScan(jobId: string): Promise<CommandResult<null>> {
   return invokeCommand("cancel_scan", { jobId }, z.null());
 }
+
+/**
+ * Reads whether automatic scanning of changed folders is enabled (default off).
+ */
+export async function getAutoScan(): Promise<CommandResult<boolean>> {
+  return invokeCommand("get_auto_scan", undefined, z.boolean());
+}
+
+/**
+ * Persists the automatic scanning setting (`auto_scan` in `app_settings`).
+ */
+export async function setAutoScan(enabled: boolean): Promise<CommandResult<boolean>> {
+  return invokeCommand("set_auto_scan", { enabled }, z.boolean());
+}

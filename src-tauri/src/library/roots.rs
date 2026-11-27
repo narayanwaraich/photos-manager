@@ -232,10 +232,12 @@ use crate::library::availability::{
     check_root_availability, AvailabilityOutcome, DEFAULT_REACHABLE_TIMEOUT,
 };
 
-/// Read-only listing result pairing a `RootSummary` with the three-valued live availability outcome.
+/// Read-only listing result pairing a `RootSummary` with the three-valued live availability outcome
+/// and the root's native filesystem path (Rust-only, never sent across IPC).
 pub struct RootAvailabilityItem {
     pub summary: RootSummary,
     pub availability: AvailabilityOutcome,
+    pub native_path: std::path::PathBuf,
 }
 
 /// Lists all registered library roots with volume summaries, live reachable status, and counts (D29).
@@ -361,8 +363,11 @@ where
                 last_scan_at_ms: r.last_scan_at_ms,
                 last_job: r.last_job,
                 active_job_id: None,
+                changes_detected: false,
+                watching: crate::domain::WatchingState::Off,
             },
             availability,
+            native_path: crate::filesystem::blob_to_native(&r.path_native),
         });
     }
 
@@ -550,6 +555,8 @@ where
         last_scan_at_ms: rec.last_scan_at_ms,
         last_job: rec.last_job,
         active_job_id: None,
+        changes_detected: false,
+        watching: crate::domain::WatchingState::Off,
     })
 }
 

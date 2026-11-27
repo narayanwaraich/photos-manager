@@ -9,6 +9,7 @@ pub mod metadata;
 pub mod platform;
 pub mod scanner;
 pub mod smoke;
+pub mod watcher;
 
 use image_pipeline::ImageProcessor;
 use std::path::{Path, PathBuf};
@@ -144,6 +145,8 @@ pub fn run() {
             commands::remove_root,
             commands::start_scan,
             commands::cancel_scan,
+            commands::get_auto_scan,
+            commands::set_auto_scan,
         ])
         // Register custom URI scheme protocol for thumbnail serving (spec §7.2)
         // macOS: asset-thumb://localhost/<id>
@@ -221,21 +224,30 @@ pub fn run() {
                     });
 
                     let active_checks = commands::ActiveReachableChecks::default();
-                    let job_manager = std::sync::Arc::new(jobs::JobManager::new_with_in_flight(
+                    let watcher_manager = std::sync::Arc::new(watcher::WatcherManager::new_real());
+                    let job_manager = std::sync::Arc::new(jobs::JobManager::new_with_deps(
                         pool.clone(),
                         std::sync::Arc::clone(&active_checks.0),
+                        Some(std::sync::Arc::clone(&watcher_manager)),
                     ));
                     let protected_ctx = library::ProtectedContext::from_environment(&app_data_dir);
                     app.manage(protected_ctx);
-                    app.manage(pool);
-                    app.manage(active_checks);
+                    app.manage(pool.clone());
+                    app.manage(active_checks.clone());
                     app.manage(commands::DialogGuard::default());
-                    app.manage(job_manager);
+                    app.manage(std::sync::Arc::clone(&watcher_manager));
+                    app.manage(std::sync::Arc::clone(&job_manager));
                     if let Err(startup_err) = show_main_window(app.handle()) {
                         eprintln!("startup failed [{}]: {}", startup_err.code(), startup_err);
                         show_startup_error_dialog(&startup_err);
                         std::process::exit(1);
                     }
+                    watcher::spawn_watcher_and_scheduler(
+                        pool,
+                        std::sync::Arc::clone(&active_checks.0),
+                        watcher_manager,
+                        job_manager,
+                    );
                     Ok(())
                 }
                 Err(startup_err) => {

@@ -38,11 +38,16 @@ export const RootStatusSchema = z.enum([
 
 export type RootStatus = z.infer<typeof RootStatusSchema>;
 
+export const WatchingStateSchema = z.enum(["on", "off", "degraded"]);
+
+export type WatchingState = z.infer<typeof WatchingStateSchema>;
+
 export const LastJobSummarySchema = z.object({
   jobId: z.string(),
   status: z.string(),
   errorCode: z.string().nullable(),
   finishedAtMs: z.number().int().nullable(),
+  trigger: z.enum(["manual", "auto"]),
 });
 
 export type LastJobSummary = z.infer<typeof LastJobSummarySchema>;
@@ -61,6 +66,8 @@ export const RootSummarySchema = z.object({
   lastScanAtMs: z.number().int().nullable(),
   lastJob: LastJobSummarySchema.nullable(),
   activeJobId: z.string().nullable(),
+  changesDetected: z.boolean(),
+  watching: WatchingStateSchema,
 });
 
 export type RootSummary = z.infer<typeof RootSummarySchema>;

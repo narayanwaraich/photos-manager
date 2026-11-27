@@ -190,10 +190,29 @@ pub struct StartScanResult {
     pub job_id: String,
 }
 
+/// Origin trigger of a scan job, persisted in `jobs.payload_json` (TASK-1G decision p).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScanTrigger {
+    #[default]
+    Manual,
+    Auto,
+}
+
+impl ScanTrigger {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Auto => "auto",
+        }
+    }
+}
+
 /// Active in-memory job handle held while a scan is running (Decision c).
 pub struct RunningJob {
     pub root_id: RootId,
     pub cancel: ScanCancel,
+    pub trigger: ScanTrigger,
 }
 
 #[cfg(test)]
@@ -217,13 +236,14 @@ pub struct JobManager {
     pool: SqlitePool,
     active_jobs: Mutex<HashMap<JobId, RunningJob>>,
     in_flight_checks: Arc<Mutex<HashSet<RootId>>>,
+    watcher_manager: Option<Arc<crate::watcher::WatcherManager>>,
     #[cfg(test)]
     test_deps: Mutex<Option<JobManagerTestDeps>>,
 }
 
 impl JobManager {
     pub fn new(pool: SqlitePool) -> Self {
-        Self::new_with_in_flight(pool, Arc::new(Mutex::new(HashSet::new())))
+        Self::new_with_deps(pool, Arc::new(Mutex::new(HashSet::new())), None)
     }
 
     /// Creates a `JobManager` sharing the given `in_flight_checks` set with `list_roots`.
@@ -231,10 +251,20 @@ impl JobManager {
         pool: SqlitePool,
         in_flight_checks: Arc<Mutex<HashSet<RootId>>>,
     ) -> Self {
+        Self::new_with_deps(pool, in_flight_checks, None)
+    }
+
+    /// Creates a `JobManager` wired to shared availability checks and `WatcherManager`.
+    pub fn new_with_deps(
+        pool: SqlitePool,
+        in_flight_checks: Arc<Mutex<HashSet<RootId>>>,
+        watcher_manager: Option<Arc<crate::watcher::WatcherManager>>,
+    ) -> Self {
         Self {
             pool,
             active_jobs: Mutex::new(HashMap::new()),
             in_flight_checks,
+            watcher_manager,
             #[cfg(test)]
             test_deps: Mutex::new(None),
         }
@@ -270,6 +300,15 @@ impl JobManager {
             }
         }
         None
+    }
+
+    /// Returns `true` if any automatic scan is currently running anywhere in the app (TASK-1G decision p).
+    pub fn has_active_auto_scan(&self) -> bool {
+        let map = match self.active_jobs.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        map.values().any(|job| job.trigger == ScanTrigger::Auto)
     }
 
     /// Removes an active job from the in-memory map.
@@ -324,10 +363,24 @@ impl JobManager {
 
     /// Core implementation of `start_scan` (Decision a, c, d, g, h, R4).
     ///
-    /// Generates UUID v7 `scan_generation` and calls `start_scan_with_options`.
+    /// Generates UUID v7 `scan_generation` and starts a manual scan.
     pub async fn start_scan_impl<S>(
         self: &Arc<Self>,
         root_id: RootId,
+        sink: S,
+    ) -> Result<StartScanResult, IpcError>
+    where
+        S: Fn(ScanEvent) + Send + Sync + 'static,
+    {
+        self.start_scan_with_trigger(root_id, ScanTrigger::Manual, sink)
+            .await
+    }
+
+    /// Starts a scan for `root_id` with an explicit `ScanTrigger` (`manual` or `auto`).
+    pub async fn start_scan_with_trigger<S>(
+        self: &Arc<Self>,
+        root_id: RootId,
+        trigger: ScanTrigger,
         sink: S,
     ) -> Result<StartScanResult, IpcError>
     where
@@ -338,7 +391,22 @@ impl JobManager {
             generation: Some(scan_generation),
             ..Default::default()
         };
-        self.start_scan_with_options(root_id, options, sink).await
+        self.start_scan_with_options_and_trigger(root_id, options, trigger, sink)
+            .await
+    }
+
+    #[cfg(test)]
+    async fn start_scan_with_options<S>(
+        self: &Arc<Self>,
+        root_id: RootId,
+        options: ScanOptions,
+        sink: S,
+    ) -> Result<StartScanResult, IpcError>
+    where
+        S: Fn(ScanEvent) + Send + Sync + 'static,
+    {
+        self.start_scan_with_options_and_trigger(root_id, options, ScanTrigger::Manual, sink)
+            .await
     }
 
     /// Internal scan starter taking explicit `ScanOptions` (spec §6.2 step 1, Decision d, R4).
@@ -351,10 +419,11 @@ impl JobManager {
     /// 5. Emits `ScanEvent::Started`.
     /// 6. Spawns `run_tracked_job` supervisor.
     /// 7. Returns `StartScanResult { job_id }` immediately.
-    async fn start_scan_with_options<S>(
+    async fn start_scan_with_options_and_trigger<S>(
         self: &Arc<Self>,
         root_id: RootId,
         options: ScanOptions,
+        trigger: ScanTrigger,
         sink: S,
     ) -> Result<StartScanResult, IpcError>
     where
@@ -467,6 +536,9 @@ impl JobManager {
                 apply_availability_result(&self.pool, &root_id, Some(root.status), availability)
                     .await
                     .map_err(IpcError::from)?;
+                if let Some(ref wm) = self.watcher_manager {
+                    wm.stop_watching(&root_id);
+                }
                 return Err(IpcError::new(
                     "root_offline",
                     fixed_message_for_code("root_offline"),
@@ -476,6 +548,9 @@ impl JobManager {
                 apply_availability_result(&self.pool, &root_id, Some(root.status), availability)
                     .await
                     .map_err(IpcError::from)?;
+                if let Some(ref wm) = self.watcher_manager {
+                    wm.stop_watching(&root_id);
+                }
                 return Err(IpcError::new(
                     "root_volume_changed",
                     fixed_message_for_code("root_volume_changed"),
@@ -496,6 +571,7 @@ impl JobManager {
         let payload_json = serde_json::json!({
             "root_id": root_id.as_str(),
             "generation": options.generation,
+            "trigger": trigger.as_str(),
         })
         .to_string();
 
@@ -534,8 +610,14 @@ impl JobManager {
                 RunningJob {
                     root_id: root_id.clone(),
                     cancel: cancel.clone(),
+                    trigger,
                 },
             );
+        }
+
+        // Clear any pending in-memory watcher hint once the scan starts (TASK-1G decision o).
+        if let Some(ref wm) = self.watcher_manager {
+            wm.clear_changes_detected(&root_id);
         }
 
         // 5. Emit started event (Decision g)
@@ -744,6 +826,9 @@ where
                 Ok(Err(scan_err)) => {
                     let code = scan_err.code();
                     if matches!(scan_err, ScanError::RootUnreachable { .. }) {
+                        if let Some(ref wm) = manager.watcher_manager {
+                            wm.stop_watching(&root_id);
+                        }
                         if let Err(err) = apply_availability_result(
                             &pool,
                             &root_id,

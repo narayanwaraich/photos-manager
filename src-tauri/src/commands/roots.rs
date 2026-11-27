@@ -75,6 +75,22 @@ pub async fn list_roots_with_active_jobs(
     in_flight: &Arc<Mutex<HashSet<RootId>>>,
     active_jobs: impl Fn(&RootId) -> Option<String>,
 ) -> Result<Vec<RootSummary>, IpcError> {
+    list_roots_with_runtime_state(pool, in_flight, active_jobs, None).await
+}
+
+/// Lists library roots, applies definite live availability outcomes best-effort,
+/// syncs per-root watchers (start for available Active, stop for Offline/Paused/Removed),
+/// and populates `active_job_id`, `changes_detected`, and `watching`.
+pub async fn list_roots_with_runtime_state(
+    pool: &SqlitePool,
+    in_flight: &Arc<Mutex<HashSet<RootId>>>,
+    active_jobs: impl Fn(&RootId) -> Option<String>,
+    watcher: Option<&crate::watcher::WatcherManager>,
+) -> Result<Vec<RootSummary>, IpcError> {
+    if let Some(wm) = watcher {
+        wm.flush_debouncers(std::time::Instant::now());
+    }
+
     let items = crate::library::roots::list_roots_with_availability(pool, in_flight)
         .await
         .map_err(IpcError::from)?;
@@ -101,6 +117,20 @@ pub async fn list_roots_with_active_jobs(
                 );
             }
         }
+
+        if let Some(wm) = watcher {
+            if item.summary.status == crate::domain::RootStatus::Active
+                && item.availability.is_available()
+            {
+                wm.ensure_watching(&item.summary.id, &item.native_path);
+            } else if item.summary.status != crate::domain::RootStatus::Active {
+                wm.stop_watching(&item.summary.id);
+            }
+            let (changes_detected, watching) = wm.status_for_root(&item.summary.id);
+            item.summary.changes_detected = changes_detected;
+            item.summary.watching = watching;
+        }
+
         item.summary.active_job_id = active_jobs(&item.summary.id);
         summaries.push(item.summary);
     }
@@ -114,6 +144,22 @@ pub async fn add_root_with_picker<P, Fut>(
     dialog_guard: &DialogGuard,
     label: Option<String>,
     picker: P,
+) -> Result<AddRootResultDto, IpcError>
+where
+    P: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Option<PathBuf>>,
+{
+    add_root_with_picker_and_watcher(pool, ctx, dialog_guard, label, picker, None).await
+}
+
+/// Plain async function implementing root addition with optional `WatcherManager` start (best-effort).
+pub async fn add_root_with_picker_and_watcher<P, Fut>(
+    pool: &SqlitePool,
+    ctx: &ProtectedContext,
+    dialog_guard: &DialogGuard,
+    label: Option<String>,
+    picker: P,
+    watcher: Option<&crate::watcher::WatcherManager>,
 ) -> Result<AddRootResultDto, IpcError>
 where
     P: FnOnce() -> Fut,
@@ -150,6 +196,18 @@ where
     let outcome = crate::library::roots::add_root(pool, ctx, &path, label.as_deref())
         .await
         .map_err(IpcError::from)?;
+
+    // 4. Start watching best-effort: watcher failure never fails add_root (TASK-1G decision m).
+    if let Some(wm) = watcher {
+        if let Ok(mut conn) = pool.acquire().await {
+            if let Ok(Some(row)) =
+                crate::database::roots::get_root(&mut conn, &outcome.root_id).await
+            {
+                let native_path = crate::filesystem::blob_to_native(&row.path_native);
+                wm.ensure_watching(&outcome.root_id, &native_path);
+            }
+        }
+    }
 
     Ok(AddRootResultDto {
         outcome: AddRootOutcomeKind::Added,
@@ -199,6 +257,33 @@ where
     Fut: std::future::Future<Output = Option<PathBuf>>,
     D: Fn(&std::path::Path) -> Result<crate::domain::VolumeInfo, crate::domain::RootError>,
 {
+    relocate_root_with_deps(
+        pool,
+        ctx,
+        dialog_guard,
+        root_id_str,
+        picker,
+        describer,
+        None,
+    )
+    .await
+}
+
+/// Full relocate helper accepting optional `WatcherManager` to start watching the relocated path.
+pub async fn relocate_root_with_deps<P, Fut, D>(
+    pool: &SqlitePool,
+    ctx: &ProtectedContext,
+    dialog_guard: &DialogGuard,
+    root_id_str: &str,
+    picker: P,
+    describer: D,
+    watcher: Option<&crate::watcher::WatcherManager>,
+) -> Result<RelocateRootResultDto, IpcError>
+where
+    P: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Option<PathBuf>>,
+    D: Fn(&std::path::Path) -> Result<crate::domain::VolumeInfo, crate::domain::RootError>,
+{
     // 1. Guard against concurrent open dialogs (same DialogGuard as add_root)
     if dialog_guard
         .0
@@ -227,10 +312,22 @@ where
 
     // 3. Delegate to domain library::roots::relocate_root_with_deps
     let root_id = RootId::from(root_id_str.to_string());
-    let summary =
+    let mut summary =
         crate::library::roots::relocate_root_with_deps(pool, ctx, &root_id, &path, describer)
             .await
             .map_err(IpcError::from)?;
+
+    if let Some(wm) = watcher {
+        if let Ok(mut conn) = pool.acquire().await {
+            if let Ok(Some(row)) = crate::database::roots::get_root(&mut conn, &root_id).await {
+                let native_path = crate::filesystem::blob_to_native(&row.path_native);
+                wm.ensure_watching(&root_id, &native_path);
+            }
+        }
+        let (changes_detected, watching) = wm.status_for_root(&root_id);
+        summary.changes_detected = changes_detected;
+        summary.watching = watching;
+    }
 
     Ok(RelocateRootResultDto {
         outcome: RelocateRootOutcomeKind::Relocated,
@@ -256,6 +353,16 @@ pub async fn remove_root_impl(
     root_id_str: &str,
     expected_files: i64,
 ) -> Result<(), IpcError> {
+    remove_root_impl_with_watcher(pool, root_id_str, expected_files, None).await
+}
+
+/// Executes verified root removal and stops/cleans up any watcher for that root.
+pub async fn remove_root_impl_with_watcher(
+    pool: &SqlitePool,
+    root_id_str: &str,
+    expected_files: i64,
+    watcher: Option<&crate::watcher::WatcherManager>,
+) -> Result<(), IpcError> {
     let root_id = RootId::from(root_id_str.to_string());
     // Acquire ScanGuard to ensure no concurrent scan is active (Decision i)
     let _guard = crate::scanner::ScanGuard::acquire(&root_id)
@@ -263,6 +370,9 @@ pub async fn remove_root_impl(
     crate::library::roots::remove_root(pool, &root_id, expected_files)
         .await
         .map_err(IpcError::from)?;
+    if let Some(wm) = watcher {
+        wm.remove_root(&root_id);
+    }
     Ok(())
 }
 
@@ -275,8 +385,15 @@ pub async fn list_roots(
     pool: tauri::State<'_, SqlitePool>,
     in_flight: tauri::State<'_, ActiveReachableChecks>,
     manager: tauri::State<'_, Arc<crate::jobs::JobManager>>,
+    watcher: tauri::State<'_, Arc<crate::watcher::WatcherManager>>,
 ) -> Result<Vec<RootSummary>, IpcError> {
-    list_roots_with_active_jobs(&pool, &in_flight.0, |id| manager.active_job_for_root(id)).await
+    list_roots_with_runtime_state(
+        &pool,
+        &in_flight.0,
+        |id| manager.active_job_for_root(id),
+        Some(&watcher),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -284,16 +401,24 @@ pub async fn add_root(
     pool: tauri::State<'_, SqlitePool>,
     ctx: tauri::State<'_, ProtectedContext>,
     dialog_guard: tauri::State<'_, DialogGuard>,
+    watcher: tauri::State<'_, Arc<crate::watcher::WatcherManager>>,
     window: tauri::WebviewWindow,
     label: Option<String>,
 ) -> Result<AddRootResultDto, IpcError> {
-    add_root_with_picker(&pool, &ctx, &dialog_guard, label, || async move {
-        let handle = rfd::AsyncFileDialog::new()
-            .set_parent(&window)
-            .pick_folder()
-            .await;
-        handle.map(|h| h.path().to_path_buf())
-    })
+    add_root_with_picker_and_watcher(
+        &pool,
+        &ctx,
+        &dialog_guard,
+        label,
+        || async move {
+            let handle = rfd::AsyncFileDialog::new()
+                .set_parent(&window)
+                .pick_folder()
+                .await;
+            handle.map(|h| h.path().to_path_buf())
+        },
+        Some(&watcher),
+    )
     .await
 }
 
@@ -302,16 +427,25 @@ pub async fn relocate_root(
     pool: tauri::State<'_, SqlitePool>,
     ctx: tauri::State<'_, ProtectedContext>,
     dialog_guard: tauri::State<'_, DialogGuard>,
+    watcher: tauri::State<'_, Arc<crate::watcher::WatcherManager>>,
     window: tauri::WebviewWindow,
     root_id: String,
 ) -> Result<RelocateRootResultDto, IpcError> {
-    relocate_root_with_picker(&pool, &ctx, &dialog_guard, &root_id, || async move {
-        let handle = rfd::AsyncFileDialog::new()
-            .set_parent(&window)
-            .pick_folder()
-            .await;
-        handle.map(|h| h.path().to_path_buf())
-    })
+    relocate_root_with_deps(
+        &pool,
+        &ctx,
+        &dialog_guard,
+        &root_id,
+        || async move {
+            let handle = rfd::AsyncFileDialog::new()
+                .set_parent(&window)
+                .pick_folder()
+                .await;
+            handle.map(|h| h.path().to_path_buf())
+        },
+        crate::library::volume::describe_volume,
+        Some(&watcher),
+    )
     .await
 }
 
@@ -326,10 +460,11 @@ pub async fn preview_remove_root(
 #[tauri::command]
 pub async fn remove_root(
     pool: tauri::State<'_, SqlitePool>,
+    watcher: tauri::State<'_, Arc<crate::watcher::WatcherManager>>,
     root_id: String,
     expected_files: i64,
 ) -> Result<(), IpcError> {
-    remove_root_impl(&pool, &root_id, expected_files).await
+    remove_root_impl_with_watcher(&pool, &root_id, expected_files, Some(&watcher)).await
 }
 
 #[cfg(test)]
@@ -376,12 +511,15 @@ mod tests {
                 status: "completed".to_string(),
                 error_code: None,
                 finished_at_ms: Some(1732440005000),
+                trigger: "auto".to_string(),
             }),
             active_job_id: Some("job_0193498f3b4970008b8b000000000003".to_string()),
+            changes_detected: true,
+            watching: crate::domain::WatchingState::On,
         };
 
         let json = serde_json::to_string(&summary).expect("serialize RootSummary");
-        let expected_json = r#"{"id":"root_0193498f3b4970008b8b000000000001","label":"My Photos","pathDisplay":"/Users/alice/Photos","volumeKind":"Internal","volumeLabel":"Macintosh HD","volumeCaseSensitive":false,"status":"Active","reachable":true,"fileCount":42,"folderCount":7,"lastScanAtMs":1732440000000,"lastJob":{"jobId":"job_0193498f3b4970008b8b000000000002","status":"completed","errorCode":null,"finishedAtMs":1732440005000},"activeJobId":"job_0193498f3b4970008b8b000000000003"}"#;
+        let expected_json = r#"{"id":"root_0193498f3b4970008b8b000000000001","label":"My Photos","pathDisplay":"/Users/alice/Photos","volumeKind":"Internal","volumeLabel":"Macintosh HD","volumeCaseSensitive":false,"status":"Active","reachable":true,"fileCount":42,"folderCount":7,"lastScanAtMs":1732440000000,"lastJob":{"jobId":"job_0193498f3b4970008b8b000000000002","status":"completed","errorCode":null,"finishedAtMs":1732440005000,"trigger":"auto"},"activeJobId":"job_0193498f3b4970008b8b000000000003","changesDetected":true,"watching":"on"}"#;
         assert_eq!(json, expected_json);
 
         let summary_nulls = RootSummary {
@@ -398,11 +536,13 @@ mod tests {
             last_scan_at_ms: None,
             last_job: None,
             active_job_id: None,
+            changes_detected: false,
+            watching: crate::domain::WatchingState::Degraded,
         };
 
         let json_nulls =
             serde_json::to_string(&summary_nulls).expect("serialize RootSummary nulls");
-        let expected_nulls = r#"{"id":"root_0193498f3b4970008b8b000000000001","label":"My Photos","pathDisplay":"/Users/alice/Photos","volumeKind":"Internal","volumeLabel":null,"volumeCaseSensitive":false,"status":"Active","reachable":true,"fileCount":42,"folderCount":7,"lastScanAtMs":null,"lastJob":null,"activeJobId":null}"#;
+        let expected_nulls = r#"{"id":"root_0193498f3b4970008b8b000000000001","label":"My Photos","pathDisplay":"/Users/alice/Photos","volumeKind":"Internal","volumeLabel":null,"volumeCaseSensitive":false,"status":"Active","reachable":true,"fileCount":42,"folderCount":7,"lastScanAtMs":null,"lastJob":null,"activeJobId":null,"changesDetected":false,"watching":"degraded"}"#;
         assert_eq!(json_nulls, expected_nulls);
     }
 
@@ -946,11 +1086,13 @@ mod tests {
                 last_scan_at_ms: None,
                 last_job: None,
                 active_job_id: None,
+                changes_detected: false,
+                watching: crate::domain::WatchingState::Off,
             }),
         };
         assert_eq!(
             serde_json::to_string(&relocated).unwrap(),
-            r#"{"outcome":"relocated","root":{"id":"root_01","label":"Photos","pathDisplay":"/Users/alice/PhotosNew","volumeKind":"Internal","volumeLabel":null,"volumeCaseSensitive":false,"status":"Active","reachable":true,"fileCount":5,"folderCount":1,"lastScanAtMs":null,"lastJob":null,"activeJobId":null}}"#
+            r#"{"outcome":"relocated","root":{"id":"root_01","label":"Photos","pathDisplay":"/Users/alice/PhotosNew","volumeKind":"Internal","volumeLabel":null,"volumeCaseSensitive":false,"status":"Active","reachable":true,"fileCount":5,"folderCount":1,"lastScanAtMs":null,"lastJob":null,"activeJobId":null,"changesDetected":false,"watching":"off"}}"#
         );
     }
 

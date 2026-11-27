@@ -79,6 +79,32 @@ pub fn is_skipped_package_dir(name: &str) -> bool {
     name.to_lowercase().ends_with(".photoslibrary")
 }
 
+/// Returns `true` if any component of `path` is an always-skipped OS metadata name
+/// or a `.photoslibrary` package directory (reused by watcher filtering, TASK-1G decision n).
+pub fn should_skip_path(path: &Path) -> bool {
+    for comp in path.components() {
+        if let std::path::Component::Normal(os_name) = comp {
+            if let Some(name) = os_name.to_str() {
+                if is_always_skipped_name(name) || is_skipped_package_dir(name) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Checks whether a filesystem watcher event path under `root_path` should be ignored
+/// using the scanner's always-skipped and `.photoslibrary` rules.
+pub fn should_skip_event_path(root_path: Option<&Path>, event_path: &Path) -> bool {
+    if let Some(root) = root_path {
+        if let Ok(rel) = event_path.strip_prefix(root) {
+            return should_skip_path(rel);
+        }
+    }
+    should_skip_path(event_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
