@@ -26,6 +26,10 @@ allow = [
     "Zlib",
     "CC0-1.0",
 ]
+exceptions = [
+    # Boost Software License 1.0, permissive and OSI-approved, transitive dependency of notify 9.0.0, not the Business Source License
+    { crate = "xxhash-rust", allow = ["BSL-1.0"] },
+]
 
 [licenses.private]
 ignore = true
