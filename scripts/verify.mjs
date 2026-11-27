@@ -47,13 +47,23 @@ function runStep(name, command, args, cwd = rootDir) {
     PATH: `${extraPaths.join(path.delimiter)}${path.delimiter}${process.env.PATH || ""}`,
   };
 
-  const result = spawnSync(command, args, {
+  // Pass a single command string on Windows (no args array with shell: true) to avoid Node DEP0190,
+  // while still supporting `.cmd` shims like `pnpm`. On Unix, spawn directly without a shell.
+  const spawnOptions = {
     cwd,
     env,
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "pipe"],
-    shell: isWindows,
-  });
+  };
+
+  const result = isWindows
+    ? spawnSync(
+        [command, ...args]
+          .map((part) => (/[\s"&|<>^()]/.test(part) ? `"${part.replace(/"/g, '\\"')}"` : part))
+          .join(" "),
+        { ...spawnOptions, shell: true }
+      )
+    : spawnSync(command, args, spawnOptions);
 
   if (result.stdout) {
     process.stdout.write(result.stdout);

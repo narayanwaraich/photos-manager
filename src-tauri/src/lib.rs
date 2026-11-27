@@ -28,6 +28,9 @@ pub enum StartupError {
 
     #[error("Failed to initialize libvips image processing library: {0}")]
     LibvipsInitFailed(String),
+
+    #[error("Main application window could not be found or shown")]
+    MainWindowNotFound,
 }
 
 impl StartupError {
@@ -38,6 +41,7 @@ impl StartupError {
             Self::CatalogueOpenFailed(_) => "catalogue_open_failed",
             Self::PlatformMismatch { .. } => "catalogue_platform_mismatch",
             Self::LibvipsInitFailed(_) => "libvips_init_failed",
+            Self::MainWindowNotFound => "main_window_not_found",
         }
     }
 
@@ -56,6 +60,9 @@ impl StartupError {
             }
             Self::LibvipsInitFailed(_) => {
                 "The image processing engine (libvips) failed to initialize."
+            }
+            Self::MainWindowNotFound => {
+                "The main application window could not be initialized."
             }
         }
     }
@@ -110,6 +117,19 @@ fn get_fixtures_dir() -> PathBuf {
         .parent()
         .map(|p| p.join("tests").join("fixtures").join("generated"))
         .unwrap_or_else(|| PathBuf::from("tests/fixtures/generated"))
+}
+
+/// Shows and focuses the main window once startup and state management succeed (risk 55).
+fn show_main_window(app: &tauri::AppHandle) -> Result<(), StartupError> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or(StartupError::MainWindowNotFound)?;
+    window
+        .show()
+        .map_err(|_| StartupError::MainWindowNotFound)?;
+    // Focusing is best-effort once the window is visible; ignore OS focus restrictions.
+    let _ = window.set_focus();
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -211,6 +231,11 @@ pub fn run() {
                     app.manage(active_checks);
                     app.manage(commands::DialogGuard::default());
                     app.manage(job_manager);
+                    if let Err(startup_err) = show_main_window(app.handle()) {
+                        eprintln!("startup failed [{}]: {}", startup_err.code(), startup_err);
+                        show_startup_error_dialog(&startup_err);
+                        std::process::exit(1);
+                    }
                     Ok(())
                 }
                 Err(startup_err) => {
@@ -253,6 +278,7 @@ mod tests {
                 found: "windows-utf16le".into(),
             },
             StartupError::LibvipsInitFailed("init error".into()),
+            StartupError::MainWindowNotFound,
         ];
 
         let mut seen_codes = HashSet::new();

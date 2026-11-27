@@ -23,6 +23,7 @@ export const KNOWN_IPC_ERROR_CODES = [
   "app_data_dir_not_usable",
   "catalogue_open_failed",
   "libvips_init_failed",
+  "main_window_not_found",
   "root_path_invalid",
   "root_not_unicode",
   "root_overlaps",

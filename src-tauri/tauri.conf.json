@@ -15,7 +15,8 @@
         "label": "main",
         "title": "Photos Manager",
         "width": 1024,
-        "height": 768
+        "height": 768,
+        "visible": false
       }
     ],
     "security": {

@@ -2,6 +2,14 @@ import { useEffect, useState } from "react";
 import { getAppInfo, type AppInfoDto } from "./lib/tauri";
 import { LibraryFolders } from "./components/LibraryFolders";
 
+const STARTUP_RETRY_DELAY_MS = 100;
+const STARTUP_MAX_RETRIES = 50;
+
+function isUnmanagedStateError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("state not managed") || lower.includes("before manage");
+}
+
 export default function App() {
   const [thumbLoaded, setThumbLoaded] = useState(false);
   const [thumbError, setThumbError] = useState<string | null>(null);
@@ -19,18 +27,48 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
-    void getAppInfo().then((res) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const loadAppInfo = async (attempt: number) => {
+      const res = await getAppInfo();
       if (!active) return;
       if (res.status === "ok") {
         setAppInfo(res.data);
-      } else {
-        setAppInfoError(`${res.error.code}: ${res.error.message}`);
+        return;
       }
-    });
+
+      if (isUnmanagedStateError(res.error.message)) {
+        if (attempt < STARTUP_MAX_RETRIES) {
+          timer = setTimeout(() => {
+            void loadAppInfo(attempt + 1);
+          }, STARTUP_RETRY_DELAY_MS);
+          return;
+        }
+        // Never show raw Tauri "state not managed" text in the UI (risk 55).
+        setAppInfoError("The application could not finish starting. Please restart it.");
+        return;
+      }
+
+      setAppInfoError(`${res.error.code}: ${res.error.message}`);
+    };
+
+    void loadAppInfo(0);
     return () => {
       active = false;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
     };
   }, []);
+
+  if (!appInfo && !appInfoError) {
+    return (
+      <main style={{ padding: "2rem", fontFamily: "system-ui, sans-serif" }}>
+        <h1>Photos Manager</h1>
+        <p>Starting…</p>
+      </main>
+    );
+  }
 
   return (
     <main style={{ padding: "2rem", fontFamily: "system-ui, sans-serif" }}>
@@ -51,10 +89,9 @@ export default function App() {
         {appInfoError && (
           <p style={{ color: "red" }}>Error loading app info: {appInfoError}</p>
         )}
-        {!appInfo && !appInfoError && <p>Loading application info...</p>}
       </section>
 
-      <LibraryFolders />
+      {appInfo && <LibraryFolders />}
 
       <section style={{ marginTop: "1.5rem", padding: "1rem", border: "1px solid #ccc", borderRadius: "8px" }}>
         <h2>Custom Protocol &amp; CSP Spike</h2>

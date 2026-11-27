@@ -46,6 +46,7 @@ pub const ALL_CODES: &[&str] = &[
     "app_data_dir_not_usable",
     "catalogue_open_failed",
     "libvips_init_failed",
+    "main_window_not_found",
     "root_path_invalid",
     "root_not_unicode",
     "root_overlaps",
@@ -102,6 +103,9 @@ pub fn fixed_message_for_code(code: &str) -> &'static str {
         }
         "libvips_init_failed" => {
             "The image processing engine (libvips) failed to initialize."
+        }
+        "main_window_not_found" => {
+            "The main application window could not be initialized."
         }
         "root_path_invalid" => {
             "The specified folder path is invalid, relative, or not a directory."
@@ -315,6 +319,7 @@ mod tests {
                 StartupError::LibvipsInitFailed("VipsForeignLoad: secret_vips_detail".to_string()),
                 vec!["VipsForeignLoad", "secret_vips_detail"],
             ),
+            StartupError::MainWindowNotFound => (StartupError::MainWindowNotFound, vec![]),
         }
     }
 
@@ -327,6 +332,7 @@ mod tests {
                 found: String::new(),
             },
             StartupError::LibvipsInitFailed(String::new()),
+            StartupError::MainWindowNotFound,
         ];
 
         templates.iter().map(startup_error_sample).collect()
