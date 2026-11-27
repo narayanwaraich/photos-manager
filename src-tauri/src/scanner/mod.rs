@@ -288,11 +288,34 @@ where
 /// Core guarded scanner: walks a library root with an already acquired guard, records folders,
 /// files and assets, tracks generations, detects moves, and declares missing items only on full completion (spec §6.2, Decision d).
 pub async fn scan_root_guarded<P>(
+    guard: ScanGuard,
+    pool: &SqlitePool,
+    root_id: &RootId,
+    options: ScanOptions,
+    cancel: ScanCancel,
+    progress: P,
+) -> Result<ScanOutcome, ScanError>
+where
+    P: FnMut(ScanProgress) + Send,
+{
+    static DEFAULT_SCAN_IN_FLIGHT: std::sync::OnceLock<
+        std::sync::Arc<std::sync::Mutex<std::collections::HashSet<RootId>>>,
+    > = std::sync::OnceLock::new();
+    let in_flight = DEFAULT_SCAN_IN_FLIGHT.get_or_init(|| {
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()))
+    });
+    scan_root_guarded_with_in_flight(guard, pool, root_id, options, cancel, in_flight, progress)
+        .await
+}
+
+/// Variant of `scan_root_guarded` accepting the shared in-flight availability check set.
+pub async fn scan_root_guarded_with_in_flight<P>(
     _guard: ScanGuard,
     pool: &SqlitePool,
     root_id: &RootId,
     options: ScanOptions,
     cancel: ScanCancel,
+    in_flight: &std::sync::Arc<std::sync::Mutex<std::collections::HashSet<RootId>>>,
     mut progress: P,
 ) -> Result<ScanOutcome, ScanError>
 where
@@ -317,21 +340,13 @@ where
         });
     }
 
-    // Resolve canonical path and verify directory existence
-    let root_path = blob_to_native(&root.path_native);
-    if !root_path.is_dir() {
-        return Err(ScanError::RootUnreachable {
-            path: root.path_display,
-        });
-    }
-
-    // Fetch volume case sensitivity for path_key policy
-    let case_sensitive = match &root.volume_id {
+    // Fetch volume case sensitivity and stored fs_uuid before releasing DB connection
+    let (case_sensitive, stored_fs_uuid) = match &root.volume_id {
         Some(vid) => match database::get_volume(&mut conn, vid).await? {
-            Some(vol) => vol.case_sensitive,
-            None => false,
+            Some(vol) => (vol.case_sensitive, vol.fs_uuid),
+            None => (false, None),
         },
-        None => false,
+        None => (false, None),
     };
     let key_policy = PathKeyPolicy { case_sensitive };
 
@@ -345,6 +360,25 @@ where
     // Lookup root-folder row (parent_id IS NULL, 1C)
     let root_folder_id = database::get_root_folder_id(&mut conn, root_id).await?;
     drop(conn);
+
+    // Verify directory existence and volume identity off the async executor with timeout (TASK-1F decision e)
+    let root_path = blob_to_native(&root.path_native);
+    let availability = crate::library::check_root_availability(
+        root_id,
+        root_path.clone(),
+        stored_fs_uuid,
+        in_flight,
+        crate::library::SCAN_AVAILABILITY_TIMEOUT,
+        |p| p.is_dir(),
+        crate::library::volume::describe_volume,
+    )
+    .await;
+
+    if !availability.is_available() {
+        return Err(ScanError::RootUnreachable {
+            path: root.path_display,
+        });
+    }
 
     let mut folder_map: HashMap<RelPath, FolderId> = HashMap::new();
     folder_map.insert(RelPath::empty(), root_folder_id);

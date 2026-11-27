@@ -43,6 +43,23 @@ pub struct AddRootResultDto {
     pub warnings: Vec<String>,
 }
 
+/// Outcome kind for the `relocate_root` command wire format (TASK-1F decision f).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RelocateRootOutcomeKind {
+    Relocated,
+    Cancelled,
+}
+
+/// DTO returned across the IPC boundary for the `relocate_root` command (TASK-1F decision f).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelocateRootResultDto {
+    pub outcome: RelocateRootOutcomeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root: Option<RootSummary>,
+}
+
 /// Plain async function for listing library roots with reachability checks (Decision b, d).
 pub async fn list_roots_impl(
     pool: &SqlitePool,
@@ -51,17 +68,41 @@ pub async fn list_roots_impl(
     list_roots_with_active_jobs(pool, in_flight, |_| None).await
 }
 
-/// Lists library roots populating `active_job_id` from the provided active job lookup (Decision j).
+/// Lists library roots, applies definite live availability outcomes best-effort (TASK-1F decision d),
+/// and populates `active_job_id` from the provided active job lookup (Decision j).
 pub async fn list_roots_with_active_jobs(
     pool: &SqlitePool,
     in_flight: &Arc<Mutex<HashSet<RootId>>>,
     active_jobs: impl Fn(&RootId) -> Option<String>,
 ) -> Result<Vec<RootSummary>, IpcError> {
-    let mut summaries = crate::library::roots::list_roots_with_in_flight(pool, in_flight)
+    let items = crate::library::roots::list_roots_with_availability(pool, in_flight)
         .await
         .map_err(IpcError::from)?;
-    for s in &mut summaries {
-        s.active_job_id = active_jobs(&s.id);
+
+    let mut summaries = Vec::with_capacity(items.len());
+    for mut item in items {
+        // Apply definite availability changes best-effort; errors are logged and never fail the list.
+        match crate::library::apply_availability_result(
+            pool,
+            &item.summary.id,
+            Some(item.summary.status),
+            item.availability,
+        )
+        .await
+        {
+            Ok(updated_status) => {
+                item.summary.status = updated_status;
+            }
+            Err(err) => {
+                eprintln!(
+                    "best-effort availability status update failed for root {}: {}",
+                    item.summary.id,
+                    err.code()
+                );
+            }
+        }
+        item.summary.active_job_id = active_jobs(&item.summary.id);
+        summaries.push(item.summary);
     }
     Ok(summaries)
 }
@@ -121,6 +162,82 @@ where
     })
 }
 
+/// Plain async function implementing root relocation behind a pluggable picker closure (TASK-1F decision f).
+pub async fn relocate_root_with_picker<P, Fut>(
+    pool: &SqlitePool,
+    ctx: &ProtectedContext,
+    dialog_guard: &DialogGuard,
+    root_id_str: &str,
+    picker: P,
+) -> Result<RelocateRootResultDto, IpcError>
+where
+    P: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Option<PathBuf>>,
+{
+    relocate_root_with_picker_and_describer(
+        pool,
+        ctx,
+        dialog_guard,
+        root_id_str,
+        picker,
+        crate::library::volume::describe_volume,
+    )
+    .await
+}
+
+/// Parameterized variant of `relocate_root_with_picker` allowing an injected volume describer in tests.
+pub async fn relocate_root_with_picker_and_describer<P, Fut, D>(
+    pool: &SqlitePool,
+    ctx: &ProtectedContext,
+    dialog_guard: &DialogGuard,
+    root_id_str: &str,
+    picker: P,
+    describer: D,
+) -> Result<RelocateRootResultDto, IpcError>
+where
+    P: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Option<PathBuf>>,
+    D: Fn(&std::path::Path) -> Result<crate::domain::VolumeInfo, crate::domain::RootError>,
+{
+    // 1. Guard against concurrent open dialogs (same DialogGuard as add_root)
+    if dialog_guard
+        .0
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err(IpcError::new(
+            "dialog_busy",
+            fixed_message_for_code("dialog_busy"),
+        ));
+    }
+    let _open_guard = DialogOpenGuard(Arc::clone(&dialog_guard.0));
+
+    // 2. Open picker (mocked in tests, native rfd in production)
+    let selected_path = picker().await;
+
+    let path = match selected_path {
+        Some(p) => p,
+        None => {
+            return Ok(RelocateRootResultDto {
+                outcome: RelocateRootOutcomeKind::Cancelled,
+                root: None,
+            });
+        }
+    };
+
+    // 3. Delegate to domain library::roots::relocate_root_with_deps
+    let root_id = RootId::from(root_id_str.to_string());
+    let summary =
+        crate::library::roots::relocate_root_with_deps(pool, ctx, &root_id, &path, describer)
+            .await
+            .map_err(IpcError::from)?;
+
+    Ok(RelocateRootResultDto {
+        outcome: RelocateRootOutcomeKind::Relocated,
+        root: Some(summary),
+    })
+}
+
 /// Plain async function for previewing root removal (Decision b).
 pub async fn preview_remove_root_impl(
     pool: &SqlitePool,
@@ -171,6 +288,24 @@ pub async fn add_root(
     label: Option<String>,
 ) -> Result<AddRootResultDto, IpcError> {
     add_root_with_picker(&pool, &ctx, &dialog_guard, label, || async move {
+        let handle = rfd::AsyncFileDialog::new()
+            .set_parent(&window)
+            .pick_folder()
+            .await;
+        handle.map(|h| h.path().to_path_buf())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn relocate_root(
+    pool: tauri::State<'_, SqlitePool>,
+    ctx: tauri::State<'_, ProtectedContext>,
+    dialog_guard: tauri::State<'_, DialogGuard>,
+    window: tauri::WebviewWindow,
+    root_id: String,
+) -> Result<RelocateRootResultDto, IpcError> {
+    relocate_root_with_picker(&pool, &ctx, &dialog_guard, &root_id, || async move {
         let handle = rfd::AsyncFileDialog::new()
             .set_parent(&window)
             .pick_folder()
@@ -782,5 +917,609 @@ mod tests {
             .await
             .expect("add_root after dialog closes must succeed");
         assert_eq!(res3.outcome, AddRootOutcomeKind::Cancelled);
+    }
+
+    #[test]
+    fn test_wire_format_relocate_root_result_matches_literal_json() {
+        let cancelled = RelocateRootResultDto {
+            outcome: RelocateRootOutcomeKind::Cancelled,
+            root: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&cancelled).unwrap(),
+            r#"{"outcome":"cancelled"}"#
+        );
+
+        let relocated = RelocateRootResultDto {
+            outcome: RelocateRootOutcomeKind::Relocated,
+            root: Some(RootSummary {
+                id: RootId::from("root_01".to_string()),
+                label: "Photos".to_string(),
+                path_display: "/Users/alice/PhotosNew".to_string(),
+                volume_kind: VolumeKind::Internal,
+                volume_label: None,
+                volume_case_sensitive: false,
+                status: RootStatus::Active,
+                reachable: true,
+                file_count: 5,
+                folder_count: 1,
+                last_scan_at_ms: None,
+                last_job: None,
+                active_job_id: None,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_string(&relocated).unwrap(),
+            r#"{"outcome":"relocated","root":{"id":"root_01","label":"Photos","pathDisplay":"/Users/alice/PhotosNew","volumeKind":"Internal","volumeLabel":null,"volumeCaseSensitive":false,"status":"Active","reachable":true,"fileCount":5,"folderCount":1,"lastScanAtMs":null,"lastJob":null,"activeJobId":null}}"#
+        );
+    }
+
+    #[derive(Debug, PartialEq, sqlx::FromRow)]
+    struct FileRowSnapshot {
+        id: String,
+        root_id: String,
+        folder_id: String,
+        name: String,
+        extension: Option<String>,
+        rel_path_display: String,
+        rel_path_native: Vec<u8>,
+        path_key: Vec<u8>,
+        size_bytes: i64,
+        modified_at_ms: i64,
+        created_at_ms: Option<i64>,
+        file_identity: Option<String>,
+        status: String,
+        scan_generation: Option<String>,
+        last_verified_at_ms: Option<i64>,
+        created_in_catalog_at_ms: i64,
+        updated_at_ms: i64,
+    }
+
+    #[derive(Debug, PartialEq, sqlx::FromRow)]
+    struct FolderRowSnapshot {
+        id: String,
+        root_id: String,
+        parent_id: Option<String>,
+        name: String,
+        rel_path_display: String,
+        rel_path_native: Vec<u8>,
+        path_key: Vec<u8>,
+        status: String,
+        modified_at_ms: Option<i64>,
+        last_seen_generation: Option<String>,
+    }
+
+    async fn snapshot_files_and_folders(
+        pool: &SqlitePool,
+        root_id: &str,
+    ) -> (Vec<FileRowSnapshot>, Vec<FolderRowSnapshot>) {
+        let files: Vec<FileRowSnapshot> = sqlx::query_as(
+            "SELECT id, root_id, folder_id, name, extension, rel_path_display, rel_path_native,
+                    path_key, size_bytes, modified_at_ms, created_at_ms, file_identity, status,
+                    scan_generation, last_verified_at_ms, created_in_catalog_at_ms, updated_at_ms
+             FROM files WHERE root_id = ? ORDER BY id ASC;",
+        )
+        .bind(root_id)
+        .fetch_all(pool)
+        .await
+        .unwrap();
+
+        let folders: Vec<FolderRowSnapshot> = sqlx::query_as(
+            "SELECT id, root_id, parent_id, name, rel_path_display, rel_path_native,
+                    path_key, status, modified_at_ms, last_seen_generation
+             FROM folders WHERE root_id = ? ORDER BY id ASC;",
+        )
+        .bind(root_id)
+        .fetch_all(pool)
+        .await
+        .unwrap();
+
+        (files, folders)
+    }
+
+    #[tokio::test]
+    async fn offline_round_trip_writes_no_file_or_folder_rows() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("catalogue.db");
+        let pool = init_pool(&db_path).await.expect("init_pool");
+        let app_data = temp.path().join("app_data");
+        std::fs::create_dir_all(&app_data).expect("create app_data");
+        let ctx = test_context(&app_data);
+        let dialog_guard = DialogGuard::default();
+
+        let root_dir = temp.path().join("library_round_trip");
+        let sub_dir = root_dir.join("2026");
+        std::fs::create_dir_all(&sub_dir).expect("create dirs");
+        std::fs::write(root_dir.join("p1.jpg"), b"jpeg1").unwrap();
+        std::fs::write(sub_dir.join("p2.jpg"), b"jpeg2").unwrap();
+
+        let added = add_root_with_picker(&pool, &ctx, &dialog_guard, None, || async {
+            Some(root_dir.clone())
+        })
+        .await
+        .unwrap();
+        let root_id_str = added.root_id.unwrap();
+        let root_id = RootId::from(root_id_str.clone());
+
+        crate::scanner::scan_root(
+            &pool,
+            &root_id,
+            crate::scanner::ScanOptions::default(),
+            crate::scanner::ScanCancel::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        // Delete p2.jpg and rescan so we also have a 'missing' row in the snapshot
+        std::fs::remove_file(sub_dir.join("p2.jpg")).unwrap();
+        crate::scanner::scan_root(
+            &pool,
+            &root_id,
+            crate::scanner::ScanOptions::default(),
+            crate::scanner::ScanCancel::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        let baseline_snap = snapshot_files_and_folders(&pool, &root_id_str).await;
+        assert_eq!(baseline_snap.0.len(), 2);
+        assert_eq!(baseline_snap.1.len(), 2);
+
+        let aside_dir = temp.path().join("library_round_trip_aside");
+        let in_flight = Arc::new(Mutex::new(HashSet::new()));
+
+        // 1. Go offline
+        std::fs::rename(&root_dir, &aside_dir).unwrap();
+        let list1 = list_roots_impl(&pool, &in_flight).await.unwrap();
+        assert_eq!(list1[0].status, RootStatus::Offline);
+        assert!(!list1[0].reachable);
+        assert_eq!(
+            snapshot_files_and_folders(&pool, &root_id_str).await,
+            baseline_snap
+        );
+
+        // 2. Come back online
+        std::fs::rename(&aside_dir, &root_dir).unwrap();
+        let list2 = list_roots_impl(&pool, &in_flight).await.unwrap();
+        assert_eq!(list2[0].status, RootStatus::Active);
+        assert!(list2[0].reachable);
+        assert_eq!(
+            snapshot_files_and_folders(&pool, &root_id_str).await,
+            baseline_snap
+        );
+
+        // 3. Go offline again
+        std::fs::rename(&root_dir, &aside_dir).unwrap();
+        let list3 = list_roots_impl(&pool, &in_flight).await.unwrap();
+        assert_eq!(list3[0].status, RootStatus::Offline);
+        assert!(!list3[0].reachable);
+        assert_eq!(
+            snapshot_files_and_folders(&pool, &root_id_str).await,
+            baseline_snap
+        );
+    }
+
+    #[tokio::test]
+    async fn relocate_root_success_updates_only_paths_status_and_volume_seen() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("catalogue.db");
+        let pool = init_pool(&db_path).await.expect("init_pool");
+        let app_data = temp.path().join("app_data");
+        std::fs::create_dir_all(&app_data).expect("create app_data");
+        let ctx = test_context(&app_data);
+        let dialog_guard = DialogGuard::default();
+
+        let old_dir = temp.path().join("photos_old");
+        let sub_dir = old_dir.join("trip");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        std::fs::write(old_dir.join("a.jpg"), b"a").unwrap();
+        std::fs::write(sub_dir.join("b.jpg"), b"b").unwrap();
+
+        let add_res = add_root_with_picker(&pool, &ctx, &dialog_guard, None, || async {
+            Some(old_dir.clone())
+        })
+        .await
+        .unwrap();
+        let root_id_str = add_res.root_id.unwrap();
+        let root_id = RootId::from(root_id_str.clone());
+
+        crate::scanner::scan_root(
+            &pool,
+            &root_id,
+            crate::scanner::ScanOptions::default(),
+            crate::scanner::ScanCancel::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        // Move folder to new path and run list_roots so status becomes Offline
+        let new_dir = temp.path().join("photos_new");
+        std::fs::rename(&old_dir, &new_dir).unwrap();
+        let in_flight = Arc::new(Mutex::new(HashSet::new()));
+        let roots_off = list_roots_impl(&pool, &in_flight).await.unwrap();
+        assert_eq!(roots_off[0].status, RootStatus::Offline);
+
+        let before_snap = snapshot_files_and_folders(&pool, &root_id_str).await;
+        let mut conn = pool.acquire().await.unwrap();
+        let before_root = crate::database::roots::get_root(&mut conn, &root_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let vol_id = before_root.volume_id.clone().unwrap();
+        let before_vol = crate::database::volumes::get_volume(&mut conn, &vol_id)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(conn);
+
+        // Relocate with matching UUID (injected deterministic UUID so test passes on Linux too)
+        let uuid_describer =
+            |_: &Path| -> Result<crate::domain::VolumeInfo, crate::domain::RootError> {
+                Ok(crate::domain::VolumeInfo {
+                    kind: VolumeKind::Internal,
+                    label: Some("Main".to_string()),
+                    fs_uuid: before_vol
+                        .fs_uuid
+                        .clone()
+                        .or(Some("uuid-fallback".to_string())),
+                    fs_type: Some("apfs".to_string()),
+                })
+            };
+        if before_vol.fs_uuid.is_none() {
+            sqlx::query("UPDATE volumes SET fs_uuid = 'uuid-fallback' WHERE id = ?;")
+                .bind(vol_id.as_str())
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let reloc_res = relocate_root_with_picker_and_describer(
+            &pool,
+            &ctx,
+            &dialog_guard,
+            &root_id_str,
+            || async { Some(new_dir.clone()) },
+            uuid_describer,
+        )
+        .await
+        .expect("relocate should succeed");
+
+        assert_eq!(reloc_res.outcome, RelocateRootOutcomeKind::Relocated);
+        let summary = reloc_res.root.expect("summary present");
+        assert_eq!(summary.status, RootStatus::Active);
+        assert!(summary.reachable);
+        assert_eq!(summary.file_count, 2);
+
+        // Verify files and folders are byte-for-byte identical
+        assert_eq!(
+            snapshot_files_and_folders(&pool, &root_id_str).await,
+            before_snap
+        );
+
+        let mut conn = pool.acquire().await.unwrap();
+        let after_root = crate::database::roots::get_root(&mut conn, &root_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_root.id, before_root.id);
+        assert_eq!(after_root.volume_id, before_root.volume_id);
+        assert_eq!(after_root.label, before_root.label);
+        assert_eq!(after_root.follow_symlinks, before_root.follow_symlinks);
+        assert_eq!(after_root.include_hidden, before_root.include_hidden);
+        assert_eq!(after_root.created_at_ms, before_root.created_at_ms);
+        assert_eq!(after_root.last_scan_at_ms, before_root.last_scan_at_ms);
+        assert_eq!(
+            after_root.last_scan_generation,
+            before_root.last_scan_generation
+        );
+        assert_ne!(after_root.path_display, before_root.path_display);
+        assert_eq!(after_root.status, RootStatus::Active);
+
+        let after_vol = crate::database::volumes::get_volume(&mut conn, &vol_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(after_vol.last_seen_at_ms >= before_vol.last_seen_at_ms);
+    }
+
+    #[tokio::test]
+    async fn relocate_root_refusals_and_cancelled_dialog() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("catalogue.db");
+        let pool = init_pool(&db_path).await.expect("init_pool");
+        let app_data = temp.path().join("app_data");
+        std::fs::create_dir_all(&app_data).expect("create app_data");
+        let ctx = test_context(&app_data);
+        let dialog_guard = DialogGuard::default();
+
+        let dir1 = temp.path().join("Root1");
+        let dir2 = temp.path().join("OtherRoot");
+        std::fs::create_dir_all(&dir1).unwrap();
+        std::fs::create_dir_all(&dir2).unwrap();
+        for i in 1..=4 {
+            std::fs::write(dir1.join(format!("p{i}.jpg")), b"img").unwrap();
+        }
+
+        let out1 = add_root_with_picker(&pool, &ctx, &dialog_guard, None, || async {
+            Some(dir1.clone())
+        })
+        .await
+        .unwrap();
+        let root_id_str = out1.root_id.unwrap();
+        let root_id = RootId::from(root_id_str.clone());
+
+        let _out2 = add_root_with_picker(&pool, &ctx, &dialog_guard, None, || async {
+            Some(dir2.clone())
+        })
+        .await
+        .unwrap();
+
+        crate::scanner::scan_root(
+            &pool,
+            &root_id,
+            crate::scanner::ScanOptions::default(),
+            crate::scanner::ScanCancel::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        // Ensure volume has deterministic fs_uuid across OSes
+        let mut conn = pool.acquire().await.unwrap();
+        let r1 = crate::database::roots::get_root(&mut conn, &root_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let vol_id = r1.volume_id.clone().unwrap();
+        sqlx::query("UPDATE volumes SET fs_uuid = 'uuid-reloc-test' WHERE id = ?;")
+            .bind(vol_id.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+        drop(conn);
+
+        let same_vol = |_: &Path| -> Result<crate::domain::VolumeInfo, crate::domain::RootError> {
+            Ok(crate::domain::VolumeInfo {
+                kind: VolumeKind::Internal,
+                label: None,
+                fs_uuid: Some("uuid-reloc-test".to_string()),
+                fs_type: Some("apfs".to_string()),
+            })
+        };
+
+        // 1. not_found
+        let err_nf = relocate_root_with_picker_and_describer(
+            &pool,
+            &ctx,
+            &dialog_guard,
+            "missing_root_id",
+            || async { Some(dir1.clone()) },
+            same_vol,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err_nf.code, "not_found");
+
+        // 2. root_not_offline (root is Active)
+        let err_active = relocate_root_with_picker_and_describer(
+            &pool,
+            &ctx,
+            &dialog_guard,
+            &root_id_str,
+            || async { Some(dir1.clone()) },
+            same_vol,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err_active.code, "root_not_offline");
+
+        // Transition root to Offline by moving dir1 away and calling list_roots_impl
+        let wrong_dir = temp.path().join("WrongFolder");
+        std::fs::create_dir_all(&wrong_dir).unwrap();
+        let aside_dir = temp.path().join("Root1Moved");
+        std::fs::rename(&dir1, &aside_dir).unwrap();
+        let in_flight = Arc::new(Mutex::new(HashSet::new()));
+        let roots = list_roots_impl(&pool, &in_flight).await.unwrap();
+        assert_eq!(roots[0].status, RootStatus::Offline);
+
+        // 3. Cancelled dialog changes nothing
+        let cancel_res = relocate_root_with_picker_and_describer(
+            &pool,
+            &ctx,
+            &dialog_guard,
+            &root_id_str,
+            || async { None },
+            same_vol,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cancel_res.outcome, RelocateRootOutcomeKind::Cancelled);
+        assert!(cancel_res.root.is_none());
+
+        // 4. root_busy when ScanGuard is held
+        let guard = crate::scanner::ScanGuard::acquire(&root_id).unwrap();
+        let err_busy = relocate_root_with_picker_and_describer(
+            &pool,
+            &ctx,
+            &dialog_guard,
+            &root_id_str,
+            || async { Some(aside_dir.clone()) },
+            same_vol,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err_busy.code, "root_busy");
+        drop(guard);
+
+        // 5. root_protected
+        let err_prot = relocate_root_with_picker_and_describer(
+            &pool,
+            &ctx,
+            &dialog_guard,
+            &root_id_str,
+            || async { Some(app_data.clone()) },
+            same_vol,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err_prot.code, "root_protected");
+
+        // 6. root_overlaps with another root
+        let err_overlap = relocate_root_with_picker_and_describer(
+            &pool,
+            &ctx,
+            &dialog_guard,
+            &root_id_str,
+            || async { Some(dir2.clone()) },
+            same_vol,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err_overlap.code, "root_overlaps");
+
+        // 7. relocate_volume_mismatch: different uuid, NULL live uuid, NULL stored uuid
+        let err_vol_diff = relocate_root_with_picker_and_describer(
+            &pool,
+            &ctx,
+            &dialog_guard,
+            &root_id_str,
+            || async { Some(aside_dir.clone()) },
+            |_| {
+                Ok(crate::domain::VolumeInfo {
+                    kind: VolumeKind::Internal,
+                    label: None,
+                    fs_uuid: Some("uuid-different".to_string()),
+                    fs_type: None,
+                })
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err_vol_diff.code, "relocate_volume_mismatch");
+
+        let err_vol_null_live = relocate_root_with_picker_and_describer(
+            &pool,
+            &ctx,
+            &dialog_guard,
+            &root_id_str,
+            || async { Some(aside_dir.clone()) },
+            |_| {
+                Ok(crate::domain::VolumeInfo {
+                    kind: VolumeKind::Network,
+                    label: None,
+                    fs_uuid: None,
+                    fs_type: None,
+                })
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err_vol_null_live.code, "relocate_volume_mismatch");
+
+        sqlx::query("UPDATE volumes SET fs_uuid = NULL WHERE id = ?;")
+            .bind(vol_id.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let err_vol_null_stored = relocate_root_with_picker_and_describer(
+            &pool,
+            &ctx,
+            &dialog_guard,
+            &root_id_str,
+            || async { Some(aside_dir.clone()) },
+            same_vol,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err_vol_null_stored.code, "relocate_volume_mismatch");
+
+        // Restore stored fs_uuid
+        sqlx::query("UPDATE volumes SET fs_uuid = 'uuid-reloc-test' WHERE id = ?;")
+            .bind(vol_id.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // 8. relocate_content_mismatch: below half (1 of 4) fails; exactly half (2 of 4) passes!
+        std::fs::write(wrong_dir.join("p1.jpg"), b"img").unwrap();
+        let err_content = relocate_root_with_picker_and_describer(
+            &pool,
+            &ctx,
+            &dialog_guard,
+            &root_id_str,
+            || async { Some(wrong_dir.clone()) },
+            same_vol,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err_content.code, "relocate_content_mismatch");
+
+        std::fs::write(wrong_dir.join("p2.jpg"), b"img").unwrap();
+        let ok_half = relocate_root_with_picker_and_describer(
+            &pool,
+            &ctx,
+            &dialog_guard,
+            &root_id_str,
+            || async { Some(wrong_dir.clone()) },
+            same_vol,
+        )
+        .await
+        .expect("exactly half matching files must pass");
+        assert_eq!(ok_half.outcome, RelocateRootOutcomeKind::Relocated);
+        assert_eq!(ok_half.root.unwrap().status, RootStatus::Active);
+    }
+
+    #[tokio::test]
+    async fn remove_root_works_when_offline() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("catalogue.db");
+        let pool = init_pool(&db_path).await.expect("init_pool");
+        let app_data = temp.path().join("app_data");
+        std::fs::create_dir_all(&app_data).expect("create app_data");
+        let ctx = test_context(&app_data);
+        let dialog_guard = DialogGuard::default();
+
+        let dir = temp.path().join("OfflineRemove");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.jpg"), b"a").unwrap();
+        std::fs::write(dir.join("b.jpg"), b"b").unwrap();
+
+        let added = add_root_with_picker(&pool, &ctx, &dialog_guard, None, || async {
+            Some(dir.clone())
+        })
+        .await
+        .unwrap();
+        let root_id_str = added.root_id.unwrap();
+        let root_id = RootId::from(root_id_str.clone());
+
+        crate::scanner::scan_root(
+            &pool,
+            &root_id,
+            crate::scanner::ScanOptions::default(),
+            crate::scanner::ScanCancel::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        // Remove folder from disk and transition root to Offline
+        std::fs::remove_dir_all(&dir).unwrap();
+        let in_flight = Arc::new(Mutex::new(HashSet::new()));
+        let roots = list_roots_impl(&pool, &in_flight).await.unwrap();
+        assert_eq!(roots[0].status, RootStatus::Offline);
+
+        let preview = preview_remove_root_impl(&pool, &root_id_str).await.unwrap();
+        assert_eq!(preview.file_count, 2);
+        assert_eq!(preview.asset_count, 2);
+
+        remove_root_impl(&pool, &root_id_str, preview.file_count)
+            .await
+            .expect("removing offline root must succeed without touching disk");
+
+        let roots_after = list_roots_impl(&pool, &in_flight).await.unwrap();
+        assert!(roots_after.is_empty());
     }
 }

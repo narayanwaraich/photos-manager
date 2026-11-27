@@ -81,6 +81,91 @@ pub async fn find_volume_by_uuid(
     }
 }
 
+/// Finds all existing volume records matching an identity string, including legacy bare 8-hex
+/// serial numbers when searching by a `serial:` identity (TASK-1F decision h).
+pub async fn find_volumes_by_identity(
+    conn: &mut SqliteConnection,
+    fs_uuid: &str,
+) -> Result<Vec<VolumeRow>, CatalogueError> {
+    let rows: Vec<SqliteRow> = if let Some(hex_part) = fs_uuid.strip_prefix("serial:") {
+        sqlx::query(
+            "SELECT id, kind, label, fs_uuid, fs_type, case_sensitive, last_seen_at_ms
+             FROM volumes
+             WHERE fs_uuid = ? OR UPPER(fs_uuid) = UPPER(?)
+             ORDER BY id ASC;",
+        )
+        .bind(fs_uuid)
+        .bind(hex_part)
+        .fetch_all(&mut *conn)
+        .await?
+    } else {
+        sqlx::query(
+            "SELECT id, kind, label, fs_uuid, fs_type, case_sensitive, last_seen_at_ms
+             FROM volumes
+             WHERE fs_uuid = ?
+             ORDER BY id ASC;",
+        )
+        .bind(fs_uuid)
+        .fetch_all(&mut *conn)
+        .await?
+    };
+
+    let mut volumes = Vec::with_capacity(rows.len());
+    for r in rows {
+        volumes.push(row_to_volume(&r)?);
+    }
+    Ok(volumes)
+}
+
+/// Checks whether any root attached to `volume_id` already has any `files` rows (TASK-1F decision g).
+pub async fn volume_has_files(
+    conn: &mut SqliteConnection,
+    volume_id: &VolumeId,
+) -> Result<bool, CatalogueError> {
+    let row: (i32,) = sqlx::query_as(
+        "SELECT EXISTS(
+            SELECT 1 FROM files f
+            JOIN library_roots r ON f.root_id = r.id
+            WHERE r.volume_id = ?
+         );",
+    )
+    .bind(volume_id.as_str())
+    .fetch_one(&mut *conn)
+    .await?;
+
+    Ok(row.0 != 0)
+}
+
+/// Updates `case_sensitive` on an existing volume row when safe to do so (TASK-1F decision g).
+pub async fn update_volume_case_sensitive(
+    conn: &mut SqliteConnection,
+    id: &VolumeId,
+    case_sensitive: bool,
+) -> Result<(), CatalogueError> {
+    sqlx::query("UPDATE volumes SET case_sensitive = ? WHERE id = ?;")
+        .bind(if case_sensitive { 1i32 } else { 0i32 })
+        .bind(id.as_str())
+        .execute(&mut *conn)
+        .await?;
+
+    Ok(())
+}
+
+/// Updates only `last_seen_at_ms` on an existing volume row (TASK-1F decision f).
+pub async fn update_volume_last_seen(
+    conn: &mut SqliteConnection,
+    id: &VolumeId,
+    last_seen_at_ms: i64,
+) -> Result<(), CatalogueError> {
+    sqlx::query("UPDATE volumes SET last_seen_at_ms = ? WHERE id = ?;")
+        .bind(last_seen_at_ms)
+        .bind(id.as_str())
+        .execute(&mut *conn)
+        .await?;
+
+    Ok(())
+}
+
 /// Refreshes the label and last_seen_at_ms of an existing volume (spec §5.2, D29e).
 pub async fn update_volume_label_and_seen(
     conn: &mut SqliteConnection,

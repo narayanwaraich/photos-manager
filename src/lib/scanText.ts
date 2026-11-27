@@ -101,3 +101,51 @@ export const SCAN_INTERRUPTED_TEXT =
  */
 export const SCAN_PROGRESS_ERROR_TEXT =
   "Something went wrong while reporting progress.";
+
+/**
+ * Fixed English messages for all scan failure codes (TASK-1F decision j, finding N1).
+ * Keys must match ALL_SCAN_FAILURE_CODES in Rust and values must match fixed_message_for_code(code)
+ * (verified bidirectionally by a Rust unit test).
+ */
+export const SCAN_FAILURE_MESSAGES: Record<string, string> = {
+  scan_root_unreachable: "The library folder is missing or cannot be accessed.",
+  scan_walk_failed: "The filesystem walk encountered an unrecoverable error.",
+  scan_root_option_unsupported: "The requested scan option is not supported.",
+  scan_already_running: "A scan is already in progress for this library folder.",
+  root_offline:
+    "This folder is not available. The drive may be unplugged, or the folder may have been moved or renamed.",
+  root_volume_changed:
+    "This path is now on a different drive than the one this folder was added from. Nothing was changed.",
+  root_busy: "This folder is being scanned. Cancel the scan or wait until it ends.",
+  root_not_found: "The specified library folder was not found.",
+  job_not_found: "The requested job was not found or is no longer running.",
+  interrupted: "The app closed before this job finished.",
+  internal: "An internal application error occurred.",
+  database: "A database error occurred.",
+  not_found: "The requested entity was not found in the catalogue.",
+  invalid_enum: "An invalid enum value was encountered.",
+};
+
+/**
+ * Translates a scan failure code to a plain-language sentence without printing raw codes.
+ */
+export function formatScanFailure(code: string | null | undefined): string {
+  if (code && Object.prototype.hasOwnProperty.call(SCAN_FAILURE_MESSAGES, code)) {
+    return SCAN_FAILURE_MESSAGES[code];
+  }
+  return "The scan could not be completed.";
+}
+
+/**
+ * Notice appended to a terminal scan result when the final job write could not be saved (TASK-1F decision k).
+ */
+export const SCAN_NOT_RECORDED_TEXT =
+  "The result of this scan could not be saved to the history. The catalogue itself is fine.";
+
+/**
+ * Fixed UI texts for roots with stored status `Offline` (TASK-1F Part D).
+ */
+export const ROOT_OFFLINE_BADGE = "Not available";
+export const ROOT_OFFLINE_DETAIL =
+  "The drive may be unplugged, or the folder was moved or renamed.";
+export const ROOT_OFFLINE_SCAN_DISABLED = "This folder is not available.";

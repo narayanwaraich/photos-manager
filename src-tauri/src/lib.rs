@@ -119,6 +119,7 @@ pub fn run() {
             commands::get_app_info,
             commands::list_roots,
             commands::add_root,
+            commands::relocate_root,
             commands::preview_remove_root,
             commands::remove_root,
             commands::start_scan,
@@ -199,11 +200,15 @@ pub fn run() {
                         }
                     });
 
-                    let job_manager = std::sync::Arc::new(jobs::JobManager::new(pool.clone()));
+                    let active_checks = commands::ActiveReachableChecks::default();
+                    let job_manager = std::sync::Arc::new(jobs::JobManager::new_with_in_flight(
+                        pool.clone(),
+                        std::sync::Arc::clone(&active_checks.0),
+                    ));
                     let protected_ctx = library::ProtectedContext::from_environment(&app_data_dir);
                     app.manage(protected_ctx);
                     app.manage(pool);
-                    app.manage(commands::ActiveReachableChecks::default());
+                    app.manage(active_checks);
                     app.manage(commands::DialogGuard::default());
                     app.manage(job_manager);
                     Ok(())

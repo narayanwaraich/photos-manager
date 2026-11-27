@@ -62,6 +62,12 @@ pub const ALL_CODES: &[&str] = &[
     "interrupted",
     "root_busy",
     "job_not_found",
+    "root_offline",
+    "root_volume_changed",
+    "root_not_offline",
+    "relocate_volume_mismatch",
+    "relocate_content_mismatch",
+    "volume_case_changed",
     "internal",
 ];
 
@@ -134,6 +140,24 @@ pub fn fixed_message_for_code(code: &str) -> &'static str {
         }
         "job_not_found" => {
             "The requested job was not found or is no longer running."
+        }
+        "root_offline" => {
+            "This folder is not available. The drive may be unplugged, or the folder may have been moved or renamed."
+        }
+        "root_volume_changed" => {
+            "This path is now on a different drive than the one this folder was added from. Nothing was changed."
+        }
+        "root_not_offline" => {
+            "Only a folder that is not available can be looked for again."
+        }
+        "relocate_volume_mismatch" => {
+            "The chosen folder is on a different drive than the one this folder was added from."
+        }
+        "relocate_content_mismatch" => {
+            "The chosen folder does not contain the photos this folder had. Nothing was changed."
+        }
+        "volume_case_changed" => {
+            "This drive now treats upper and lower case in names differently than when it was first added. Remove its folders from the app first, then add them again."
         }
         _ => "An internal application error occurred.",
     }
@@ -362,6 +386,16 @@ mod tests {
                 RootError::VolumeUnavailable("statfs failed for /Volumes/SecretDrive".to_string()),
                 vec!["statfs failed", "/Volumes/SecretDrive"],
             ),
+            RootError::NotOffline { .. } => (
+                RootError::NotOffline {
+                    id: "secret_active_root_id".to_string(),
+                },
+                vec!["secret_active_root_id"],
+            ),
+            RootError::RelocateVolumeMismatch => (RootError::RelocateVolumeMismatch, vec![]),
+            RootError::RelocateContentMismatch => (RootError::RelocateContentMismatch, vec![]),
+            RootError::VolumeCaseChanged => (RootError::VolumeCaseChanged, vec![]),
+            RootError::Busy => (RootError::Busy, vec![]),
             RootError::Catalogue(_) => {
                 let (sample, secrets) = all_catalogue_error_samples().remove(0);
                 (RootError::Catalogue(sample), secrets)
@@ -393,6 +427,11 @@ mod tests {
                 actual: 0,
             },
             RootError::VolumeUnavailable(String::new()),
+            RootError::NotOffline { id: String::new() },
+            RootError::RelocateVolumeMismatch,
+            RootError::RelocateContentMismatch,
+            RootError::VolumeCaseChanged,
+            RootError::Busy,
             RootError::Catalogue(CatalogueError::Database(sqlx::Error::RowNotFound)),
         ];
 
@@ -650,6 +689,8 @@ mod tests {
         emitted_codes.insert("interrupted");
         emitted_codes.insert("root_busy");
         emitted_codes.insert("job_not_found");
+        emitted_codes.insert("root_offline");
+        emitted_codes.insert("root_volume_changed");
         emitted_codes.insert("internal");
 
         // Verify ALL_CODES has no stale entries that no error type emits

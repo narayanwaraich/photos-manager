@@ -109,6 +109,21 @@ pub enum RootError {
     #[error("Volume unavailable: {0}")]
     VolumeUnavailable(String),
 
+    #[error("Root is not offline: {id}")]
+    NotOffline { id: String },
+
+    #[error("Relocate target is on a different volume")]
+    RelocateVolumeMismatch,
+
+    #[error("Relocate target does not contain the expected photos")]
+    RelocateContentMismatch,
+
+    #[error("Volume case sensitivity changed since initial addition")]
+    VolumeCaseChanged,
+
+    #[error("Root is busy with an active scan")]
+    Busy,
+
     #[error("Catalogue error: {0}")]
     Catalogue(#[from] CatalogueError),
 }
@@ -127,6 +142,11 @@ impl RootError {
             Self::NotFound { .. } => "root_not_found",
             Self::ChangedSincePreview { .. } => "root_changed_since_preview",
             Self::VolumeUnavailable(_) => "volume_unavailable",
+            Self::NotOffline { .. } => "root_not_offline",
+            Self::RelocateVolumeMismatch => "relocate_volume_mismatch",
+            Self::RelocateContentMismatch => "relocate_content_mismatch",
+            Self::VolumeCaseChanged => "volume_case_changed",
+            Self::Busy => "root_busy",
             Self::Catalogue(err) => err.code(),
         }
     }

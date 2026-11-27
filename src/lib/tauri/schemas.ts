@@ -114,11 +114,13 @@ export const ScanEventSchema = z.discriminatedUnion("kind", [
     warningCount: z.number().int().nonnegative(),
     warnings: z.array(ScanWarningSchema),
     elapsedMs: z.number().int().nonnegative(),
+    recorded: z.boolean(),
   }),
   z.object({
     kind: z.literal("failed"),
     jobId: z.string(),
     code: z.string(),
+    recorded: z.boolean(),
   }),
 ]);
 
@@ -131,6 +133,13 @@ export const AddRootResultSchema = z.object({
 });
 
 export type AddRootResult = z.infer<typeof AddRootResultSchema>;
+
+export const RelocateRootResultSchema = z.object({
+  outcome: z.enum(["relocated", "cancelled"]),
+  root: RootSummarySchema.optional(),
+});
+
+export type RelocateRootResult = z.infer<typeof RelocateRootResultSchema>;
 
 export const RemoveRootPreviewSchema = z.object({
   rootId: z.string(),

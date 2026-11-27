@@ -9,6 +9,8 @@ import {
   type RootSummary,
   AddRootResultSchema,
   type AddRootResult,
+  RelocateRootResultSchema,
+  type RelocateRootResult,
   RemoveRootPreviewSchema,
   type RemoveRootPreview,
   StartScanResultSchema,
@@ -78,6 +80,14 @@ export async function listRoots(): Promise<CommandResult<RootSummary[]>> {
  */
 export async function addRoot(label?: string): Promise<CommandResult<AddRootResult>> {
   return invokeCommand("add_root", label !== undefined ? { label } : undefined, AddRootResultSchema);
+}
+
+/**
+ * Invokes the `relocate_root` Tauri command to re-attach an offline root at a new path.
+ * Folder selection occurs in native Rust dialog; no path crosses from the WebView.
+ */
+export async function relocateRoot(rootId: string): Promise<CommandResult<RelocateRootResult>> {
+  return invokeCommand("relocate_root", { rootId }, RelocateRootResultSchema);
 }
 
 /**
