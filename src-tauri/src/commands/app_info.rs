@@ -71,8 +71,8 @@ mod tests {
         #[cfg(not(windows))]
         assert_eq!(info.platform_encoding, "unix-bytes");
         assert_eq!(
-            info.migrations_applied, 4,
-            "All 4 migrations must be applied"
+            info.migrations_applied, 5,
+            "All 5 migrations must be applied"
         );
     }
 

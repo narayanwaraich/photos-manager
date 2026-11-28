@@ -1528,13 +1528,13 @@ mod tests {
         let pool = init_pool(&db_path).await.expect("init_pool");
         let mut conn = pool.acquire().await.expect("acquire");
 
-        // 1. Verify migration count is 4
+        // 1. Verify migration count is 5
         let count_row: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM _sqlx_migrations WHERE success = 1;")
                 .fetch_one(&mut *conn)
                 .await
                 .expect("count migrations");
-        assert_eq!(count_row.0, 4, "4 migrations must be successfully applied");
+        assert_eq!(count_row.0, 5, "5 migrations must be successfully applied");
 
         // 2. Verify jobs table exists
         let table_row: Option<(String,)> = sqlx::query_as(
@@ -1615,5 +1615,126 @@ mod tests {
             job_count.0, 0,
             "Deleting library root must cascade delete associated jobs"
         );
+    }
+
+    #[tokio::test]
+    async fn test_cascading_foreign_keys_have_leftmost_index() {
+        use sqlx::Row;
+        use std::collections::BTreeMap;
+
+        let options = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("connect in-memory sqlite");
+
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations on in-memory db");
+
+        let mut conn = pool.acquire().await.expect("acquire");
+        let table_rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != '_sqlx_migrations'
+             ORDER BY name;",
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .expect("list tables");
+
+        assert!(!table_rows.is_empty(), "migrated schema must have tables");
+
+        for (table,) in table_rows {
+            let fk_pragma = format!(
+                "PRAGMA foreign_key_list(\"{}\");",
+                table.replace('"', "\"\"")
+            );
+            let fk_rows = sqlx::query(&fk_pragma)
+                .fetch_all(&mut *conn)
+                .await
+                .expect("pragma_foreign_key_list");
+
+            // Group composite FKs by id and keep columns ordered by seq.
+            let mut fks_by_id: BTreeMap<i64, (String, Vec<(i64, String)>)> = BTreeMap::new();
+            for row in fk_rows {
+                let fk_id: i64 = row.try_get("id").expect("fk id");
+                let seq: i64 = row.try_get("seq").expect("fk seq");
+                let from_col: String = row.try_get("from").expect("fk from");
+                let on_delete: String = row.try_get("on_delete").expect("fk on_delete");
+                let entry = fks_by_id
+                    .entry(fk_id)
+                    .or_insert_with(|| (on_delete, Vec::new()));
+                entry.1.push((seq, from_col));
+            }
+
+            if fks_by_id.is_empty() {
+                continue;
+            }
+
+            let idx_list_pragma = format!("PRAGMA index_list(\"{}\");", table.replace('"', "\"\""));
+            let idx_rows = sqlx::query(&idx_list_pragma)
+                .fetch_all(&mut *conn)
+                .await
+                .expect("pragma_index_list");
+
+            let mut non_partial_index_cols: Vec<Vec<String>> = Vec::new();
+            for idx_row in idx_rows {
+                let partial: i64 = idx_row.try_get("partial").expect("index partial");
+                if partial != 0 {
+                    continue;
+                }
+                let idx_name: String = idx_row.try_get("name").expect("index name");
+                let idx_info_pragma =
+                    format!("PRAGMA index_info(\"{}\");", idx_name.replace('"', "\"\""));
+                let info_rows = sqlx::query(&idx_info_pragma)
+                    .fetch_all(&mut *conn)
+                    .await
+                    .expect("pragma_index_info");
+                let mut cols: Vec<(i64, String)> = Vec::new();
+                for info_row in info_rows {
+                    let seqno: i64 = info_row.try_get("seqno").expect("index seqno");
+                    let col_name: Option<String> = info_row.try_get("name").expect("index col");
+                    if let Some(name) = col_name {
+                        cols.push((seqno, name));
+                    }
+                }
+                cols.sort_by_key(|(seqno, _)| *seqno);
+                non_partial_index_cols.push(cols.into_iter().map(|(_, name)| name).collect());
+            }
+
+            for (_fk_id, (on_delete, mut seq_cols)) in fks_by_id {
+                seq_cols.sort_by_key(|(seq, _)| *seq);
+                let fk_cols: Vec<String> = seq_cols.into_iter().map(|(_, c)| c).collect();
+
+                // Owner-approved scope (R4): check ON DELETE CASCADE foreign keys;
+                // library_roots.volume_id is ON DELETE NO ACTION and volumes are never deleted.
+                if !on_delete.eq_ignore_ascii_case("CASCADE") {
+                    assert!(
+                        table == "library_roots" && fk_cols == ["volume_id"],
+                        "Unexpected non-cascading foreign key without index guard: {}.({}) [on_delete={}]",
+                        table,
+                        fk_cols.join(", "),
+                        on_delete
+                    );
+                    continue;
+                }
+
+                let covered = non_partial_index_cols.iter().any(|idx_cols| {
+                    idx_cols.len() >= fk_cols.len() && idx_cols[..fk_cols.len()] == fk_cols[..]
+                });
+                assert!(
+                    covered,
+                    "Foreign key {}.({}) (ON DELETE {}) has no index with ({}) as its leftmost column(s)",
+                    table,
+                    fk_cols.join(", "),
+                    on_delete,
+                    fk_cols.join(", ")
+                );
+            }
+        }
     }
 }

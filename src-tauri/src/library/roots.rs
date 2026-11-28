@@ -1677,4 +1677,137 @@ mod tests {
         .unwrap();
         assert_eq!(out5.volume_id, legacy_vol_id);
     }
+
+    #[ignore]
+    #[tokio::test]
+    async fn remove_root_scale() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("scale_catalogue.db");
+        let pool = init_pool(&db_path).await.expect("init_pool");
+
+        let root_dir = temp.path().join("ScalePhotos");
+        std::fs::create_dir_all(&root_dir).expect("create root dir");
+
+        let ctx = test_context(temp.path());
+        let outcome = add_root(&pool, &ctx, &root_dir, Some("Scale Root"))
+            .await
+            .expect("add_root");
+        let root_id = outcome.root_id;
+
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.expect("begin tx");
+        let root_folder_id: (String,) =
+            sqlx::query_as("SELECT id FROM folders WHERE root_id = ? AND parent_id IS NULL;")
+                .bind(root_id.as_str())
+                .fetch_one(&mut *tx)
+                .await
+                .expect("root folder");
+
+        let mut folder_ids = Vec::with_capacity(907);
+        for f_idx in 0..907usize {
+            let folder_id = FolderId::new();
+            let name = format!("folder_{f_idx:04}");
+            let rel_bytes = name.as_bytes().to_vec();
+            sqlx::query(
+                "INSERT INTO folders (
+                    id, root_id, parent_id, name, rel_path_display, rel_path_native, path_key, status
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, 'present');",
+            )
+            .bind(folder_id.as_str())
+            .bind(root_id.as_str())
+            .bind(&root_folder_id.0)
+            .bind(&name)
+            .bind(&name)
+            .bind(&rel_bytes)
+            .bind(&rel_bytes)
+            .execute(&mut *tx)
+            .await
+            .expect("insert subfolder");
+            folder_ids.push(folder_id);
+        }
+
+        for i in 0..20_000usize {
+            let folder_id = &folder_ids[i % folder_ids.len()];
+            let file_id = format!("scale_file_{i:05}");
+            let asset_id = format!("scale_asset_{i:05}");
+            let name = format!("img_{i:05}.jpg");
+            let rel = format!("folder_{:04}/{}", i % folder_ids.len(), name);
+            let rel_bytes = rel.as_bytes().to_vec();
+
+            sqlx::query(
+                "INSERT INTO files (
+                    id, root_id, folder_id, name, extension, rel_path_display, rel_path_native,
+                    path_key, size_bytes, modified_at_ms, status, created_in_catalog_at_ms, updated_at_ms
+                 ) VALUES (?, ?, ?, ?, 'jpg', ?, ?, ?, 1024, 1000, 'present', 1000, 1000);",
+            )
+            .bind(&file_id)
+            .bind(root_id.as_str())
+            .bind(folder_id.as_str())
+            .bind(&name)
+            .bind(&rel)
+            .bind(&rel_bytes)
+            .bind(&rel_bytes)
+            .execute(&mut *tx)
+            .await
+            .expect("insert file");
+
+            sqlx::query(
+                "INSERT INTO assets (
+                    id, kind, primary_file_id, format, is_favorite, status,
+                    created_in_catalog_at_ms, updated_at_ms
+                 ) VALUES (?, 'image', ?, 'jpeg', 0, 'present', 1000, 1000);",
+            )
+            .bind(&asset_id)
+            .bind(&file_id)
+            .execute(&mut *tx)
+            .await
+            .expect("insert asset");
+
+            sqlx::query(
+                "INSERT INTO asset_files (asset_id, file_id, role) VALUES (?, ?, 'primary');",
+            )
+            .bind(&asset_id)
+            .bind(&file_id)
+            .execute(&mut *tx)
+            .await
+            .expect("insert asset_file");
+        }
+        tx.commit().await.expect("commit setup");
+
+        let start = std::time::Instant::now();
+        remove_root(&pool, &root_id, 20_000)
+            .await
+            .expect("remove_root");
+        let elapsed = start.elapsed();
+        println!(
+            "remove_root_scale elapsed: {:.3}s ({} ms)",
+            elapsed.as_secs_f64(),
+            elapsed.as_millis()
+        );
+
+        let mut conn = pool.acquire().await.expect("acquire");
+        let files_left: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM files WHERE root_id = ?;")
+            .bind(root_id.as_str())
+            .fetch_one(&mut *conn)
+            .await
+            .expect("count files");
+        let folders_left: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM folders WHERE root_id = ?;")
+                .bind(root_id.as_str())
+                .fetch_one(&mut *conn)
+                .await
+                .expect("count folders");
+        let assets_left: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM assets;")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("count assets");
+        let asset_files_left: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM asset_files;")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("count asset_files");
+
+        assert_eq!(files_left.0, 0);
+        assert_eq!(folders_left.0, 0);
+        assert_eq!(assets_left.0, 0);
+        assert_eq!(asset_files_left.0, 0);
+    }
 }
