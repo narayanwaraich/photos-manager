@@ -6,6 +6,7 @@ import {
   format24HourTimeFromParts,
   formatAutoScanResultLine,
   formatLocalTime24,
+  getReachabilityLabel,
 } from "./scanText.ts";
 
 test("format24HourTimeFromParts pads single-digit hours, minutes, and seconds", () => {
@@ -38,4 +39,13 @@ test("formatLocalTime24 and formatAutoScanResultLine handle null or invalid time
     formatAutoScanResultLine(AUTO_SCAN_COMPLETED_BODY, null),
     "Started automatically: scan completed.",
   );
+});
+
+test("getReachabilityLabel shows Checking... for Active+unreachable and not reachable for Offline", () => {
+  assert.equal(getReachabilityLabel("Active", true), null);
+  assert.equal(getReachabilityLabel("Active", false), "Checking...");
+  assert.equal(getReachabilityLabel("Offline", false), "not reachable");
+  assert.equal(getReachabilityLabel("Offline", true), null);
+  assert.equal(getReachabilityLabel("Paused", false), "not reachable");
+  assert.equal(getReachabilityLabel("Removed", false), "not reachable");
 });

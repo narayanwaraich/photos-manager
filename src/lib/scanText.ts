@@ -1,4 +1,4 @@
-import type { ScanCounts } from "./tauri/schemas";
+import type { RootStatus, ScanCounts } from "./tauri/schemas";
 
 /**
  * Fixed English messages for all scanner warning codes (spec D7, TASK-1E decision k).
@@ -216,4 +216,19 @@ export function formatAutoScanResultLine(
   return timeText
     ? `Started automatically at ${timeText}: ${body}`
     : `Started automatically: ${body}`;
+}
+
+/**
+ * Maps stored root status and live reachability to the reachability indicator label.
+ * When an Active root has reachable=false (e.g. an Unknown/timed-out check), show "Checking..."
+ * rather than "not reachable"; Offline and other non-Active states keep "not reachable".
+ */
+export function getReachabilityLabel(
+  status: RootStatus,
+  reachable: boolean,
+): "Checking..." | "not reachable" | null {
+  if (reachable) {
+    return null;
+  }
+  return status === "Active" ? "Checking..." : "not reachable";
 }

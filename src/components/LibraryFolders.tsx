@@ -25,6 +25,7 @@ import {
   formatScanWarning,
   formatScanningProgress,
   formatCompletedSummary,
+  getReachabilityLabel,
   ROOT_OFFLINE_BADGE,
   ROOT_OFFLINE_DETAIL,
   ROOT_OFFLINE_SCAN_DISABLED,
@@ -560,7 +561,9 @@ export function LibraryFolders() {
             const isCancelling = Boolean(cancellingRoots[root.id]);
 
             const isOffline = root.status === "Offline";
-            const isUnavailable = isOffline || !root.reachable;
+            const reachabilityLabel = getReachabilityLabel(root.status, root.reachable);
+            const isCheckingReachability = reachabilityLabel === "Checking...";
+            const isUnavailable = isOffline || (!root.reachable && !isCheckingReachability);
 
             // Scan button enablement rules (Decision k, TASK-1F Part D)
             const canScan = root.status === "Active" && root.reachable && !isScanning;
@@ -571,7 +574,7 @@ export function LibraryFolders() {
             } else if (root.status !== "Active") {
               disabledReason = `Folder is ${root.status.toLowerCase()}`;
             } else if (!root.reachable) {
-              disabledReason = "Folder is not reachable";
+              disabledReason = "Checking folder availability...";
             }
 
             const watchingIssueText =
@@ -611,18 +614,18 @@ export function LibraryFolders() {
                           {ROOT_OFFLINE_BADGE}
                         </span>
                       ) : (
-                        !root.reachable && (
+                        reachabilityLabel && (
                           <span
                             style={{
-                              backgroundColor: "#fed7d7",
-                              color: "#c53030",
+                              backgroundColor: isCheckingReachability ? "#edf2f7" : "#fed7d7",
+                              color: isCheckingReachability ? "#4a5568" : "#c53030",
                               padding: "0.1rem 0.4rem",
                               borderRadius: "3px",
                               fontSize: "0.8rem",
                               fontWeight: "bold",
                             }}
                           >
-                            not reachable
+                            {reachabilityLabel}
                           </span>
                         )
                       )}

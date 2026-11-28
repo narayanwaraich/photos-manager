@@ -92,14 +92,32 @@ where
     let blocking_handle = tokio::task::spawn_blocking(move || {
         let _guard = InFlightCheckGuard {
             set: set_clone,
-            id: id_clone,
+            id: id_clone.clone(),
         };
 
-        if !is_dir_fn(&root_path) {
+        let is_dir_start = std::time::Instant::now();
+        let is_dir_ok = is_dir_fn(&root_path);
+        let is_dir_ms = is_dir_start.elapsed().as_millis();
+        if is_dir_ms > 500 {
+            eprintln!(
+                "availability check slow for root {} [is_dir]: {} ms",
+                id_clone, is_dir_ms
+            );
+        }
+        if !is_dir_ok {
             return AvailabilityOutcome::NotAvailable(UnavailableReason::Unreachable);
         }
 
-        let vol_info = match describer(&root_path) {
+        let describe_start = std::time::Instant::now();
+        let vol_res = describer(&root_path);
+        let describe_ms = describe_start.elapsed().as_millis();
+        if describe_ms > 500 {
+            eprintln!(
+                "availability check slow for root {} [describe_volume]: {} ms",
+                id_clone, describe_ms
+            );
+        }
+        let vol_info = match vol_res {
             Ok(info) => info,
             Err(_) => return AvailabilityOutcome::Unknown,
         };
