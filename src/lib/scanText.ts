@@ -160,6 +160,60 @@ export const WATCHING_DEGRADED_TEXT =
   "Watching: degraded — Some folder changes may be missed. Manual Scan still works.";
 export const AUTO_SCAN_CHECKBOX_LABEL = "Automatically scan changed folders";
 export const AUTO_SCAN_RUNNING_TEXT = "Automatic scan is running…";
-export const AUTO_SCAN_COMPLETED_TEXT = "Started automatically: scan completed.";
-export const AUTO_SCAN_CANCELLED_TEXT =
-  "Started automatically: scan cancelled. Nothing was marked missing.";
+export const AUTO_SCAN_COMPLETED_BODY = "scan completed.";
+export const AUTO_SCAN_CANCELLED_BODY =
+  "scan cancelled. Nothing was marked missing.";
+
+export interface LocalTimeParts {
+  hours: number;
+  minutes: number;
+  seconds: number;
+}
+
+/**
+ * Formats 24-hour local time with seconds (`HH:MM:SS`) from explicit parts.
+ */
+export function format24HourTimeFromParts(parts: LocalTimeParts): string {
+  const hh = String(parts.hours).padStart(2, "0");
+  const mm = String(parts.minutes).padStart(2, "0");
+  const ss = String(parts.seconds).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
+/**
+ * Formats a Unix epoch millisecond timestamp as local 24-hour `HH:MM:SS`.
+ */
+export function formatLocalTime24(
+  timestampMs: number,
+  getParts: (date: Date) => LocalTimeParts = (d) => ({
+    hours: d.getHours(),
+    minutes: d.getMinutes(),
+    seconds: d.getSeconds(),
+  }),
+): string | null {
+  if (!Number.isFinite(timestampMs)) {
+    return null;
+  }
+  const date = new Date(timestampMs);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return format24HourTimeFromParts(getParts(date));
+}
+
+/**
+ * Formats the last-job result line for an automatic scan, including the local finish time when known.
+ */
+export function formatAutoScanResultLine(
+  body: string,
+  finishedAtMs: number | null | undefined,
+  getParts?: (date: Date) => LocalTimeParts,
+): string {
+  const timeText =
+    finishedAtMs !== null && finishedAtMs !== undefined
+      ? formatLocalTime24(finishedAtMs, getParts)
+      : null;
+  return timeText
+    ? `Started automatically at ${timeText}: ${body}`
+    : `Started automatically: ${body}`;
+}

@@ -14,11 +14,12 @@ import {
   type ScanEvent,
 } from "../lib/tauri";
 import {
-  AUTO_SCAN_CANCELLED_TEXT,
+  AUTO_SCAN_CANCELLED_BODY,
   AUTO_SCAN_CHECKBOX_LABEL,
-  AUTO_SCAN_COMPLETED_TEXT,
+  AUTO_SCAN_COMPLETED_BODY,
   AUTO_SCAN_RUNNING_TEXT,
   CHANGES_DETECTED_TEXT,
+  formatAutoScanResultLine,
   formatRootWarning,
   formatScanFailure,
   formatScanWarning,
@@ -906,10 +907,15 @@ export function LibraryFolders() {
                           color: "#7b341e",
                         }}
                       >
-                        {root.lastJob.trigger === "auto" ? "Started automatically: " : ""}
-                        {root.lastJob.errorCode === "interrupted"
-                          ? SCAN_INTERRUPTED_TEXT
-                          : formatScanFailure(root.lastJob.errorCode)}
+                        {(() => {
+                          const failureBody =
+                            root.lastJob.errorCode === "interrupted"
+                              ? SCAN_INTERRUPTED_TEXT
+                              : formatScanFailure(root.lastJob.errorCode);
+                          return root.lastJob.trigger === "auto"
+                            ? formatAutoScanResultLine(failureBody, root.lastJob.finishedAtMs)
+                            : failureBody;
+                        })()}
                       </div>
                     )}
                     {root.lastJob.status === "completed" && root.lastJob.trigger === "auto" && (
@@ -924,7 +930,10 @@ export function LibraryFolders() {
                           color: "#22543d",
                         }}
                       >
-                        {AUTO_SCAN_COMPLETED_TEXT}
+                        {formatAutoScanResultLine(
+                          AUTO_SCAN_COMPLETED_BODY,
+                          root.lastJob.finishedAtMs,
+                        )}
                       </div>
                     )}
                     {root.lastJob.status === "cancelled" && root.lastJob.trigger === "auto" && (
@@ -939,7 +948,10 @@ export function LibraryFolders() {
                           color: "#744210",
                         }}
                       >
-                        {AUTO_SCAN_CANCELLED_TEXT}
+                        {formatAutoScanResultLine(
+                          AUTO_SCAN_CANCELLED_BODY,
+                          root.lastJob.finishedAtMs,
+                        )}
                       </div>
                     )}
                   </>
