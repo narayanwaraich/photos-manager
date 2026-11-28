@@ -1810,4 +1810,99 @@ mod tests {
         assert_eq!(assets_left.0, 0);
         assert_eq!(asset_files_left.0, 0);
     }
+
+    #[tokio::test]
+    async fn counts_exclude_missing_and_remove_root_deletes_all_rows_including_missing() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("missing_counts.db");
+        let pool = init_pool(&db_path).await.expect("init_pool");
+
+        let root_dir = temp.path().join("MissingCountsRoot");
+        let sub_dir = root_dir.join("sub");
+        std::fs::create_dir_all(&sub_dir).expect("create dirs");
+        std::fs::write(root_dir.join("p1.jpg"), b"img1").expect("write p1");
+        std::fs::write(root_dir.join("p2.jpg"), b"img2").expect("write p2");
+        std::fs::write(sub_dir.join("p3.jpg"), b"img3").expect("write p3");
+
+        let ctx = test_context(temp.path());
+        let outcome = add_root(&pool, &ctx, &root_dir, Some("Counts Root"))
+            .await
+            .expect("add_root");
+        let root_id = outcome.root_id;
+
+        crate::scanner::scan_root(
+            &pool,
+            &root_id,
+            crate::scanner::ScanOptions::default(),
+            crate::scanner::ScanCancel::new(),
+            |_| {},
+        )
+        .await
+        .expect("initial scan");
+
+        let roots_before = list_roots(&pool).await.expect("list_roots");
+        assert_eq!(roots_before[0].file_count, 3);
+        assert_eq!(roots_before[0].folder_count, 1);
+
+        // Delete one file and its subfolder from disk, then rescan so it is marked 'missing'.
+        std::fs::remove_dir_all(&sub_dir).expect("delete sub_dir");
+        crate::scanner::scan_root(
+            &pool,
+            &root_id,
+            crate::scanner::ScanOptions::default(),
+            crate::scanner::ScanCancel::new(),
+            |_| {},
+        )
+        .await
+        .expect("rescan after delete");
+
+        // Summary and preview must agree on 2 non-missing files (and 0 non-missing folders, 2 assets).
+        let roots_after = list_roots(&pool).await.expect("list_roots");
+        assert_eq!(roots_after[0].file_count, 2);
+        assert_eq!(roots_after[0].folder_count, 0);
+
+        let preview = preview_remove_root(&pool, &root_id)
+            .await
+            .expect("preview_remove_root");
+        assert_eq!(preview.file_count, 2);
+        assert_eq!(preview.folder_count, 0);
+        assert_eq!(preview.asset_count, 2);
+
+        // Confirm missing rows still exist in SQLite before remove_root.
+        let mut conn = pool.acquire().await.expect("acquire");
+        let total_files_before: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM files WHERE root_id = ?;")
+                .bind(root_id.as_str())
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap();
+        assert_eq!(total_files_before.0, 3);
+        drop(conn);
+
+        // remove_root succeeds with preview.file_count (2) and deletes EVERY row, including missing rows.
+        remove_root(&pool, &root_id, preview.file_count)
+            .await
+            .expect("remove_root");
+
+        let mut conn = pool.acquire().await.expect("acquire");
+        let files_left: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM files WHERE root_id = ?;")
+            .bind(root_id.as_str())
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        let folders_left: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM folders WHERE root_id = ?;")
+                .bind(root_id.as_str())
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap();
+        let assets_left: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM assets;")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+
+        assert_eq!(files_left.0, 0);
+        assert_eq!(folders_left.0, 0);
+        assert_eq!(assets_left.0, 0);
+    }
 }

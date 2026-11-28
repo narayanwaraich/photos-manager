@@ -119,23 +119,10 @@ pub async fn delete_root(conn: &mut SqliteConnection, id: &RootId) -> Result<(),
     Ok(())
 }
 
-/// Counts total file rows belonging to a library root.
+/// Counts non-missing file rows belonging to a library root.
 pub async fn count_files(conn: &mut SqliteConnection, id: &RootId) -> Result<i64, CatalogueError> {
-    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM files WHERE root_id = ?;")
-        .bind(id.as_str())
-        .fetch_one(&mut *conn)
-        .await?;
-
-    Ok(row.0)
-}
-
-/// Counts total non-root folder rows belonging to a library root.
-pub async fn count_folders(
-    conn: &mut SqliteConnection,
-    id: &RootId,
-) -> Result<i64, CatalogueError> {
     let row: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM folders WHERE root_id = ? AND parent_id IS NOT NULL;")
+        sqlx::query_as("SELECT COUNT(*) FROM files WHERE root_id = ? AND status != 'missing';")
             .bind(id.as_str())
             .fetch_one(&mut *conn)
             .await?;
@@ -143,14 +130,29 @@ pub async fn count_folders(
     Ok(row.0)
 }
 
-/// Counts total asset rows associated with files in a library root.
+/// Counts non-missing, non-root folder rows belonging to a library root.
+pub async fn count_folders(
+    conn: &mut SqliteConnection,
+    id: &RootId,
+) -> Result<i64, CatalogueError> {
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM folders WHERE root_id = ? AND parent_id IS NOT NULL AND status != 'missing';",
+    )
+    .bind(id.as_str())
+    .fetch_one(&mut *conn)
+    .await?;
+
+    Ok(row.0)
+}
+
+/// Counts non-missing asset rows associated with non-missing files in a library root.
 pub async fn count_assets(conn: &mut SqliteConnection, id: &RootId) -> Result<i64, CatalogueError> {
     let row: (i64,) = sqlx::query_as(
         "SELECT COUNT(DISTINCT a.id)
          FROM assets a
          JOIN asset_files af ON a.id = af.asset_id
          JOIN files f ON af.file_id = f.id
-         WHERE f.root_id = ?;",
+         WHERE f.root_id = ? AND a.status != 'missing' AND f.status != 'missing';",
     )
     .bind(id.as_str())
     .fetch_one(&mut *conn)
@@ -234,8 +236,8 @@ pub async fn list_roots_summaries(
                 COALESCE(fdc.folder_count, 0) as folder_count
          FROM library_roots r
          LEFT JOIN volumes v ON r.volume_id = v.id
-         LEFT JOIN (SELECT root_id, COUNT(*) as file_count FROM files GROUP BY root_id) fc ON fc.root_id = r.id
-         LEFT JOIN (SELECT root_id, COUNT(*) as folder_count FROM folders WHERE parent_id IS NOT NULL GROUP BY root_id) fdc ON fdc.root_id = r.id
+         LEFT JOIN (SELECT root_id, COUNT(*) as file_count FROM files WHERE status != 'missing' GROUP BY root_id) fc ON fc.root_id = r.id
+         LEFT JOIN (SELECT root_id, COUNT(*) as folder_count FROM folders WHERE parent_id IS NOT NULL AND status != 'missing' GROUP BY root_id) fdc ON fdc.root_id = r.id
          ORDER BY r.created_at_ms ASC, r.id ASC;",
     )
     .fetch_all(&mut *conn)
@@ -262,8 +264,8 @@ pub async fn get_root_summary(
                 COALESCE(fdc.folder_count, 0) as folder_count
          FROM library_roots r
          LEFT JOIN volumes v ON r.volume_id = v.id
-         LEFT JOIN (SELECT root_id, COUNT(*) as file_count FROM files GROUP BY root_id) fc ON fc.root_id = r.id
-         LEFT JOIN (SELECT root_id, COUNT(*) as folder_count FROM folders WHERE parent_id IS NOT NULL GROUP BY root_id) fdc ON fdc.root_id = r.id
+         LEFT JOIN (SELECT root_id, COUNT(*) as file_count FROM files WHERE status != 'missing' GROUP BY root_id) fc ON fc.root_id = r.id
+         LEFT JOIN (SELECT root_id, COUNT(*) as folder_count FROM folders WHERE parent_id IS NOT NULL AND status != 'missing' GROUP BY root_id) fdc ON fdc.root_id = r.id
          WHERE r.id = ?;",
     )
     .bind(root_id.as_str())
