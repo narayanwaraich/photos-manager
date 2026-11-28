@@ -2346,6 +2346,636 @@ src/lib/tauri/index.ts:1:import { Channel, invoke } from "@tauri-apps/api/core";
 ## Owner decisions
 
 - BSL-1.0 handled by a per-crate exception for xxhash-rust (owner decision, 2026-11-27)
+- **D37 (round 3 inside 1G):** Put Round 3 fixes — including the foreign-key index migration (R4) and missing-row count exclusion (R3) — onto branch `task/1G` (owner decision, 2026-11-28).
+- **D39 (never-scanned rule, counts exclude missing):** Roots with `library_roots.last_scan_at_ms IS NULL` always report `changesDetected = false` and are never selected by the automatic scan scheduler for `AutoScanReason::ChangesDetected`; file/folder/asset counts exclude `status = 'missing'` rows while `remove_root` continues to delete all rows including `missing` (owner decision, 2026-11-28).
+- **R4 schema guard scope:** Keep the R4 migration to the exact 4 cascading indexes (`files(folder_id)`, `folders(parent_id)`, `assets(primary_file_id)`, `asset_files(file_id)`) and scope the schema guard test to `ON DELETE CASCADE` foreign keys, exempting `library_roots.volume_id` (`ON DELETE NO ACTION`, owner clarification, 2026-11-28).
+
+## Scope note
+
+This round (Round 3) puts a catalogue migration (`src-tauri/migrations/20261128000000_add_foreign_key_indexes.sql`) and a count semantics change (excluding `status = 'missing'` rows from `RootSummary` counts, `preview_remove_root`, and `remove_root` count checks) into the `task/1G` branch (owner decision D37).
+
+## Round 3
+
+Round 3 addresses the five defects found during manual Mac checks (`5c6612d` R4 -> `52d4cea` R3 -> `d5e6a43` R1 -> `a7084ec` R2 -> `1f3e2a0` R5 -> `33c6e9d` R6), with `pnpm verify` passing after every commit.
+
+**Tool note:** Used `grep` instead of `rg` because `rg` is restricted (`operation not permitted`) in this environment.
+
+### R4. Foreign-key indexes (`5c6612d`)
+
+- **What changed (4 files, +264 / -4):**
+  - `src-tauri/migrations/20261128000000_add_foreign_key_indexes.sql` (+6): Added `CREATE INDEX IF NOT EXISTS` for `files(folder_id)` (`idx_files_folder`), `folders(parent_id)` (`idx_folders_parent`), `assets(primary_file_id)` (`idx_assets_primary_file`), and `asset_files(file_id)` (`idx_asset_files_file`). All 4 prior migrations remain byte-identical.
+  - `src-tauri/src/commands/app_info.rs` (+2 / -2): Updated `test_app_info_returns_expected_fields` assertion from `4` to `5`.
+  - `src-tauri/src/database/mod.rs` (+120 / -2): Updated `test_migration_jobs_table_and_invariants` migration count assertion from `4` to `5`; added `test_cascading_foreign_keys_have_leftmost_index` checking `pragma_foreign_key_list` and non-partial `pragma_index_list` / `pragma_index_info` across every table (and asserting `library_roots.volume_id` is the only `NO ACTION` FK).
+  - `src-tauri/src/library/roots.rs` (+131): Added `#[ignore]` scale test `remove_root_scale` (907 folders, 20,000 files, 20,000 assets, 20,000 `asset_files`).
+  - Docs check: `grep -rnE "4 migrations|migrations_applied|Migrations Applied" docs/` found no doc asserting `4` migrations; `src/App.tsx` renders `{appInfo.migrationsApplied}` dynamically (5).
+- **Tests added:** `database::tests::test_cascading_foreign_keys_have_leftmost_index` (non-ignored) and `library::roots::tests::remove_root_scale` (`#[ignore]`).
+- **`database/scan.rs` and `scanner/` index-coverage audit (no SQL queries in `scanner/mod.rs` or `scanner/walk.rs`):**
+  1. `database/scan.rs:244` — `SELECT id FROM assets WHERE primary_file_id = ? LIMIT 1;` -> **covered** by `idx_assets_primary_file`.
+  2. `database/scan.rs:384-391` (`mark_subtree_inaccessible`, `UPDATE folders`) — recursive `JOIN subtree s ON f.parent_id = s.id` -> **covered** by `idx_folders_parent` (and `sqlite_autoindex_folders_1` on `id`).
+  3. `database/scan.rs:399-406` (`mark_subtree_inaccessible`, `UPDATE files`) — recursive `f.parent_id = s.id` and `WHERE folder_id IN (SELECT id FROM subtree)` -> **covered** by `idx_folders_parent` and `idx_files_folder`.
+  4. `database/scan.rs:549` (`detect_and_apply_moves`, `DELETE FROM files WHERE id = ?;`) -> primary delete uses `sqlite_autoindex_files_1 (id=?)`, and `ON DELETE CASCADE` on `assets(primary_file_id)` and `asset_files(file_id)` are **covered** by `idx_assets_primary_file` and `idx_asset_files_file`.
+  5. `database/roots.rs:107` (`DELETE FROM library_roots WHERE id = ?;`) -> uses `sqlite_autoindex_library_roots_1 (id=?)`, and cascading deletes on `folders(root_id)`, `folders(parent_id)`, `files(root_id)`, `files(folder_id)`, `assets(primary_file_id)`, `asset_files(asset_id)`, `asset_files(file_id)`, and `jobs(root_id)` are all **covered** by PK/UNIQUE/FK indexes.
+
+Raw `EXPLAIN QUERY PLAN` output on the migrated schema:
+
+```text
+=== QUERY ===
+SELECT id FROM assets WHERE primary_file_id = ? LIMIT 1;
+   (4, 0, 61, 'SEARCH assets USING INDEX idx_assets_primary_file (primary_file_id=?)')
+=== QUERY ===
+WITH RECURSIVE subtree(id) AS (SELECT id FROM folders WHERE id = ? UNION ALL SELECT f.id FROM folders f JOIN subtree s ON f.parent_id = s.id) UPDATE folders SET status = 'inaccessible', last_seen_generation = ? WHERE id IN (SELECT id FROM subtree);
+   (4, 0, 90, 'SEARCH folders USING COVERING INDEX sqlite_autoindex_folders_1 (id=?)')
+   (8, 0, 0, 'LIST SUBQUERY 3')
+   (11, 8, 0, 'MATERIALIZE subtree')
+   (15, 11, 0, 'SETUP')
+   (17, 15, 39, 'SEARCH folders USING COVERING INDEX sqlite_autoindex_folders_1 (id=?)')
+   (35, 11, 0, 'RECURSIVE STEP')
+   (38, 35, 216, 'SCAN s')
+   (39, 35, 61, 'SEARCH f USING INDEX idx_folders_parent (parent_id=?)')
+   (54, 8, 249, 'SCAN subtree')
+=== QUERY ===
+WITH RECURSIVE subtree(id) AS (SELECT id FROM folders WHERE id = ? UNION ALL SELECT f.id FROM folders f JOIN subtree s ON f.parent_id = s.id) UPDATE files SET status = 'inaccessible', scan_generation = ? WHERE folder_id IN (SELECT id FROM subtree);
+   (4, 0, 99, 'SEARCH files USING COVERING INDEX idx_files_folder (folder_id=?)')
+   (8, 0, 0, 'LIST SUBQUERY 3')
+   (11, 8, 0, 'MATERIALIZE subtree')
+   (15, 11, 0, 'SETUP')
+   (17, 15, 39, 'SEARCH folders USING COVERING INDEX sqlite_autoindex_folders_1 (id=?)')
+   (35, 11, 0, 'RECURSIVE STEP')
+   (38, 35, 216, 'SCAN s')
+   (39, 35, 61, 'SEARCH f USING INDEX idx_folders_parent (parent_id=?)')
+   (54, 8, 249, 'SCAN subtree')
+=== QUERY ===
+DELETE FROM files WHERE id = ?;
+   (4, 0, 39, 'SEARCH files USING INDEX sqlite_autoindex_files_1 (id=?)')
+=== QUERY ===
+DELETE FROM library_roots WHERE id = ?;
+   (4, 0, 39, 'SEARCH library_roots USING INDEX sqlite_autoindex_library_roots_1 (id=?)')
+```
+
+Raw `remove_root_scale` WITHOUT the new migration (temporarily moved out, then restored):
+
+```text
+=== R4 SCALE WITHOUT MIGRATION ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/photos_manager_lib-8f486d04dd8885ce)
+
+running 1 test
+remove_root_scale elapsed: 55.771s (55770 ms)
+test library::roots::tests::remove_root_scale ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 207 filtered out; finished in 56.76s
+
+     Running unittests src/main.rs (src-tauri/target/debug/deps/photos_manager-0d89fc71e88de003)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+Raw `remove_root_scale` WITH the new migration:
+
+```text
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/photos_manager_lib-8f486d04dd8885ce)
+
+running 1 test
+remove_root_scale elapsed: 0.261s (261 ms)
+test library::roots::tests::remove_root_scale ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 207 filtered out; finished in 1.28s
+
+     Running unittests src/main.rs (src-tauri/target/debug/deps/photos_manager-0d89fc71e88de003)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+Raw R4 mutation output (migration `20261128000000_add_foreign_key_indexes.sql` temporarily removed, then restored):
+
+```text
+=== R4 MUTATION: schema guard without migration ===
+   Compiling photos-manager v0.1.0 (/Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.13s
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/photos_manager_lib-8f486d04dd8885ce)
+
+running 1 test
+
+thread 'database::tests::test_cascading_foreign_keys_have_leftmost_index' (3043016) panicked at src/database/mod.rs:1729:17:
+Foreign key asset_files.(file_id) (ON DELETE CASCADE) has no index with (file_id) as its leftmost column(s)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test database::tests::test_cascading_foreign_keys_have_leftmost_index ... FAILED
+
+failures:
+
+failures:
+    database::tests::test_cascading_foreign_keys_have_leftmost_index
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 207 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`
+```
+
+### R3. One definition of "files" (`52d4cea`)
+
+- **What changed (2 files, +114 / -17):**
+  - `src-tauri/src/database/roots.rs` (+19 / -17): Filtered `status != 'missing'` in `count_files`, `count_folders` (`parent_id IS NOT NULL AND status != 'missing'`), `count_assets` (`a.status != 'missing' AND f.status != 'missing'`, needed because `finalize_scan_marking` marks `files.status = 'missing'` without altering `assets.status`), and in both `list_roots_summaries` and `get_root_summary` subqueries.
+  - `src-tauri/src/library/roots.rs` (+95): Added `counts_exclude_missing_and_remove_root_deletes_all_rows_including_missing` scanning 3 files, deleting 1 + its subfolder, rescanning (`file_count == 2`, `preview.file_count == 2`, `preview.asset_count == 2`), then running `remove_root` and asserting 0 rows remain in `files`, `folders`, and `assets`.
+  - Remove dialog text check: `src/components/LibraryFolders.tsx:505-507` still reads `"Remove this folder from the library? This deletes {activePreview.fileCount} files, {activePreview.folderCount} folders and {activePreview.assetCount} assets from the catalogue. Nothing on your disk is touched."`; `docs/ipc.md` contains no conflicting statement.
+- **Tests added:** `library::roots::tests::counts_exclude_missing_and_remove_root_deletes_all_rows_including_missing`.
+- **UI row status:** **code met, manual check pending (owner)**.
+
+### R1. Never-scanned roots (`d5e6a43`)
+
+- **What changed (4 files, +118 / -3):**
+  - `src-tauri/src/commands/roots.rs` (+3 / -2): Gated `changes_detected` on `last_scan_at_ms.is_some()` in `list_roots_with_runtime_state` and `relocate_root_with_deps`.
+  - `src-tauri/src/watcher/manager.rs` (+1 / -1): Gated `SchedulerRootInput.changes_detected` on `r.last_scan_at_ms.is_some()` in `run_auto_scan_tick`.
+  - `src-tauri/src/watcher/scheduler.rs` (+1): Added `.filter(|r| r.last_completed_scan_at_ms.is_some())` in `decide_next_auto_scan`. (`debounce.rs` and `backend.rs` unchanged for R1.)
+  - `src-tauri/src/watcher/tests.rs` (+113): Added `scheduler_skips_never_scanned_root_even_with_changes_detected` and `never_scanned_root_summary_hides_changes_detected_until_first_scan`.
+- **Tests added:** `watcher::tests::scheduler_skips_never_scanned_root_even_with_changes_detected`, `watcher::tests::never_scanned_root_summary_hides_changes_detected_until_first_scan`.
+
+Raw R1 mutation output (temporarily removed `.filter(|r| r.last_completed_scan_at_ms.is_some())` from `src-tauri/src/watcher/scheduler.rs`, then restored):
+
+```text
+   Compiling photos-manager v0.1.0 (/Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.01s
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/photos_manager_lib-8f486d04dd8885ce)
+
+running 1 test
+test watcher::tests::scheduler_skips_never_scanned_root_even_with_changes_detected ... FAILED
+
+failures:
+
+---- watcher::tests::scheduler_skips_never_scanned_root_even_with_changes_detected stdout ----
+
+thread 'watcher::tests::scheduler_skips_never_scanned_root_even_with_changes_detected' (3053188) panicked at src/watcher/tests.rs:991:5:
+assertion `left == right` failed
+  left: Some(AutoScanCandidate { root_id: RootId("r1"), reason: ChangesDetected })
+ right: None
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    watcher::tests::scheduler_skips_never_scanned_root_even_with_changes_detected
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 210 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`
+```
+
+### R2. macOS FSEvents `watch_probe` diagnostic (`a7084ec`)
+
+- **What changed (2 files, +106 / -7):**
+  - `src-tauri/src/watcher/backend.rs` (+41 / -7): Added `#[cfg(test)] start_watch_with_raw_tap` on `NotifyWatchBackend` so `watch_probe` receives every raw `notify::Result<notify::Event>` from `NotifyWatchBackend` before `classify_notify_event`.
+  - `src-tauri/src/watcher/tests.rs` (+65): Added `#[ignore]` dev-only diagnostic `watch_probe` creating `pm-watch-probe-<pid>` with 5 generated `probe-1.jpg`..`probe-5.jpg` files, sleeping 3 s, watching silently for 20 s via `NotifyWatchBackend`, and cleaning up via an RAII `Drop` guard.
+  - **`classify_notify_event` unchanged:** Zero raw events arrived in either 20 s idle run (`total raw callbacks=0` in both `~/Pictures` and `std::env::temp_dir()`), so per R2 nothing in `src-tauri/src/watcher/debounce.rs` was changed. (In-sandbox `$HOME/Pictures` failed with `PermissionDenied` before running with user-approved unsandboxed execution, where macOS allowed `~/Pictures` and also produced 0 events.)
+- **Tests added:** `watcher::tests::watch_probe` (`#[ignore]`).
+
+Raw `watch_probe` run (1) (`PM_PROBE_PARENT=$HOME/Pictures`):
+
+```text
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/photos_manager_lib-8f486d04dd8885ce)
+
+running 1 test
+watch_probe dir: /Users/narayanwaraich/Pictures/pm-watch-probe-42465
+watch_probe waiting 3s before starting NotifyWatchBackend...
+watch_probe watching silently for 20s...
+watch_probe finished; total raw callbacks=0
+test watcher::tests::watch_probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 211 filtered out; finished in 23.11s
+```
+
+Raw `watch_probe` run (2) (default `std::env::temp_dir()`):
+
+```text
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/photos_manager_lib-8f486d04dd8885ce)
+
+running 1 test
+watch_probe dir: /var/folders/vw/sxxzw9pd58qf70hwkhrlgsdr0000gn/T/pm-watch-probe-42478
+watch_probe waiting 3s before starting NotifyWatchBackend...
+watch_probe watching silently for 20s...
+watch_probe finished; total raw callbacks=0
+test watcher::tests::watch_probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 211 filtered out; finished in 23.11s
+```
+
+### R5. Local finish time on the automatic-scan result line (`1f3e2a0`)
+
+- **What changed (3 files, +118 / -11):**
+  - `src/lib/scanText.ts` (+57 / -3): Added pure `format24HourTimeFromParts`, `formatLocalTime24`, and `formatAutoScanResultLine` formatting 24-hour local `HH:MM:SS` from `lastJob.finishedAtMs` (falling back when null).
+  - `src/components/LibraryFolders.tsx` (+20 / -8): Used `formatAutoScanResultLine` on completed, cancelled, and failed automatic-scan lines without changing the DTO.
+  - `src/lib/scanText.test.mjs` (+41): Added deterministic `node --test` unit tests using `Date.UTC` + UTC parts extractor and null/NaN handling.
+- **Tests added:** 3 Node unit tests in `src/lib/scanText.test.mjs`.
+- **UI row status:** **code met, manual check pending (owner)**.
+
+### R6. `"Checking..."` for unknown checks and slow-check logging (`33c6e9d`)
+
+- **Pre-check of `commands/roots.rs::list_roots_with_runtime_state`:** Confirmed. `list_roots_with_runtime_state` (`src-tauri/src/commands/roots.rs:101-119`) calls `apply_availability_result` and assigns `item.summary.status = updated_status`. After a definite `NotAvailable(_)`, `apply_availability_result` transitions `Active` -> `Offline` in SQLite and returns `RootStatus::Offline`; after `Unknown`, it returns `RootStatus::Active` unchanged while `reachable` is `false`.
+- **What changed (4 files, +56 / -10):**
+  - `src/lib/scanText.ts` (+16 / -1): Added pure `getReachabilityLabel(status, reachable)` returning `"Checking..."` for `Active` + `reachable=false`, `"not reachable"` for `Offline`/other non-`Active` + `reachable=false`, and `null` when `reachable=true`.
+  - `src/components/LibraryFolders.tsx` (+11 / -6): Rendered `getReachabilityLabel(root.status, root.reachable)` with neutral pill styling for `"Checking..."` (keeping Scan disabled with `"Checking folder availability..."` and keeping `"Not available"` for `Offline`).
+  - `src/lib/scanText.test.mjs` (+10): Added unit test for `getReachabilityLabel` across `Active`, `Offline`, `Paused`, and `Removed`.
+  - `src-tauri/src/library/availability.rs` (+19 / -3): Measured `is_dir_fn` and `describer` inside `spawn_blocking` and `eprintln!`s one line with root id, stage name, and elapsed ms when either stage exceeds 500 ms.
+- **Tests added:** 1 Node unit test in `src/lib/scanText.test.mjs` (`getReachabilityLabel`).
+- **UI row status:** **code met, manual check pending (owner)**.
+
+Raw `node --test src/lib/scanText.test.mjs` output (R5 + R6):
+
+```text
+✔ format24HourTimeFromParts pads single-digit hours, minutes, and seconds (0.313666ms)
+✔ formatAutoScanResultLine formats fixed timestamp in deterministic 24-hour time (2.991625ms)
+✔ formatLocalTime24 and formatAutoScanResultLine handle null or invalid timestamps (0.057458ms)
+✔ getReachabilityLabel shows Checking... for Active+unreachable and not reachable for Offline (0.052625ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 137.621417
+```
+
+### Round 3 Final Verification, Diffs, and 30/30 Smoke Loop
+
+Raw `git diff 85be172 HEAD --stat` (code commits `5c6612d`..`33c6e9d`, excluding pre-existing dirty `docs/STATUS.md` and `reports/REVIEW-1G.md` in the local working tree):
+
+```text
+ src-tauri/migrations/20261128000000_add_foreign_key_indexes.sql |   6 +
+ src-tauri/src/commands/app_info.rs                               |   4 +-
+ src-tauri/src/commands/roots.rs                                  |   5 +-
+ src-tauri/src/database/mod.rs                                    | 125 +++++++++++-
+ src-tauri/src/database/roots.rs                                  |  36 ++--
+ src-tauri/src/library/availability.rs                            |  24 ++-
+ src-tauri/src/library/roots.rs                                   | 228 +++++++++++++++++++++
+ src-tauri/src/watcher/backend.rs                                 |  46 ++++-
+ src-tauri/src/watcher/manager.rs                                 |   2 +-
+ src-tauri/src/watcher/scheduler.rs                               |   1 +
+ src-tauri/src/watcher/tests.rs                                   | 180 +++++++++++++++++
+ src/components/LibraryFolders.tsx                                |  43 ++--
+ src/lib/scanText.test.mjs                                        |  51 +++++
+ src/lib/scanText.ts                                              |  77 +++++++-
+ 14 files changed, 796 insertions(+), 32 deletions(-)
+```
+
+Raw `git diff --name-status 85be172 -- src-tauri/migrations`:
+
+```text
+A	src-tauri/migrations/20261128000000_add_foreign_key_indexes.sql
+```
+
+Raw 30-run loop of `real_watcher_detects_new_file_smoke` (`for i in $(seq 1 30); do cargo test --manifest-path src-tauri/Cargo.toml watcher::tests::real_watcher_detects_new_file_smoke -- --exact || exit 1; done | grep "^test result" | sort | uniq -c`):
+
+```text
+  30 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  25 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 211 filtered out; finished in 2.37s
+   5 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 211 filtered out; finished in 2.38s
+```
+
+Full raw `pnpm verify` output after commit `33c6e9d` (R6), from `reports/logs/verify-2026-11-28.txt`:
+
+```text
+Photos Manager — pnpm verify verification run
+Date: 2026-11-28T12:25:37.735Z
+Log output file: /Users/narayanwaraich/Desktop/Projects/photos-manager/reports/logs/verify-2026-11-28.txt
+
+======================================================
+STEP: cargo fmt check
+COMMAND: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+CWD: /Users/narayanwaraich/Desktop/Projects/photos-manager
+======================================================
+
+
+✓ PASSED: cargo fmt check
+
+======================================================
+STEP: cargo clippy
+COMMAND: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+CWD: /Users/narayanwaraich/Desktop/Projects/photos-manager
+======================================================
+
+    Checking photos-manager v0.1.0 (/Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.11s
+
+✓ PASSED: cargo clippy
+
+======================================================
+STEP: cargo test
+COMMAND: cargo test --manifest-path src-tauri/Cargo.toml
+CWD: /Users/narayanwaraich/Desktop/Projects/photos-manager
+======================================================
+
+
+running 212 tests
+test commands::error::tests::test_ipc_error_from_scan_error ... ok
+test commands::error::tests::test_ipc_error_mappings_leak_no_data ... ok
+test commands::error::tests::test_ipc_error_from_startup_error ... ok
+test commands::error::tests::test_ipc_error_from_root_error ... ok
+test commands::error::tests::test_error_codes_sync_with_typescript ... ok
+test commands::roots::tests::test_add_root_label_too_long_returns_root_label_invalid ... ok
+test commands::app_info::tests::test_app_info_returns_expected_fields ... ok
+test commands::app_info::tests::test_app_info_closed_pool_returns_database_error ... ok
+test commands::roots::tests::test_add_root_fake_picker_cancelled_returns_cancelled_and_writes_nothing ... ok
+test commands::roots::tests::test_add_root_fake_picker_success_returns_added_and_creates_root_row ... ok
+test commands::roots::tests::test_add_root_blank_label_falls_back_to_folder_name ... ok
+test commands::roots::tests::remove_root_works_when_offline ... ok
+test commands::roots::tests::test_add_root_protected_folder_returns_root_protected_fixed_message_no_path ... ok
+test commands::roots::tests::offline_round_trip_writes_no_file_or_folder_rows ... ok
+test commands::roots::tests::test_wire_format_add_root_result_matches_literal_json ... ok
+test commands::roots::tests::test_wire_format_ipc_error_matches_literal_json ... ok
+test commands::roots::tests::test_wire_format_relocate_root_result_matches_literal_json ... ok
+test commands::roots::tests::test_wire_format_remove_root_preview_matches_literal_json ... ok
+test commands::roots::tests::test_wire_format_root_summary_matches_literal_json ... ok
+test commands::roots::tests::test_add_root_missing_folder_returns_root_path_invalid_fixed_message_no_path ... ok
+test commands::roots::tests::test_add_root_overlapping_folder_returns_root_overlaps_fixed_message_no_path ... ok
+test commands::roots::tests::test_dialog_guard_rejects_concurrent_second_add_with_dialog_busy ... ok
+test commands::roots::tests::relocate_root_success_updates_only_paths_status_and_volume_seen ... ok
+test database::tests::test_enum_from_str_rejection_all_enums ... ok
+test commands::roots::tests::relocate_root_refusals_and_cancelled_dialog ... ok
+test database::tests::test_cascading_foreign_keys_have_leftmost_index ... ok
+test commands::roots::tests::test_remove_root_with_stale_count_fails_with_root_changed_since_preview_and_deletes_nothing ... ok
+test commands::roots::tests::test_preview_and_remove_root_with_matching_count_succeeds ... ok
+test database::tests::test_duplicate_primary_key_is_database_error_not_collision ... ok
+test database::tests::test_cascade_delete_root ... ok
+test database::tests::test_init_pool_and_app_settings_migration ... ok
+test database::tests::test_foreign_keys_on_every_connection ... ok
+test database::tests::test_platform_guard_pre_migration_rejection ... ok
+test filesystem::tests::test_from_absolute_not_inside_root ... ok
+test filesystem::tests::test_from_absolute_root_itself ... ok
+test filesystem::tests::test_from_absolute_traversal_in_abs ... ok
+test filesystem::tests::test_from_components_and_from_absolute_reject_same_invalid_names ... ok
+test filesystem::tests::test_nfc_vs_nfd_key_equality ... ok
+test database::tests::test_enum_check_sync_and_size_range ... ok
+test database::tests::test_migration_0a_to_phase1 ... ok
+test database::tests::test_migration_jobs_table_and_invariants ... ok
+test database::tests::test_migration_one_root_folder_per_root_invariant ... ok
+test database::tests::test_platform_guard_rejects_mismatch ... ok
+test filesystem::tests::test_rejection_table_driven ... ok
+test filesystem::tests::test_unix_not_unicode_rejection ... ok
+test database::tests::test_uniqueness_path_key_collision ... ok
+test database::tests::test_repository_functions_crud ... ok
+test filesystem::tests::test_proptest_arbitrary_component_validation ... ok
+test filesystem::tests::test_proptest_key_rules_case_policy ... ok
+test filesystem::tests::test_proptest_native_roundtrip_unix ... ok
+test filesystem::tests::test_proptest_nfc_nfd_key_equality ... ok
+test commands::roots::tests::test_list_roots_never_returning_checker_completes_within_timeout_and_reports_unreachable ... ok
+test filesystem::tests::test_proptest_display_and_separator_independence ... ok
+test image_pipeline::vips::tests::test_vips_supported_loaders_reports_real_codecs ... ok
+test image_pipeline::vips::tests::test_vips_missing_file_error ... ok
+test image_pipeline::vips::tests::test_vips_blocks_svgload ... ok
+test jobs::tests::active_job_id_and_row_agree_until_the_final_write_ends ... ok
+test jobs::tests::dead_check_at_scan_start_times_out_and_does_not_block_second_scan ... ok
+test jobs::tests::final_write_failure_cancelled_path_emits_recorded_false_and_allows_next_scan ... ok
+test jobs::tests::test_cancel_unknown_or_finished_job_returns_job_not_found ... ok
+test jobs::tests::final_write_failure_panic_path_emits_recorded_false_and_allows_next_scan ... ok
+test jobs::tests::final_write_failure_failed_path_emits_recorded_false_and_allows_next_scan ... ok
+test jobs::tests::final_write_retry_succeeds_after_first_attempt_fails ... ok
+test jobs::tests::final_write_failure_completed_path_emits_recorded_false_and_allows_next_scan ... ok
+test jobs::tests::test_mark_job_cancelling_only_affects_running_jobs ... ok
+test jobs::tests::test_job_lifecycle_completed_scan ... ok
+test jobs::tests::test_dead_channel_does_not_stop_job ... ok
+test image_pipeline::vips::tests::test_vips_blocks_magickload ... ok
+test jobs::tests::test_panic_isolation_marks_failed_and_frees_guard ... ok
+test jobs::tests::test_job_lifecycle_root_vanishes_after_preflight_fails_with_scan_root_unreachable ... ok
+test jobs::tests::test_refused_start_creates_no_job_row ... ok
+test jobs::tests::test_scan_failure_codes_sync_with_typescript ... ok
+test image_pipeline::vips::tests::test_vips_thumbnail_rotated_jpeg ... ok
+test jobs::tests::test_remove_root_while_scanning_returns_root_busy ... ok
+test image_pipeline::vips::tests::test_vips_thumbnail_png ... ok
+test jobs::tests::test_wire_format_scan_events_matches_literal_json ... ok
+test image_pipeline::vips::tests::test_vips_error_buffer_no_stale_text ... ok
+test library::canonical::tests::test_canonicalize_root_accepts_trailing_colon_directory ... ok
+test library::canonical::tests::test_canonicalize_root_directory_success ... ok
+test library::canonical::tests::test_canonicalize_root_file_instead_of_directory_rejected ... ok
+test library::canonical::tests::test_canonicalize_root_missing_path_rejected ... ok
+test library::canonical::tests::test_canonicalize_root_non_unicode_name_rejected ... ok
+test library::canonical::tests::test_canonicalize_root_relative_path_rejected ... ok
+test library::canonical::tests::test_canonicalize_root_symlink_resolves_to_target ... ok
+test library::canonical::tests::test_strip_verbatim_prefix ... ok
+test library::case_probe::tests::test_case_probe_does_not_fold_case_swapped_has_different_identity ... ok
+test library::case_probe::tests::test_case_probe_does_not_fold_case_swapped_is_absent ... ok
+test library::case_probe::tests::test_case_probe_folds_case ... ok
+test library::case_probe::tests::test_case_probe_lookup_failure_returns_unknown ... ok
+test library::case_probe::tests::test_case_probe_no_cased_component_returns_unknown ... ok
+test library::case_probe::tests::test_case_probe_real_filesystem_read_only_and_correctness ... ok
+test library::case_probe::tests::test_find_cased_child_entry_on_temp_directory ... ok
+test library::overlap::tests::test_overlap_rule_differing_only_in_case_rejected ... ok
+test library::overlap::tests::test_overlap_rule_differing_only_in_unicode_nfc_nfd_rejected ... ok
+test library::overlap::tests::test_overlap_rule_identical_roots_rejected ... ok
+test library::overlap::tests::test_overlap_rule_many_roots_table_driven ... ok
+test library::overlap::tests::test_overlap_rule_new_contains_existing_rejected ... ok
+test library::overlap::tests::test_overlap_rule_new_inside_existing_rejected ... ok
+test library::overlap::tests::test_overlap_rule_offline_stored_root_still_rejected ... ok
+test library::overlap::tests::test_overlap_rule_siblings_with_common_string_prefix_allowed ... ok
+test library::protected::tests::test_protected_app_data_and_container_rejected ... ok
+test library::protected::tests::test_protected_context_from_environment ... ok
+test library::protected::tests::test_protected_folder_next_to_protected_allowed ... ok
+test library::protected::tests::test_protected_home_dir_itself_rejected ... ok
+test library::protected::tests::test_protected_home_parent_rejected ... ok
+test library::protected::tests::test_protected_os_system_folder_rejected ... ok
+test library::protected::tests::test_protected_photoslibrary_rejected_on_macos_allowed_on_windows ... ok
+test library::protected::tests::test_protected_pictures_inside_home_allowed ... ok
+test library::protected::tests::test_protected_unix_system_root_and_volumes_photos ... ok
+test library::protected::tests::test_protected_volumes_mount_folder_rejected ... ok
+test library::protected::tests::test_protected_windows_c_drive_d_drive_and_unc_share ... ok
+test library::protected::tests::test_protected_windows_system_volume_and_recycle_bin_rejected ... ok
+test jobs::tests::test_start_scan_unreachable_root_refused_with_root_offline_and_marks_offline ... ok
+test jobs::tests::test_startup_reconciliation_marks_interrupted ... ok
+test jobs::tests::test_retention_prunes_older_finished_jobs_keeping_newest_20 ... ok
+test jobs::tests::volume_guard_refuses_empty_mount_point_and_marks_nothing_missing ... ok
+test library::roots::tests::remove_root_scale ... ignored
+test library::roots::tests::case_refresh_definite_change_without_files_updates_volume ... ok
+test library::roots::tests::case_refresh_unknown_probe_changes_nothing ... ok
+test library::roots::tests::case_refresh_definite_change_with_files_refused_volume_case_changed ... ok
+test library::roots::tests::counts_exclude_missing_and_remove_root_deletes_all_rows_including_missing ... ok
+test library::roots::tests::serial_identity_reuse_requires_equal_fs_type_and_label_and_supports_legacy_bare ... ok
+test library::roots::tests::test_add_root_basic_success ... ok
+test library::roots::tests::test_add_root_concurrent_race_serialises_overlap ... ok
+test jobs::tests::test_job_lifecycle_cancelled_scan_leaves_zero_missing ... ok
+test library::roots::tests::test_add_root_rolls_back_completely_on_forced_failure ... ok
+test library::roots::tests::test_add_two_roots_on_same_volume_reuses_volume_row ... ok
+test library::roots::tests::test_add_two_roots_with_null_uuid_creates_two_volume_rows ... ok
+test library::roots::tests::test_add_two_roots_with_different_uuid_creates_two_volume_rows ... ok
+test jobs::tests::test_persistence_completed_scan_matches_root_last_scan_generation ... ok
+test library::volume::tests::test_describe_volume_on_current_system ... ok
+test library::volume::tests::volume_report ... ignored
+test jobs::tests::test_persistence_before_touching_disk_failure_leaves_null_generation ... ok
+test library::roots::tests::test_list_roots_counts_with_hand_inserted_tree ... ok
+test metadata::tests::exiftool_args_are_pinned ... ok
+test library::roots::tests::test_list_roots_reachable_false_after_directory_removed ... ok
+test library::roots::tests::test_overlap_and_protected_refusals_leave_zero_rows ... ok
+test library::roots::tests::test_remove_root_with_right_count_and_leaves_disk_untouched ... ok
+test library::roots::tests::status_changes_only_on_definite_answers ... ok
+test metadata::tests::test_exiftool_missing_file ... ok
+test metadata::tests::test_exiftool_long_path ... ok
+test metadata::tests::test_exiftool_rejects_non_absolute_path ... ok
+test metadata::tests::test_exiftool_malformed_output ... ok
+test metadata::tests::test_exiftool_non_ascii_filename ... ok
+test metadata::tests::test_exiftool_success ... ok
+test platform::macos::tests::test_parse_statfs_kind_mapping_table ... ok
+test platform::tests::test_format_serial_identity_uses_serial_prefix_and_uppercase_hex ... ok
+test platform::tests::test_same_volume_identity_handles_exact_and_legacy_bare_serial ... ok
+test platform::windows::tests::test_parse_drive_type_mapping_table ... ok
+test scanner::classify::tests::test_always_skipped_names ... ok
+test scanner::classify::tests::test_classify_all_image_extensions ... ok
+test scanner::classify::tests::test_classify_ignored_extensions_and_no_extensions ... ok
+test scanner::classify::tests::test_classify_raw_extensions ... ok
+test scanner::classify::tests::test_classify_video_extensions ... ok
+test scanner::classify::tests::test_extension_lists_have_no_duplicates_and_no_overlap ... ok
+test scanner::tests::scan_report ... ignored
+test scanner::tests::test_batching_small_batch_commits_transactions_identically ... ok
+test library::roots::tests::test_add_root_waits_for_held_immediate_transaction ... ok
+test scanner::tests::test_cancellation_deadlock_prevention ... ok
+test scanner::tests::test_first_scan_mixed_tree_creates_folders_files_assets ... ok
+test scanner::tests::test_interrupted_scans_leave_nothing_wrongly_missing_and_rescan_equals_uninterrupted ... ok
+test scanner::tests::test_changed_deleted_and_restored_file_lifecycle ... ok
+test scanner::tests::test_move_file_identity_null_never_matched ... ok
+test scanner::tests::test_move_rename_folder_preserving_file_ids_and_assets ... ok
+test scanner::tests::test_move_rename_inside_same_folder ... ok
+test scanner::tests::test_moves_detected_preserving_file_ids_and_hardlink_disambiguation ... ok
+test scanner::tests::test_moves_exclude_already_missing_rows_decision_n ... ok
+test scanner::tests::test_name_rules_and_path_key_collision_carries_existing_id ... ok
+test scanner::tests::test_photoslibrary_package_directory_skipped ... ok
+test scanner::tests::test_scan_guard_rejects_concurrent_scan_on_same_root ... ok
+test scanner::tests::test_scan_name_rules_non_unicode_and_forbidden_characters_unix ... ok
+test scanner::tests::test_scan_name_rules_path_key_collision_through_scan ... ok
+test scanner::tests::test_second_scan_unchanged_stamps_generation_and_leaves_rows_intact ... ok
+test scanner::tests::test_symlinks_not_followed_and_counted_as_skipped ... ok
+test scanner::tests::test_synthetic_inaccessible_dir_marks_subtree_inaccessible_and_never_missing ... ok
+test scanner::tests::test_synthetic_inaccessible_file_marked_inaccessible ... ok
+test scanner::tests::test_synthetic_warnings_capped_at_100_via_apply_batch ... ok
+test scanner::tests::test_unreachable_root_and_symlink_refusal ... ok
+test scanner::tests::test_unreadable_directory_carried_over_as_inaccessible_and_restored ... ok
+test scanner::tests::test_walk_failure_returns_scan_walk_failed_leaves_zero_missing_and_releases_guard ... ok
+test scanner::tests::test_warning_codes_sync_with_typescript_and_scanner_sources ... ok
+test scanner::tests::test_warnings_capped_at_100 ... ok
+test tests::test_startup_error_variants_have_unique_codes_and_non_empty_messages ... ok
+test tests::test_startup_platform_mismatch ... ok
+test tests::test_startup_with_unusable_data_folder ... ok
+test watcher::tests::auto_scan_setting_roundtrip_and_default_off ... ok
+test jobs::tests::test_throttle_rate_limits_progress_and_job_updates ... ok
+test watcher::tests::debouncer_folds_a_burst_into_one_mark_after_the_quiet_period ... ok
+test watcher::tests::debouncer_max_wait_forces_a_mark_during_a_continuous_stream ... ok
+test watcher::tests::changes_detected_is_cleared_when_a_scan_starts ... ok
+test watcher::tests::ignored_names_do_not_mark_changes ... ok
+test watcher::tests::event_flood_is_folded_into_one_flag ... ok
+test watcher::tests::never_scanned_root_summary_hides_changes_detected_until_first_scan ... ok
+test watcher::tests::registry_stops_the_watcher_when_the_root_goes_offline_and_starts_it_when_active ... ok
+test watcher::tests::scheduler_does_nothing_when_auto_scan_is_off ... ok
+test watcher::tests::scheduler_respects_the_60s_gap ... ok
+test watcher::tests::scheduler_skips_busy_offline_and_paused_roots ... ok
+test watcher::tests::scheduler_skips_never_scanned_root_even_with_changes_detected ... ok
+test watcher::tests::scheduler_starts_one_scan_at_a_time_oldest_change_first ... ok
+test watcher::tests::stale_root_is_due_after_24h ... ok
+test watcher::tests::watch_probe ... ignored
+test watcher::tests::watcher_event_writes_no_catalogue_rows ... ok
+test watcher::tests::watcher_start_failure_shows_off_and_does_not_fail_add_root ... ok
+test metadata::tests::error_display_carries_no_stderr_or_path ... ok
+test metadata::tests::stderr_flood_does_not_block_or_masquerade_as_timeout ... ok
+test metadata::tests::test_child_killed_after_timeout ... ok
+test scanner::tests::test_large_tree_5000_files_bounded_memory ... ok
+test metadata::tests::concurrency_limit_is_two ... ok
+test metadata::tests::test_exiftool_timeout ... ok
+test commands::roots::tests::test_list_roots_second_call_while_blocked_does_not_start_second_check ... ok
+test metadata::tests::wait_after_stdout_close_is_inside_the_timeout ... ok
+test watcher::tests::real_watcher_detects_new_file_smoke ... ok
+
+test result: ok. 208 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 3.59s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling photos-manager v0.1.0 (/Users/narayanwaraich/Desktop/Projects/photos-manager/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.20s
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/photos_manager_lib-8f486d04dd8885ce)
+     Running unittests src/main.rs (src-tauri/target/debug/deps/photos_manager-0d89fc71e88de003)
+   Doc-tests photos_manager_lib
+
+✓ PASSED: cargo test
+
+======================================================
+STEP: frontend typecheck
+COMMAND: pnpm exec tsc --noEmit
+CWD: /Users/narayanwaraich/Desktop/Projects/photos-manager
+======================================================
+
+[WARN] Issue while reading "/Users/narayanwaraich/.npmrc". Operation not permitted (os error 1)
+
+✓ PASSED: frontend typecheck
+
+======================================================
+STEP: frontend lint
+COMMAND: pnpm exec eslint src/
+CWD: /Users/narayanwaraich/Desktop/Projects/photos-manager
+======================================================
+
+[WARN] Issue while reading "/Users/narayanwaraich/.npmrc". Operation not permitted (os error 1)
+
+✓ PASSED: frontend lint
+
+======================================================
+STEP: production build
+COMMAND: pnpm exec vite build
+CWD: /Users/narayanwaraich/Desktop/Projects/photos-manager
+======================================================
+
+vite v8.3.5 building client environment for production...
+transforming...
+✓ 32 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                  0.32 kB │ gzip:  0.23 kB
+dist/assets/index-DRY5w-oF.js  302.37 kB │ gzip: 88.82 kB
+
+✓ built in 64ms
+[WARN] Issue while reading "/Users/narayanwaraich/.npmrc". Operation not permitted (os error 1)
+
+✓ PASSED: production build
+
+======================================================
+STEP: exiftool version check unit tests
+COMMAND: node --test scripts/test-exiftool-version.mjs
+CWD: /Users/narayanwaraich/Desktop/Projects/photos-manager
+======================================================
+
+✔ ci.yml and docs/native-dependencies.md must match PINNED_EXIFTOOL_VERSION and SHA-256 constants (4.48175ms)
+✔ checkExifToolVersion: exact match succeeds without failure (0.106ms)
+✔ checkExifToolVersion: mismatch produces warning locally (shouldFail=false) (0.046417ms)
+✔ checkExifToolVersion: mismatch in CI produces error (shouldFail=true) (0.042708ms)
+✔ checkExifToolVersion: unparsable output produces failure in CI and warning locally (0.041625ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 99.078291
+
+✓ PASSED: exiftool version check unit tests
+
+======================================================
+STEP: AGENTS.md length check (< 12,000 characters)
+======================================================
+
+AGENTS.md character count: 7439
+✓ PASSED: AGENTS.md character count is under 12,000
+
+======================================================
+ALL VERIFICATION CHECKS PASSED SUCCESSFULLY!
+======================================================
+```
 
 ## 7. Deviations
 
