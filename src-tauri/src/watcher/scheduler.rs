@@ -60,6 +60,7 @@ pub fn decide_next_auto_scan(
     let eligible: Vec<&SchedulerRootInput> = roots
         .iter()
         .filter(|r| r.status == RootStatus::Active && !r.has_active_job)
+        .filter(|r| r.last_completed_scan_at_ms.is_some())
         .filter(|r| match r.last_scan_ended_at_ms {
             Some(ended_ms) => now_ms.saturating_sub(ended_ms) >= AUTO_SCAN_MIN_GAP_MS,
             None => true,

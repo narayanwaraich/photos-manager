@@ -127,7 +127,8 @@ pub async fn list_roots_with_runtime_state(
                 wm.stop_watching(&item.summary.id);
             }
             let (changes_detected, watching) = wm.status_for_root(&item.summary.id);
-            item.summary.changes_detected = changes_detected;
+            item.summary.changes_detected =
+                changes_detected && item.summary.last_scan_at_ms.is_some();
             item.summary.watching = watching;
         }
 
@@ -325,7 +326,7 @@ where
             }
         }
         let (changes_detected, watching) = wm.status_for_root(&root_id);
-        summary.changes_detected = changes_detected;
+        summary.changes_detected = changes_detected && summary.last_scan_at_ms.is_some();
         summary.watching = watching;
     }
 

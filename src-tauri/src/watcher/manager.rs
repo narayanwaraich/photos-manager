@@ -374,7 +374,7 @@ pub async fn run_auto_scan_tick(
             SchedulerRootInput {
                 id: r.id.clone(),
                 status: r.status,
-                changes_detected,
+                changes_detected: changes_detected && r.last_scan_at_ms.is_some(),
                 changes_detected_at,
                 has_active_job: job_manager.active_job_for_root(&r.id).is_some(),
                 last_scan_ended_at_ms,

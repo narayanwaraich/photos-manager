@@ -972,3 +972,116 @@ async fn real_watcher_detects_new_file_smoke() {
 
     watcher.remove_root(&root_id);
 }
+
+#[test]
+fn scheduler_skips_never_scanned_root_even_with_changes_detected() {
+    let now_inst = Instant::now();
+    let now_ms = 10_000_000_000i64;
+
+    // Never-scanned root (last_completed_scan_at_ms == None) with changes_detected=true must not auto-scan.
+    let never_scanned = vec![make_sched_root(
+        "r1",
+        RootStatus::Active,
+        true,
+        Some(now_inst - Duration::from_secs(10)),
+        false,
+        None,
+        None,
+    )];
+    assert_eq!(
+        decide_next_auto_scan(true, false, &never_scanned, now_inst, now_ms),
+        None
+    );
+
+    // Same root once a scan has completed becomes eligible for ChangesDetected.
+    let scanned = vec![make_sched_root(
+        "r1",
+        RootStatus::Active,
+        true,
+        Some(now_inst - Duration::from_secs(10)),
+        false,
+        Some(now_ms - 120_000),
+        Some(now_ms - 120_000),
+    )];
+    let decision = decide_next_auto_scan(true, false, &scanned, now_inst, now_ms)
+        .expect("scanned root with changes_detected must be selected");
+    assert_eq!(decision.root_id.as_str(), "r1");
+    assert_eq!(decision.reason, AutoScanReason::ChangesDetected);
+}
+
+#[tokio::test]
+async fn never_scanned_root_summary_hides_changes_detected_until_first_scan() {
+    let temp = tempdir().expect("tempdir");
+    let app_data = temp.path().join("appdata");
+    let root_dir = temp.path().join("photos");
+    std::fs::create_dir_all(&app_data).unwrap();
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::write(root_dir.join("a.jpg"), b"img").unwrap();
+
+    let pool = init_pool(&app_data.join("cat.db")).await.unwrap();
+    let ctx = test_context(&app_data);
+    let dialog_guard = DialogGuard::default();
+    let in_flight = Arc::new(Mutex::new(HashSet::new()));
+    let backend = Arc::new(FakeWatchBackend::default());
+    let watcher = Arc::new(WatcherManager::with_backend(
+        Arc::clone(&backend) as Arc<dyn WatchBackend>
+    ));
+
+    let root_clone = root_dir.clone();
+    let add_res = add_root_with_picker_and_watcher(
+        &pool,
+        &ctx,
+        &dialog_guard,
+        None,
+        || async move { Some(root_clone) },
+        Some(&watcher),
+    )
+    .await
+    .unwrap();
+    let root_id = RootId::from(add_res.root_id.unwrap());
+    assert!(backend.is_watching(&root_id));
+
+    // Watcher receives a change before any scan has completed: mark exists internally,
+    // but RootSummary must report changesDetected = false while watching stays On.
+    backend.emit(&root_id, WatchEvent::Changed);
+    watcher.flush_debouncers(Instant::now() + Duration::from_secs(3));
+    let before_scan = list_roots_with_runtime_state(&pool, &in_flight, |_| None, Some(&watcher))
+        .await
+        .unwrap();
+    assert_eq!(before_scan.len(), 1);
+    assert!(before_scan[0].last_scan_at_ms.is_none());
+    assert!(!before_scan[0].changes_detected);
+    assert_eq!(before_scan[0].watching, WatchingState::On);
+
+    // Run first scan to completion (stamps last_scan_at_ms).
+    let job_manager = Arc::new(JobManager::new_with_deps(
+        pool.clone(),
+        Arc::clone(&in_flight),
+        Some(Arc::clone(&watcher)),
+    ));
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let done_tx = Arc::new(Mutex::new(Some(done_tx)));
+    job_manager
+        .start_scan_with_trigger(root_id.clone(), ScanTrigger::Manual, move |ev| {
+            if matches!(
+                ev,
+                crate::jobs::ScanEvent::Finished { .. } | crate::jobs::ScanEvent::Failed { .. }
+            ) {
+                if let Some(tx) = done_tx.lock().unwrap().take() {
+                    let _ = tx.send(());
+                }
+            }
+        })
+        .await
+        .unwrap();
+    let _ = done_rx.await;
+
+    // Subsequent watcher change after first completed scan surfaces changesDetected = true.
+    backend.emit(&root_id, WatchEvent::Changed);
+    watcher.flush_debouncers(Instant::now() + Duration::from_secs(3));
+    let after_scan = list_roots_with_runtime_state(&pool, &in_flight, |_| None, Some(&watcher))
+        .await
+        .unwrap();
+    assert!(after_scan[0].last_scan_at_ms.is_some());
+    assert!(after_scan[0].changes_detected);
+}
