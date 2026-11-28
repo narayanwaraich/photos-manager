@@ -1085,3 +1085,70 @@ async fn never_scanned_root_summary_hides_changes_detected_until_first_scan() {
     assert!(after_scan[0].last_scan_at_ms.is_some());
     assert!(after_scan[0].changes_detected);
 }
+
+/// Dev-only diagnostic probe for observing raw `notify::Event` traffic on an idle fresh folder.
+#[ignore]
+#[test]
+fn watch_probe() {
+    struct ProbeDirGuard(PathBuf);
+    impl Drop for ProbeDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let parent = std::env::var_os("PM_PROBE_PARENT")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let probe_dir = parent.join(format!("pm-watch-probe-{}", std::process::id()));
+    std::fs::create_dir_all(&probe_dir).expect("create watch probe dir");
+    let _dir_guard = ProbeDirGuard(probe_dir.clone());
+
+    for i in 1..=5 {
+        let file_path = probe_dir.join(format!("probe-{i}.jpg"));
+        std::fs::write(&file_path, format!("probe-bytes-{i}").as_bytes())
+            .expect("write probe file");
+    }
+
+    println!("watch_probe dir: {}", probe_dir.display());
+    println!("watch_probe waiting 3s before starting NotifyWatchBackend...");
+    std::thread::sleep(Duration::from_secs(3));
+
+    let backend = crate::watcher::backend::NotifyWatchBackend::new();
+    let root_id = RootId::new();
+    let raw_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let raw_count_cb = Arc::clone(&raw_count);
+    let started_at = Instant::now();
+
+    backend
+        .start_watch_with_raw_tap(
+            &root_id,
+            &probe_dir,
+            Arc::new(|ev| {
+                println!("classified WatchEvent: {:?}", ev);
+            }),
+            Arc::new(move |res| {
+                let n = raw_count_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                let elapsed_ms = started_at.elapsed().as_millis();
+                match res {
+                    Ok(ev) => println!(
+                        "[{elapsed_ms}ms] raw notify::Event #{n}: kind={:?}, paths={:?}, attrs={:?}",
+                        ev.kind, ev.paths, ev.attrs
+                    ),
+                    Err(err) => println!("[{elapsed_ms}ms] raw notify::Error #{n}: {:?}", err),
+                }
+            }),
+        )
+        .expect("start NotifyWatchBackend");
+
+    println!("watch_probe watching silently for 20s...");
+    std::thread::sleep(Duration::from_secs(20));
+
+    backend.stop_watch(&root_id);
+    drop(backend);
+    println!(
+        "watch_probe finished; total raw callbacks={}",
+        raw_count.load(std::sync::atomic::Ordering::SeqCst)
+    );
+}

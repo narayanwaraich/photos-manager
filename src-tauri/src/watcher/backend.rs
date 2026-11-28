@@ -36,19 +36,22 @@ impl NotifyWatchBackend {
     pub fn new() -> Self {
         Self::default()
     }
-}
 
-impl WatchBackend for NotifyWatchBackend {
-    fn start_watch(
+    fn start_watch_inner(
         &self,
         root_id: &RootId,
         path: &Path,
         callback: WatchCallback,
+        #[cfg(test)] raw_tap: Option<Arc<dyn Fn(&notify::Result<notify::Event>) + Send + Sync>>,
     ) -> Result<(), String> {
         let root_path = path.to_path_buf();
         let cb = Arc::clone(&callback);
-        let mut watcher =
-            notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            #[cfg(test)]
+            if let Some(ref tap) = raw_tap {
+                tap(&res);
+            }
+            match res {
                 Ok(event) => {
                     if classify_notify_event(Some(&root_path), &event) {
                         cb(WatchEvent::Changed);
@@ -57,8 +60,9 @@ impl WatchBackend for NotifyWatchBackend {
                 Err(_) => {
                     cb(WatchEvent::Error);
                 }
-            })
-            .map_err(|e| e.to_string())?;
+            }
+        })
+        .map_err(|e| e.to_string())?;
 
         watcher
             .watch(path, RecursiveMode::Recursive)
@@ -70,6 +74,34 @@ impl WatchBackend for NotifyWatchBackend {
         };
         guard.insert(root_id.clone(), watcher);
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_watch_with_raw_tap(
+        &self,
+        root_id: &RootId,
+        path: &Path,
+        callback: WatchCallback,
+        raw_tap: Arc<dyn Fn(&notify::Result<notify::Event>) + Send + Sync>,
+    ) -> Result<(), String> {
+        self.start_watch_inner(root_id, path, callback, Some(raw_tap))
+    }
+}
+
+impl WatchBackend for NotifyWatchBackend {
+    fn start_watch(
+        &self,
+        root_id: &RootId,
+        path: &Path,
+        callback: WatchCallback,
+    ) -> Result<(), String> {
+        self.start_watch_inner(
+            root_id,
+            path,
+            callback,
+            #[cfg(test)]
+            None,
+        )
     }
 
     fn stop_watch(&self, root_id: &RootId) {
