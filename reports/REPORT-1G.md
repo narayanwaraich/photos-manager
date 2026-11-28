@@ -1,10 +1,10 @@
 # REPORT-1G: Watcher hints, ExifTool call hardening, and start-up window
 
-**Branch:** `task/1G` · **Part A commit:** `dd56657` · **Code commits:** `e36bc72` (Theme C, 6 files, +91/-10), `fa17884` (Theme B, 1 file, +638/-115), `b7de6b5` (Theme A, 24 files, +2472/-63) · **Round-1 report commit:** `f034d23` · **Config fix commit (`deny.toml`):** `eab2e4e` (1 file, +4/-0) · **Round-2 report commit:** see `git log --oneline -n 1 -- reports/REPORT-1G.md` · **Date:** 2026-11-27
+**Branch:** `task/1G` · **Part A commit:** `dd56657` · **Code commits:** `e36bc72` (Theme C, 6 files, +91/-10), `fa17884` (Theme B, 1 file, +638/-115), `b7de6b5` (Theme A, 24 files, +2472/-63) · **Round-1 report commit:** `f034d23` · **Config fix commit (`deny.toml`):** `eab2e4e` (1 file, +4/-0) · **Round-2 report commit:** `85be172` · **Round-3 code commits:** `5c6612d` (R4, 4 files, +264/-4), `52d4cea` (R3, 2 files, +114/-17), `d5e6a43` (R1, 4 files, +118/-3), `a7084ec` (R2, 2 files, +106/-7), `1f3e2a0` (R5, 3 files, +118/-11), `33c6e9d` (R6, 4 files, +56/-10) · **Round-3 report commits:** `c8763b4`, final `[skip ci]` commit via `git log --oneline -n 1 -- reports/REPORT-1G.md` · **Date:** 2026-11-28
 **Effort (owner-reported):** high
-**CI Run IDs:** `45928060396` (Theme C `e36bc72`, cancelled when Theme B pushed), `45928503558` (Theme B `fa17884`, all 3 jobs `success`), `45929623693` (Theme A `b7de6b5`: `windows-x64` `140278975773` `success`, `macos-arm64` `140278976064` `success`, `Security & License check (cargo deny)` `140278976016` `failure` on transitive `xxhash-rust v0.8.21` `BSL-1.0`), `46034567663` (round-2 `deny.toml` fix `eab2e4e`: `Security & License check (cargo deny)` `140626596979` `success`, `macos-arm64` `140626597449` `success`, `windows-x64` `140626597727` `success`)
-**OS actually tested:** macOS `27.2.1` (`26B131`, arm64 local `pnpm verify` + 30/30 real-FS watcher smoke test + local `cargo-deny 0.20.2` + macOS CI `macos-arm64`) and Windows (`windows-x64` GitHub Actions CI runner)
-**Not tested:** Owner interactive desktop manual checks (`pnpm tauri dev` start-up window delay/unmanaged-state/error-dialog checks, live Desktop drag/drop watcher + auto-scan checkbox UI check, and laptop M4 Windows kill failure demonstration); live 24 h elapsed clock reconciliation (tested via deterministic `decide_next_auto_scan` unit test).
+**CI Run IDs:** `45928060396` (Theme C `e36bc72`, cancelled when Theme B pushed), `45928503558` (Theme B `fa17884`, all 3 jobs `success`), `45929623693` (Theme A `b7de6b5`: `windows-x64` `140278975773` `success`, `macos-arm64` `140278976064` `success`, `Security & License check (cargo deny)` `140278976016` `failure` on transitive `xxhash-rust v0.8.21` `BSL-1.0`), `46034567663` (round-2 `deny.toml` fix `eab2e4e`: `Security & License check (cargo deny)` `140626596979` `success`, `macos-arm64` `140626597449` `success`, `windows-x64` `140626597727` `success`), `46144882039` (round-3 `c8763b4`: `macos-arm64` `140978610910` `success`, `Security & License check (cargo deny)` `140978611177` `success`, `windows-x64` `140978611225` `success`)
+**OS actually tested:** macOS `27.2.1` (`26B131`, arm64 local `pnpm verify` + 30/30 real-FS watcher smoke test + `remove_root_scale` + `watch_probe` + macOS CI `macos-arm64`) and Windows (`windows-x64` GitHub Actions CI runner)
+**Not tested:** Owner interactive desktop manual checks (`pnpm tauri dev` start-up window delay/unmanaged-state/error-dialog checks, live Desktop drag/drop watcher + auto-scan checkbox UI check, Round-3 UI checks for R3/R5/R6, and laptop M4 Windows kill failure demonstration); live 24 h elapsed clock reconciliation (tested via deterministic `decide_next_auto_scan` unit test).
 
 ## 1. Summary & Part A: Pre-Implementation Audit (written before code)
 
@@ -2977,6 +2977,138 @@ ALL VERIFICATION CHECKS PASSED SUCCESSFULLY!
 ======================================================
 ```
 
+### Round 3 Git State & Green CI Run (`46144882039`)
+
+Raw `git log --oneline -12`:
+
+```text
+c8763b4 (HEAD -> task/1G, origin/task/1G) docs(1G): add Round 3 fixes and local verification evidence
+33c6e9d fix(1G): show Checking... for Active+unreachable and log slow availability checks (R6)
+1f3e2a0 fix(1G): show local finish time on automatic scan result line (R5)
+a7084ec test(1G): add ignored watch_probe diagnostic for macOS FSEvents (R2)
+d5e6a43 fix(1G): suppress changesDetected and auto-scan on never-scanned roots (R1)
+52d4cea fix(1G): exclude missing rows from root counts and preview (R3)
+5c6612d fix(1G): add foreign-key indexes migration and schema guard (R4)
+85be172 docs(1G): update Report 1G with green CI run, cargo-deny check, and full evidence [skip ci]
+eab2e4e chore(1G): allow BSL-1.0 exception for xxhash-rust in deny.toml
+f034d23 docs(1G): complete Report 1G and document BSL-1.0 cargo-deny blocker [skip ci]
+b7de6b5 feat(1G): add watcher hints, pure debouncer, and auto-scan scheduler (Theme A)
+fa17884 feat(1G): harden ExifTool adapter and add Windows kill/flood/concurrency tests (Theme B)
+```
+
+Raw `git status --short` (note: `docs/STATUS.md` and `reports/REVIEW-1G.md` were already present in the working tree before Round 3 began and were left untouched):
+
+```text
+ M docs/STATUS.md
+?? reports/REVIEW-1G.md
+```
+
+Raw `gh run list --branch task/1G --limit 3`:
+
+```text
+STATUS  TITLE        WORKFLOW    BRANCH   EVENT  ID          ELAPSED  AGE       
+✓       docs(1G)...  CI & Pa...  task/1G  push   4614488...  6m53s    about 7...
+✓       chore(1G...  CI & Pa...  task/1G  push   4603456...  6m51s    about 2...
+X       feat(1G)...  CI & Pa...  task/1G  push   4592962...  8m34s    about 1...
+```
+
+Raw `gh run view 46144882039` and `--json jobs` conclusion lines:
+
+```text
+✓ task/1G CI & Packaging Matrix · 46144882039
+Triggered via push about 7 minutes ago
+
+JOBS
+✓ macos-arm64 in 5m43s (ID 140978610910)
+  ✓ Set up job
+  ✓ Checkout code
+  ✓ Setup Node.js 22
+  ✓ Setup pnpm
+  ✓ Setup Rust toolchain
+  ✓ Cache Rust dependencies
+  ✓ Setup Python
+  ✓ Install Python Pillow
+  ✓ Install macOS prerequisites
+  ✓ Install frontend dependencies
+  ✓ Generate synthetic test fixtures
+  ✓ Run verification suite (pnpm verify)
+  ✓ Stage bundled resources
+  ✓ Build Tauri application (unsigned)
+  ✓ Post-build bundle packaging & library relocation
+  ✓ Clean-environment smoke test (macOS arm64)
+  ✓ Upload smoke test report
+  ✓ Upload verification logs
+  ✓ Upload macOS application bundle (zip)
+  ✓ Post Setup Python
+  ✓ Post Cache Rust dependencies
+  ✓ Post Setup pnpm
+  ✓ Post Setup Node.js 22
+  ✓ Post Checkout code
+  ✓ Complete job
+✓ Security & License check (cargo deny) in 51s (ID 140978611177)
+  ✓ Set up job
+  ✓ Build EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25
+  ✓ Checkout code
+  ✓ Security & License policy check
+  ✓ Post Checkout code
+  ✓ Complete job
+✓ windows-x64 in 6m49s (ID 140978611225)
+  ✓ Set up job
+  ✓ Checkout code
+  ✓ Setup Node.js 22
+  ✓ Setup pnpm
+  ✓ Setup Rust toolchain
+  ✓ Cache Rust dependencies
+  ✓ Setup Python
+  ✓ Install Python Pillow
+  ✓ Install Windows prerequisites
+  ✓ Install frontend dependencies
+  ✓ Generate synthetic test fixtures
+  ✓ Run verification suite (pnpm verify)
+  ✓ Stage bundled resources
+  ✓ Build Tauri application (unsigned)
+  ✓ Post-build bundle packaging & library relocation
+  ✓ Clean-environment smoke test (Windows x64)
+  ✓ Upload smoke test report
+  ✓ Upload verification logs
+  ✓ Upload Windows installer package (.exe)
+  ✓ Post Setup Python
+  ✓ Post Cache Rust dependencies
+  ✓ Post Setup pnpm
+  ✓ Post Setup Node.js 22
+  ✓ Post Checkout code
+  ✓ Complete job
+
+ANNOTATIONS
+! Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+macos-arm64: .github#2
+
+- Due to capacity constraints, jobs targeting macOS arm64 runners may experience longer queue times.
+macos-arm64: .github#1
+
+! Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+Security & License check (cargo deny): .github#2
+
+! Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-node@v4, actions/setup-python@v5, actions/upload-artifact@v4, pnpm/action-setup@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+windows-x64: .github#3
+
+
+ARTIFACTS
+photos-manager-windows-x64
+photos-manager-macos-arm64
+verify-logs-macos-arm64
+verify-logs-windows-x64
+smoke-report-windows-x64
+smoke-report-macos-arm64
+
+For more information about a job, try: gh run view --job=<job-id>
+View this run on GitHub: https://github.com/narayanwaraich/photos-manager/actions/runs/46144882039
+
+macos-arm64	140978610910	completed	success
+Security & License check (cargo deny)	140978611177	completed	success
+windows-x64	140978611225	completed	success
+```
+
 ## 7. Deviations
 
 - **Per-crate `BSL-1.0` exception in root `deny.toml` (`eab2e4e`):** Added `[licenses]` `exceptions = [{ crate = "xxhash-rust", allow = ["BSL-1.0"] }]` in `deny.toml` (at repository root; there is no `src-tauri/deny.toml`) per owner decision (2026-11-27), and installed `cargo-deny v0.20.2` globally (`cargo install cargo-deny --version 0.20.2 --locked`) to verify locally before pushing.
@@ -2987,14 +3119,14 @@ ALL VERIFICATION CHECKS PASSED SUCCESSFULLY!
 
 ## 8. Known gaps and risks
 
-- **Per-theme size summary:** Theme C = `+91 / -10` (6 files), Theme B = `+638 / -115` (1 file), Theme A = `+2472 / -63` (24 files; incl. `Cargo.lock` +89 / `Cargo.toml` +1), Round-2 `deny.toml` fix = `+4 / -0` (1 file).
+- **Per-theme size summary:** Theme C = `+91 / -10` (6 files), Theme B = `+638 / -115` (1 file), Theme A = `+2472 / -63` (24 files; incl. `Cargo.lock` +89 / `Cargo.toml` +1), Round-2 `deny.toml` fix = `+4 / -0` (1 file), Round-3 = `+796 / -32` (14 files across R4, R3, R1, R2, R5, R6).
 - **Hardest part / implementation risk:** Coordinating concurrent ExifTool pipes (so stderr floods or closed-stdout lingering processes cannot deadlock or escape the deadline cleanly) and ensuring watcher + scheduler ownership stays non-blocking, DB-free on watcher callbacks, and single-scan constrained.
-- **Theme C & Theme A manual desktop verification pending (owner):** No automated Playwright/WebView launch exists for the `"main"` window visibility transition, startup error dialog, or live Explorer/Finder drag-and-drop UI checks; the owner needs to run those checks interactively (`pnpm tauri dev`) and demonstrate M4 on the Windows laptop.
+- **Theme C, Theme A, and Round-3 manual desktop verification pending (owner):** No automated Playwright/WebView launch exists for the `"main"` window visibility transition, startup error dialog, live Explorer/Finder drag-and-drop UI checks, or Round-3 UI checks (missing-count agreement in card/Remove dialog, `"Started automatically at HH:MM:SS: ..."`, `"Checking..."` during unknown startup checks); the owner needs to run those checks interactively (`pnpm tauri dev`) and demonstrate M4 on the Windows laptop.
 - **Watcher best-effort & walk limits (`docs/ipc.md`):** OS watchers (`FSEvents`, `ReadDirectoryChangesW`) can drop events under extreme load or on network shares; the 24 h reconciliation scan (when automatic scanning is enabled) mitigates missed events. Walk follow-up risk remains documented in `docs/STATUS.md` (dead network share detection).
 
 ## 9. Questions for the human / orchestrator
 
-1. **Owner manual checks (Theme C, Theme A UI, and laptop M4):** Please run the interactive desktop checks (`Starting…` + hidden-until-ready start-up window + error dialog with mismatched platform stamp, creating/deleting a photo inside an Active folder to verify `"Changes detected since the last scan"` / `"Automatically scan changed folders"`) and the M4 Windows kill failure demonstration on the laptop.
+1. **Owner manual checks (Theme C, Theme A UI, Round-3 UI, and laptop M4):** Please run the interactive desktop checks (`Starting…` + hidden-until-ready start-up window + error dialog with mismatched platform stamp, creating/deleting a photo inside an Active folder to verify `"Changes detected since the last scan"` / `"Automatically scan changed folders"`, Round-3 R4/R3/R1/R5/R6 checks) and the M4 Windows kill failure demonstration on the laptop.
 
 ## 10. Proposed next task
 
@@ -3004,16 +3136,20 @@ Not proposed per task rules.
 
 | Claim | Source |
 |---|---|
-| Commits `dd56657`, `e36bc72`, `fa17884`, `b7de6b5`, `f034d23`, `eab2e4e` exist in order C → B → A + report + `deny.toml` | `git log --oneline -n 6` and `git show --stat` outputs (run in this session) |
-| Local `pnpm verify` passed (`204 passed; 0 failed; 2 ignored`, 5 Node tests, `AGENTS.md` 7439 chars) | Section 5.1 (full raw output) and `reports/logs/verify-2026-11-27.txt` |
-| `real_watcher_detects_new_file_smoke` passed 30/30 consecutive runs | Section 5.2 (full raw 30/30 loop output) |
-| Local `cargo deny --manifest-path src-tauri/Cargo.toml check` passed (`advisories ok, bans ok, licenses ok, sources ok`) | Section 5.3 (full raw `cargo-deny v0.20.2` output) |
-| CI `45928503558` green (3 jobs); CI `45929623693` failed `cargo deny` on `xxhash-rust v0.8.21` (`BSL-1.0`); CI `46034567663` passed all 3 jobs (`Security & License check (cargo deny)` `140626596979`, `macos-arm64` `140626597449`, `windows-x64` `140626597727`) | Section 5.4 (raw `gh run list`, `gh run view 46034567663`, `--json jobs` conclusion lines, and job logs) |
-| Node `DEP0190` warning removed by single-string shell call on Windows | Round-1 agent sandbox log, not reproducible by the owner (condensed summary in Section 5.5) |
-| `-api WindowsLongPath=1` is a no-op on macOS against `image_orientation_6.jpg` | Round-1 agent sandbox log, not reproducible by the owner (condensed summary in Section 5.5) |
-| Mutations M2–M7 (Mac for M4; Windows `test_child_killed_after_timeout_windows` only seen passing in CI, owner demonstrates failure on laptop) | Round-1 agent sandbox log, not reproducible by the owner (condensed summary in Section 5.6, NOT evidence) |
-| Zero production `unwrap`/`expect`/`panic!`/`unsafe`, all hooks `#[cfg(test)]`, zero watcher SQL writes, single `@tauri-apps/api` import | Section 5.7 (full raw `grep` output on `eab2e4e`) |
-| Diff stat matches 32 changed files (`5599` insertions, `188` deletions) against `main` | Section 3 (`git diff --stat main \| cat` on final saved tree) |
+| Commits `dd56657`, `e36bc72`, `fa17884`, `b7de6b5`, `f034d23`, `eab2e4e`, `85be172`, `5c6612d`, `52d4cea`, `d5e6a43`, `a7084ec`, `1f3e2a0`, `33c6e9d`, `c8763b4` exist in order on `task/1G` | `git log --oneline -12` (Round 3) and `git show --stat --oneline` outputs |
+| Local `pnpm verify` passed (`208 passed; 0 failed; 4 ignored`, 5 Node exiftool tests, `AGENTS.md` 7439 chars) | Round 3 full raw `pnpm verify` output and `reports/logs/verify-2026-11-28.txt` |
+| `node --test src/lib/scanText.test.mjs` passed (`4` tests: R5 time formatting + R6 `getReachabilityLabel`) | Round 3 raw `node --test src/lib/scanText.test.mjs` output |
+| `remove_root_scale` (20,000 files, 907 folders) improved from `55.771s (55770 ms)` without R4 migration to `0.261s (261 ms)` with R4 migration | Round 3 both raw `remove_root_scale` outputs |
+| `watch_probe` ran 20 s idle under both `$HOME/Pictures` and `std::env::temp_dir()` with `total raw callbacks=0` | Round 3 both raw `watch_probe` outputs |
+| R4 and R1 mutations failed as expected and were restored | Round 3 raw R4 and R1 mutation outputs |
+| `real_watcher_detects_new_file_smoke` passed 30/30 consecutive runs after Round 3 | Round 3 raw 30-run loop output (`25` + `5` = `30` passed) |
+| CI `46144882039` passed all 3 jobs (`macos-arm64` `140978610910`, `Security & License check (cargo deny)` `140978611177`, `windows-x64` `140978611225`) | Round 3 raw `gh run list` and `gh run view 46144882039` outputs |
+| Zero production `unwrap`/`expect`/`panic!`/`unsafe`, all hooks `#[cfg(test)]`, zero watcher SQL writes, single `@tauri-apps/api` import | Section 5.7 (Round 2 `grep` on `eab2e4e`) + Round 3 edits (`0` new `unwrap`/`expect`/`panic!`/`unsafe` in production code) |
+| Round-3 code diff stat is 14 files (`796` insertions, `32` deletions) with `A src-tauri/migrations/20261128000000_add_foreign_key_indexes.sql` | Round 3 raw `git diff 85be172 HEAD --stat` and `git diff --name-status 85be172 -- src-tauri/migrations` |
+
+## 10b. Closing summary (Round 3 complete)
+
+Round 3 items **R4, R3, R1, R2, R5, R6** are complete on branch `task/1G` in the required commit order (`5c6612d` -> `52d4cea` -> `d5e6a43` -> `a7084ec` -> `1f3e2a0` -> `33c6e9d`), with `pnpm verify` passing after every commit, 30/30 `real_watcher_detects_new_file_smoke` passing on macOS, and CI run `46144882039` (`macos-arm64`, `windows-x64`, `Security & License check (cargo deny)`) all `success`. Ready for owner manual desktop checks; stopping here per instructions.
 
 ## Concepts used
 
